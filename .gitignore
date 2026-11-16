@@ -1,0 +1,43 @@
+# Compiled Pawn bytecode & assembly
+*.amx
+*.lst
+*.asm
+
+# Sampctl / Pawn vendor dependencies
+dependencies/
+pawn.lock
+
+# Local server files & logs
+server.cfg
+logs/
+server_log.txt
+crashinfo.txt
+samp.ban
+scriptfiles/
+
+# Build & staging artifacts
+build/
+build-*/
+package/
+package-*/
+dist/
+release-*/
+deps/
+Debug/
+Release/
+x64/
+.vs/
+*.o
+*.obj
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.dll
+*.so
+*.dylib
+*.exe
+*.zip
+*.tar.gz
+*.sublime-workspace
+*.sublime-project

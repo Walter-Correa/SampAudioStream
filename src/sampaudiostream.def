@@ -1,0 +1,9 @@
+LIBRARY sampaudiostream
+EXPORTS
+    ComponentEntryPoint
+    Supports
+    Load
+    Unload
+    AmxLoad
+    AmxUnload
+    ProcessTick

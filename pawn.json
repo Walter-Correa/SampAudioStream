@@ -1,0 +1,34 @@
+{
+    "user": "Walter-Correa",
+    "repo": "SampAudioStream",
+    "version": "1.0.0",
+    "entry": "Example.pwn",
+    "output": "Example.amx",
+    "dependencies": [
+        "sampctl/samp-stdlib"
+    ],
+    "resources": [
+        {
+            "name": "SampAudioStream-Windows.zip",
+            "platform": "windows",
+            "archive": true,
+            "includes": [
+                "include/sampaudiostream.inc"
+            ],
+            "plugins": [
+                "plugins/sampaudiostream.dll"
+            ]
+        },
+        {
+            "name": "SampAudioStream-Linux.zip",
+            "platform": "linux",
+            "archive": true,
+            "includes": [
+                "include/sampaudiostream.inc"
+            ],
+            "plugins": [
+                "plugins/sampaudiostream.so"
+            ]
+        }
+    ]
+}

@@ -1,0 +1,12 @@
+{
+    global:
+        ComponentEntryPoint;
+        Supports;
+        Load;
+        Unload;
+        AmxLoad;
+        AmxUnload;
+        ProcessTick;
+    local:
+        *;
+};

@@ -1,0 +1,170 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "*"
+      - "*/*"
+      - "**"
+  pull_request:
+    branches:
+      - "*"
+      - "*/*"
+      - "**"
+
+jobs:
+  build-windows-release:
+    name: Build Windows (Win32)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Clone SDK dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path deps | Out-Null
+          if (-not (Test-Path "deps/open.mp-sdk/CMakeLists.txt")) {
+            git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/openmultiplayer/open.mp-sdk.git deps/open.mp-sdk
+          }
+          if (-not (Test-Path "deps/samp-plugin-sdk/plugincommon.h")) {
+            git clone --depth 1 https://github.com/maddinat0r/samp-plugin-sdk.git deps/samp-plugin-sdk
+          }
+
+      - name: Configure CMake (Win32)
+        run: cmake -B build -A Win32 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Run Unit Tests
+        run: ctest --test-dir build -C Release -R core_tests --output-on-failure
+
+      - name: Prepare Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package/plugins | Out-Null
+          New-Item -ItemType Directory -Force -Path package/components | Out-Null
+          New-Item -ItemType Directory -Force -Path package/include | Out-Null
+
+          $dll = "build/Release/sampaudiostream.dll"
+          if (-not (Test-Path $dll)) {
+            throw "Expected binary $dll does not exist!"
+          }
+
+          Copy-Item $dll "package/plugins/sampaudiostream.dll" -Force
+          Copy-Item $dll "package/components/sampaudiostream.dll" -Force
+
+          if (Test-Path "sampaudiostream.inc") { Copy-Item "sampaudiostream.inc" "package/include/sampaudiostream.inc" -Force }
+          if (Test-Path "Example.pwn") { Copy-Item "Example.pwn" "package/Example.pwn" -Force }
+          if (Test-Path "LICENSE") { Copy-Item "LICENSE" "package/LICENSE" -Force }
+
+      - name: Verify Windows Static Runtime
+        shell: pwsh
+        run: |
+          foreach ($file in @("package/plugins/sampaudiostream.dll", "package/components/sampaudiostream.dll")) {
+            if (-not (Test-Path $file)) {
+              throw "Expected binary $file does not exist!"
+            }
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $file))
+            $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+            if ($ascii -match "MSVCP\d+\.dll" -or $ascii -match "VCRUNTIME\d+\.dll") {
+              throw "Verification failed: $file depends on dynamic MSVC runtime (MSVCP/VCRUNTIME)!"
+            }
+          }
+          Write-Host "Windows static runtime verification passed: 0 MSVCP/VCRUNTIME dependencies."
+
+      - name: Compress Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path package/* -DestinationPath dist/SampAudioStream-Windows.zip -Force
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SampAudioStream-Windows
+          path: dist/SampAudioStream-Windows.zip
+
+  build-linux-release:
+    name: Build Linux (x86 32-bit)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Clone SDK dependencies
+        run: |
+          mkdir -p deps
+          if [ ! -f "deps/open.mp-sdk/CMakeLists.txt" ]; then
+            git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/openmultiplayer/open.mp-sdk.git deps/open.mp-sdk
+          fi
+          if [ ! -f "deps/samp-plugin-sdk/plugincommon.h" ]; then
+            git clone --depth 1 https://github.com/maddinat0r/samp-plugin-sdk.git deps/samp-plugin-sdk
+          fi
+
+      - name: Build inside debian:bullseye container
+        run: |
+          docker run --rm -v "${PWD}:/workspace" -w /workspace debian:bullseye bash -c "
+            set -e
+            apt-get update
+            apt-get install -y --no-install-recommends ca-certificates curl git g++-multilib gcc-multilib make cmake zip binutils
+            cmake -B build -DCMAKE_BUILD_TYPE=Release
+            cmake --build build --parallel
+            ctest --test-dir build -R core_tests --output-on-failure
+          "
+
+      - name: Prepare Package
+        run: |
+          mkdir -p package/plugins package/components package/include
+          SO_FILE="build/sampaudiostream.so"
+          if [ ! -f "$SO_FILE" ]; then
+            echo "Error: $SO_FILE not found!"
+            exit 1
+          fi
+
+          cp "$SO_FILE" "package/plugins/sampaudiostream.so"
+          cp "$SO_FILE" "package/components/sampaudiostream.so"
+
+          [ -f "sampaudiostream.inc" ] && cp "sampaudiostream.inc" "package/include/sampaudiostream.inc"
+          [ -f "Example.pwn" ] && cp "Example.pwn" "package/Example.pwn"
+          [ -f "LICENSE" ] && cp "LICENSE" "package/LICENSE"
+
+      - name: Verify Linux Compatibility and Exports
+        run: |
+          set -e
+          for so in package/plugins/sampaudiostream.so package/components/sampaudiostream.so; do
+            if [ ! -f "$so" ]; then
+              echo "Error: $so not found!"
+              exit 1
+            fi
+            if objdump -T "$so" | grep -q "GLIBCXX_"; then
+              echo "Verification failed: $so depends on external GLIBCXX_!"
+              exit 1
+            fi
+            UNEXPECTED=$(nm -D --defined-only "$so" | awk '{print $3}' | grep -v -E "^(ComponentEntryPoint|Supports|Load|Unload|AmxLoad|AmxUnload|ProcessTick)$" || true)
+            if [ -n "$UNEXPECTED" ]; then
+              echo "Verification failed: $so exports unexpected symbols:"
+              echo "$UNEXPECTED"
+              exit 1
+            fi
+          done
+          echo "Linux verification passed: 32-bit, static libstdc++, and strict symbol exports."
+
+      - name: Compress Package
+        run: |
+          mkdir -p dist
+          (cd package && zip -r ../dist/SampAudioStream-Linux.zip .)
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SampAudioStream-Linux
+          path: dist/SampAudioStream-Linux.zip
