@@ -18,7 +18,7 @@ jobs:
     name: Build Windows (Win32)
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           clean: true
           submodules: recursive
@@ -85,7 +85,7 @@ jobs:
           Compress-Archive -Path package/* -DestinationPath dist/SampAudioStream-Windows.zip -Force
 
       - name: Upload Windows Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SampAudioStream-Windows
           path: dist/SampAudioStream-Windows.zip
@@ -94,7 +94,7 @@ jobs:
     name: Build Linux (x86 32-bit)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           clean: true
           submodules: recursive
@@ -112,14 +112,27 @@ jobs:
 
       - name: Build inside debian:bullseye container
         run: |
-          docker run --rm -v "${PWD}:/workspace" -w /workspace debian:bullseye bash -c "
+          docker run --rm \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            debian:bullseye bash -c '
             set -e
-            apt-get update
-            apt-get install -y --no-install-recommends ca-certificates curl git g++-multilib gcc-multilib make cmake zip binutils
-            cmake -B build -DCMAKE_BUILD_TYPE=Release
+            rm -f /etc/apt/sources.list.d/debian.sources
+            printf "deb http://archive.debian.org/debian bullseye main\ndeb http://archive.debian.org/debian bullseye-updates main\ndeb http://archive.debian.org/debian-security bullseye-security main\n" > /etc/apt/sources.list
+            apt-get -o Acquire::Check-Valid-Until=false update
+            apt-get install -y --no-install-recommends ca-certificates curl git g++-multilib gcc-multilib make zip binutils file
+            curl -sSL https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-linux-x86_64.tar.gz -o /tmp/cmake.tar.gz
+            echo "f747d9b23e1a252a8beafb4ed2bc2ddf78cff7f04a8e4de19f4ff88e9b51dc9d  /tmp/cmake.tar.gz" | sha256sum -c -
+            tar --strip-components=1 -xz -C /usr/local -f /tmp/cmake.tar.gz
+            rm -f /tmp/cmake.tar.gz
+            git config --global --add safe.directory "*"
+            cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32
             cmake --build build --parallel
             ctest --test-dir build -R core_tests --output-on-failure
-          "
+            chown -R "${HOST_UID}:${HOST_GID}" /workspace/build
+          '
 
       - name: Prepare Package
         run: |
@@ -145,8 +158,20 @@ jobs:
               echo "Error: $so not found!"
               exit 1
             fi
+            FILE_INFO=$(file "$so")
+            echo "$FILE_INFO"
+            if ! echo "$FILE_INFO" | grep -q "ELF 32-bit LSB shared object, Intel 80386"; then
+              echo "Verification failed: $so is not 32-bit Intel 80386 ELF!"
+              exit 1
+            fi
             if objdump -T "$so" | grep -q "GLIBCXX_"; then
               echo "Verification failed: $so depends on external GLIBCXX_!"
+              exit 1
+            fi
+            MAX_GLIBC=$(objdump -T "$so" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1)
+            echo "Max required GLIBC for $so: ${MAX_GLIBC:-none}"
+            if [ -n "$MAX_GLIBC" ] && [ "$(printf '%s\n2.31\n' "$MAX_GLIBC" | sort -V | tail -1)" != "2.31" ]; then
+              echo "Verification failed: $so requires GLIBC_${MAX_GLIBC} > 2.31!"
               exit 1
             fi
             UNEXPECTED=$(nm -D --defined-only "$so" | awk '{print $3}' | grep -v -E "^(ComponentEntryPoint|Supports|Load|Unload|AmxLoad|AmxUnload|ProcessTick)$" || true)
@@ -156,7 +181,7 @@ jobs:
               exit 1
             fi
           done
-          echo "Linux verification passed: 32-bit, static libstdc++, and strict symbol exports."
+          echo "Linux verification passed: 32-bit x86, glibc <= 2.31, static libstdc++, and strict symbol exports."
 
       - name: Compress Package
         run: |
@@ -164,7 +189,7 @@ jobs:
           (cd package && zip -r ../dist/SampAudioStream-Linux.zip .)
 
       - name: Upload Linux Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SampAudioStream-Linux
           path: dist/SampAudioStream-Linux.zip
