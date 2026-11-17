@@ -6,11 +6,11 @@ SampAudioStream lets players search for music by name directly in-game and enabl
 
 ## 1. Asynchronous Music Search
 
-Calling `SA_SearchAudio(playerid, query, max_results = 5)` dispatches a background search on the worker thread pool without stalling the SA-MP/open.mp server tick.
+Calling `SA_SearchAudioStream(playerid, query, max_results = 5)` dispatches a background search on the worker thread pool without stalling the SA-MP/open.mp server tick.
 
 ### Callback Sequence
-1. `OnAudioSearchResultItem(playerid, search_id, item_index, const title[], const artist[], duration, const video_id[])` is fired once for each result (`item_index` from `0` to `total_found - 1`).
-2. `OnAudioSearchResults(playerid, search_id, total_found)` is fired right after all items have been delivered (`total_found == 0` if no matches were found or if the search failed).
+1. `OnAudioStreamSearchResultItem(playerid, search_id, item_index, const title[], const artist[], duration, const video_id[])` is fired once for each result (`item_index` from `0` to `total_found - 1`).
+2. `OnAudioStreamSearchResults(playerid, search_id, total_found)` is fired right after all items have been delivered (`total_found == 0` if no matches were found or if the search failed).
 
 ### Complete Interactive Dialog Example
 
@@ -41,12 +41,12 @@ CMD:music(playerid, params[])
     }
 
     for (new i = 0; i < MAX_SEARCH_CACHE; i++) g_SearchCache[playerid][i][seUsed] = false;
-    g_ActiveSearchID[playerid] = SA_SearchAudio(playerid, params, 8);
+    g_ActiveSearchID[playerid] = SA_SearchAudioStream(playerid, params, 8);
     SendClientMessage(playerid, 0x3498DBAA, "[Music] Searching...");
     return 1;
 }
 
-public OnAudioSearchResultItem(playerid, search_id, item_index, const title[], const artist[], duration, const video_id[])
+public OnAudioStreamSearchResultItem(playerid, search_id, item_index, const title[], const artist[], duration, const video_id[])
 {
     if (search_id != g_ActiveSearchID[playerid] || item_index < 0 || item_index >= MAX_SEARCH_CACHE)
         return 1;
@@ -59,7 +59,7 @@ public OnAudioSearchResultItem(playerid, search_id, item_index, const title[], c
     return 1;
 }
 
-public OnAudioSearchResults(playerid, search_id, total_found)
+public OnAudioStreamSearchResults(playerid, search_id, total_found)
 {
     if (search_id != g_ActiveSearchID[playerid]) return 1;
     if (total_found <= 0) return SendClientMessage(playerid, 0xE74C3CAA, "[Music] No results found.");
@@ -133,6 +133,6 @@ CMD:radio(playerid, params[])
 
 ### Channel Behavior
 * `SA_PlayChannel`: Clears/replaces current playback on the channel and immediately starts the given URL or search query.
-* `SA_QueueChannel`: Appends a track to the channel's queue. When the active track finishes, the next track begins automatically without disconnecting listeners from the HTTP endpoint.
+* `SA_QueueChannel`: Appends a track to the channel's queue. When the active track finishes draining its lead buffer, listeners cleanly transition to the next track (with a brief audible gap while clients reconnect to the new track).
 * `SA_SkipChannel`: Aborts the active track and advances immediately to the next queued track.
 * `SA_JoinChannel` / `SA_LeaveChannel`: Joining a channel stops the player's individual stream or previous channel automatically. Calling `StopAudioStreamForPlayer` / `SA_StopAudioStreamForPlayer` also leaves any active channel.

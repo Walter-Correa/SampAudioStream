@@ -11,8 +11,10 @@ SampAudioStream supports both **per-player streams** and **world-wide/radius-bas
 | **Target Audience** | Single `playerid` | All matching players dynamically |
 | **Radius Entry/Exit** | Starts/stops if owner leaves own filter | Any player entering the radius hears it automatically; leaving stops it |
 | **Finite Track Time Sync** | Starts from beginning for owner | `1x` real-time pacing: latecomers hear the track at its current playback position |
-| **Live Radio / Streams** | Direct pass-through (if `volume == 100.0`) or transcoded proxy | Direct real-time pass-through (HTTP radio at 100% vol) or live transcoded proxy (HLS/live) |
+| **Live Radio / Streams** | Direct pass-through (even for extensionless `http://` radios at `100.0` vol, with async ICY metadata probing; `OnAudioStreamFinished` does not fire on pass-through) or transcoded proxy | Direct real-time pass-through (HTTP radio at `100.0` vol) or live transcoded proxy (HLS / volume != `100.0`, with ICY `StreamTitle` framing when requested) |
 | **Replaces Previous Audio** | Automatically stops player's prior personal stream or channel | Multiple global streams can run concurrently across the map |
+
+* **LAN & Loopback Testing (`lan_aware_urls`)**: When enabled (default), local/LAN players automatically receive `127.0.0.1` or the server's matching private LAN IPv4 while remote players receive `public_ip`, without requiring manual config switching.
 
 ---
 
@@ -87,7 +89,7 @@ if (vehid > 0)
 ## 4. Real-Time Volume & Pause Control
 
 * **Volume range**: `0.0` to `200.0` percent (`100.0` = unity gain).
-  * `SA_SetPlayerAudioVolume(playerid, volume)`
+  * `SA_SetPlayerAudioStreamVolume(playerid, volume)`
   * `SA_SetAudioStreamVolume(streamid, volume)`
 * **Pause / Resume**:
   * `SA_PauseAudioStreamForPlayer(playerid, bool:pause)`

@@ -2,6 +2,7 @@
 #include "sampaudiostream/core/logger.hpp"
 #include "sampaudiostream/engine/audio_engine.hpp"
 #include "sampaudiostream/pawn/amx_natives.hpp"
+#include "sampaudiostream/runtime/instance_guard.hpp"
 #include "sampaudiostream/runtime/omp_host.hpp"
 #include "sampaudiostream/runtime/samp_host.hpp"
 
@@ -15,6 +16,25 @@ extern void* pAMXFunctions;
 namespace {
 std::unique_ptr<sampaudiostream::SampHost> g_samp_host;
 std::unique_ptr<sampaudiostream::AudioEngine> g_samp_engine;
+bool g_samp_instance_acquired = false;
+
+void CleanupSampRuntime() {
+    sampaudiostream::SetActiveAudioEngine(nullptr);
+    if (g_samp_engine) {
+        g_samp_engine->Shutdown();
+        g_samp_engine.reset();
+    }
+    sampaudiostream::Logger::Instance().Flush();
+    sampaudiostream::Logger::Instance().SetSink(nullptr);
+    if (g_samp_host) {
+        g_samp_host->SetEngine(nullptr);
+        g_samp_host.reset();
+    }
+    if (g_samp_instance_acquired) {
+        sampaudiostream::RuntimeInstanceGuard::Release();
+        g_samp_instance_acquired = false;
+    }
+}
 } // namespace
 
 // ---------------- open.mp Native Component Entry Point ----------------
@@ -35,8 +55,15 @@ PLUGIN_EXPORT bool PLUGIN_CALL Load(void** ppData) {
     pAMXFunctions = ppData[PLUGIN_DATA_AMX_EXPORTS];
     auto logprintf = reinterpret_cast<sampaudiostream::SampHost::LogPrintfFn>(ppData[PLUGIN_DATA_LOGPRINTF]);
 
-    sampaudiostream::PluginConfig cfg =
-        sampaudiostream::ConfigManager::LoadOrCreate("scriptfiles/samp-audio-stream/config.json");
+    std::string guard_err;
+    if (!sampaudiostream::RuntimeInstanceGuard::Acquire("SA-MP Plugin", guard_err)) {
+        if (logprintf) logprintf("[SampAudioStream] [ERROR] %s", guard_err.c_str());
+        return false;
+    }
+    g_samp_instance_acquired = true;
+
+    const std::string cfg_path = "scriptfiles/samp-audio-stream/config.json";
+    sampaudiostream::PluginConfig cfg = sampaudiostream::ConfigManager::LoadOrCreate(cfg_path);
 
     g_samp_host = std::make_unique<sampaudiostream::SampHost>(logprintf);
     g_samp_host->SetHookNativeAudio(cfg.hook_native_audio);
@@ -51,25 +78,21 @@ PLUGIN_EXPORT bool PLUGIN_CALL Load(void** ppData) {
 
     if (!g_samp_engine->Initialize()) {
         if (logprintf) logprintf("[SampAudioStream] Failed to initialize AudioEngine.");
+        sampaudiostream::Logger::Instance().Flush();
+        CleanupSampRuntime();
         return false;
     }
 
-    if (logprintf) {
-        logprintf("  SampAudioStream v1.0.0 loaded (HTTP port: %u)", g_samp_engine->GetHttpPort());
+    sampaudiostream::Logger::Instance().Flush();
+    if (logprintf && cfg.log_startup_banner) {
+        logprintf("  SampAudioStream v1.1.0 [SA-MP] loaded (config: %s, HTTP port: %u)",
+                  cfg_path.c_str(), g_samp_engine->GetHttpPort());
     }
     return true;
 }
 
 PLUGIN_EXPORT void PLUGIN_CALL Unload() {
-    sampaudiostream::SetActiveAudioEngine(nullptr);
-    if (g_samp_engine) {
-        g_samp_engine->Shutdown();
-        g_samp_engine.reset();
-    }
-    if (g_samp_host) {
-        g_samp_host->SetEngine(nullptr);
-        g_samp_host.reset();
-    }
+    CleanupSampRuntime();
 }
 
 PLUGIN_EXPORT int PLUGIN_CALL AmxLoad(AMX* amx) {

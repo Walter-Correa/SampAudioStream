@@ -4,6 +4,10 @@
 #include "sampaudiostream/extractor/resolver.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -94,136 +98,179 @@ cell AMX_NATIVE_CALL n_SA_PlayAudioStream(AMX* amx, cell* params) {
 // SA_StopAudioStreamForPlayer(playerid)
 cell AMX_NATIVE_CALL n_SA_StopAudioStreamForPlayer(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return 0;
     return g_engine->StopAudioStreamForPlayer(static_cast<PlayerId>(params[1])) ? 1 : 0;
 }
 
 // SA_StopAudioStream(streamid)
 cell AMX_NATIVE_CALL n_SA_StopAudioStream(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return 0;
     return g_engine->StopAudioStream(static_cast<StreamId>(params[1])) ? 1 : 0;
 }
 
 // SA_PauseAudioStreamForPlayer(playerid, bool:pause)
 cell AMX_NATIVE_CALL n_SA_PauseAudioStreamForPlayer(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
     return g_engine->PauseAudioStreamForPlayer(static_cast<PlayerId>(params[1]), params[2] != 0) ? 1 : 0;
 }
 
-// SA_SetPlayerAudioVolume(playerid, Float:volume)
-cell AMX_NATIVE_CALL n_SA_SetPlayerAudioVolume(AMX*, cell* params) {
+// SA_SetPlayerAudioStreamVolume(playerid, Float:volume)
+cell AMX_NATIVE_CALL n_SA_SetPlayerAudioStreamVolume(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
     return g_engine->SetPlayerAudioVolume(static_cast<PlayerId>(params[1]), amx_ctof(params[2])) ? 1 : 0;
 }
 
 // SA_SetAudioStreamVolume(streamid, Float:volume)
 cell AMX_NATIVE_CALL n_SA_SetAudioStreamVolume(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
     return g_engine->SetStreamVolume(static_cast<StreamId>(params[1]), amx_ctof(params[2])) ? 1 : 0;
 }
 
 // SA_AttachAudioStreamToPlayer(streamid, target_playerid)
 cell AMX_NATIVE_CALL n_SA_AttachAudioStreamToPlayer(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
     return g_engine->AttachStreamToPlayer(static_cast<StreamId>(params[1]), static_cast<PlayerId>(params[2])) ? 1 : 0;
 }
 
 // SA_AttachAudioStreamToVehicle(streamid, vehicleid)
 cell AMX_NATIVE_CALL n_SA_AttachAudioStreamToVehicle(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
     return g_engine->AttachStreamToVehicle(static_cast<StreamId>(params[1]), static_cast<std::int32_t>(params[2])) ? 1 : 0;
 }
 
-// SA_SearchAudio(playerid, const query[], max_results = 5)
-cell AMX_NATIVE_CALL n_SA_SearchAudio(AMX* amx, cell* params) {
+// SA_SearchAudioStream(playerid, const query[], max_results = 5)
+cell AMX_NATIVE_CALL n_SA_SearchAudioStream(AMX* amx, cell* params) {
     if (!g_engine) return INVALID_SEARCH_ID;
     std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return INVALID_SEARCH_ID;
     PlayerId pid = static_cast<PlayerId>(params[1]);
     std::string query = ReadAmxString(amx, params[2]);
     std::uint32_t max_res = (argc >= 3) ? static_cast<std::uint32_t>(std::max<cell>(1, params[3])) : 5;
     return static_cast<cell>(g_engine->SearchAudio(pid, query, max_res));
 }
 
-// SA_CancelAudioSearch(playerid)
-cell AMX_NATIVE_CALL n_SA_CancelAudioSearch(AMX*, cell* params) {
+// SA_CancelAudioStreamSearch(playerid)
+cell AMX_NATIVE_CALL n_SA_CancelAudioStreamSearch(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return 0;
     return g_engine->CancelSearch(static_cast<PlayerId>(params[1])) ? 1 : 0;
 }
 
 // SA_CreateChannel(const name[])
 cell AMX_NATIVE_CALL n_SA_CreateChannel(AMX* amx, cell* params) {
     if (!g_engine) return INVALID_CHANNEL_ID;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return INVALID_CHANNEL_ID;
     return static_cast<cell>(g_engine->CreateChannel(ReadAmxString(amx, params[1])));
 }
 
 // SA_DestroyChannel(channelid)
 cell AMX_NATIVE_CALL n_SA_DestroyChannel(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return 0;
     return g_engine->DestroyChannel(static_cast<ChannelId>(params[1])) ? 1 : 0;
 }
 
 // SA_PlayChannel(channelid, const url[])
 cell AMX_NATIVE_CALL n_SA_PlayChannel(AMX* amx, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
     return g_engine->PlayChannel(static_cast<ChannelId>(params[1]), ReadAmxString(amx, params[2])) ? 1 : 0;
 }
 
 // SA_QueueChannel(channelid, const url[])
 cell AMX_NATIVE_CALL n_SA_QueueChannel(AMX* amx, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
     return g_engine->QueueChannel(static_cast<ChannelId>(params[1]), ReadAmxString(amx, params[2])) ? 1 : 0;
 }
 
 // SA_SkipChannel(channelid)
 cell AMX_NATIVE_CALL n_SA_SkipChannel(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return 0;
     return g_engine->SkipChannel(static_cast<ChannelId>(params[1])) ? 1 : 0;
 }
 
 // SA_StopChannel(channelid)
 cell AMX_NATIVE_CALL n_SA_StopChannel(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return 0;
     return g_engine->StopChannel(static_cast<ChannelId>(params[1])) ? 1 : 0;
 }
 
 // SA_PauseChannel(channelid, bool:pause)
 cell AMX_NATIVE_CALL n_SA_PauseChannel(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
     return g_engine->PauseChannel(static_cast<ChannelId>(params[1]), params[2] != 0) ? 1 : 0;
 }
 
 // SA_SetChannelVolume(channelid, Float:volume)
 cell AMX_NATIVE_CALL n_SA_SetChannelVolume(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
     return g_engine->SetChannelVolume(static_cast<ChannelId>(params[1]), amx_ctof(params[2])) ? 1 : 0;
 }
 
 // SA_JoinChannel(playerid, channelid)
 cell AMX_NATIVE_CALL n_SA_JoinChannel(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
     return g_engine->JoinChannel(static_cast<PlayerId>(params[1]), static_cast<ChannelId>(params[2])) ? 1 : 0;
 }
 
 // SA_LeaveChannel(playerid)
 cell AMX_NATIVE_CALL n_SA_LeaveChannel(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return 0;
     return g_engine->LeaveChannel(static_cast<PlayerId>(params[1])) ? 1 : 0;
 }
 
 // SA_IsPlayerInChannel(playerid, channelid)
 cell AMX_NATIVE_CALL n_SA_IsPlayerInChannel(AMX*, cell* params) {
     if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
     return g_engine->IsPlayerInChannel(static_cast<PlayerId>(params[1]), static_cast<ChannelId>(params[2])) ? 1 : 0;
 }
 
 // SA_GetPlayerChannel(playerid)
 cell AMX_NATIVE_CALL n_SA_GetPlayerChannel(AMX*, cell* params) {
     if (!g_engine) return INVALID_CHANNEL_ID;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return INVALID_CHANNEL_ID;
     return static_cast<cell>(g_engine->GetPlayerChannelId(static_cast<PlayerId>(params[1])));
 }
 
 // SA_GetPlayerStreamID(playerid)
 cell AMX_NATIVE_CALL n_SA_GetPlayerStreamID(AMX*, cell* params) {
     if (!g_engine) return INVALID_STREAM_ID;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return INVALID_STREAM_ID;
     return static_cast<cell>(g_engine->GetPlayerStreamId(static_cast<PlayerId>(params[1])));
 }
 
@@ -256,6 +303,15 @@ cell AMX_NATIVE_CALL n_SA_GetHttpPort(AMX*, cell*) {
     return g_engine ? static_cast<cell>(g_engine->GetHttpPort()) : 0;
 }
 
+// SA_Internal_PlayerDisconnect(playerid) - Internal runtime hook bridge
+cell AMX_NATIVE_CALL n_SA_Internal_PlayerDisconnect(AMX*, cell* params) {
+    if (!g_engine || params[0] < static_cast<cell>(sizeof(cell))) return 0;
+    PlayerId player_id = static_cast<PlayerId>(params[1]);
+    g_engine->NotifyDisconnectHookActive();
+    g_engine->OnPlayerDisconnect(player_id);
+    return 1;
+}
+
 } // namespace
 
 void SetActiveAudioEngine(AudioEngine* engine) {
@@ -279,6 +335,19 @@ AMX_NATIVE GetOriginalStopAudioNative() {
     return g_orig_stop_audio;
 }
 
+namespace {
+
+bool StartsWithHttpPlain(const std::string& url) {
+    if (url.size() < 7) return false;
+    auto eq = [](char a, char b) {
+        return std::tolower(static_cast<unsigned char>(a)) == b;
+    };
+    return eq(url[0], 'h') && eq(url[1], 't') && eq(url[2], 't') &&
+           eq(url[3], 'p') && url[4] == ':' && url[5] == '/' && url[6] == '/';
+}
+
+} // namespace
+
 cell AMX_NATIVE_CALL Hooked_PlayAudioStreamForPlayer(AMX* amx, cell* params) {
     if (!g_engine) {
         return g_orig_play_audio ? g_orig_play_audio(amx, params) : 0;
@@ -291,17 +360,22 @@ cell AMX_NATIVE_CALL Hooked_PlayAudioStreamForPlayer(AMX* amx, cell* params) {
     std::string url = ReadAmxString(amx, params[2]);
     StreamOptions opts = ParseStreamOptions(params, 2, argc);
 
-    // Fast path: standard direct .mp3/.ogg/.wav URL with default world/interior/volume
-    if (StreamResolver::LooksLikeUrl(url) &&
-        StreamResolver::IsKnownDirectAudioExtension(url) &&
+    // Fast path: plain HTTP (never HTTPS) direct audio URL with default world/interior/volume
+    bool plain_http_direct = StartsWithHttpPlain(url) && StreamResolver::IsKnownDirectAudioExtension(url);
+    if (plain_http_direct &&
         opts.world_id == -1 &&
         opts.interior_id == -1 &&
         std::abs(opts.volume - 100.0f) < 0.5f &&
         g_orig_play_audio) {
+        g_engine->StopAudioStreamForPlayer(player_id, false);
         return g_orig_play_audio(amx, params);
     }
 
     StreamId sid = g_engine->PlayAudioStreamForPlayer(player_id, url, opts);
+    if (sid == INVALID_STREAM_ID && StartsWithHttpPlain(url) && g_orig_play_audio) {
+        g_engine->StopAudioStreamForPlayer(player_id, false);
+        return g_orig_play_audio(amx, params);
+    }
     return (sid != INVALID_STREAM_ID) ? 1 : 0;
 }
 
@@ -325,12 +399,12 @@ const std::vector<AMX_NATIVE_INFO>& GetPluginNatives() {
         {"SA_StopAudioStreamForPlayer", n_SA_StopAudioStreamForPlayer},
         {"SA_StopAudioStream", n_SA_StopAudioStream},
         {"SA_PauseAudioStreamForPlayer", n_SA_PauseAudioStreamForPlayer},
-        {"SA_SetPlayerAudioVolume", n_SA_SetPlayerAudioVolume},
+        {"SA_SetPlayerAudioStreamVolume", n_SA_SetPlayerAudioStreamVolume},
         {"SA_SetAudioStreamVolume", n_SA_SetAudioStreamVolume},
         {"SA_AttachAudioStreamToPlayer", n_SA_AttachAudioStreamToPlayer},
         {"SA_AttachAudioStreamToVehicle", n_SA_AttachAudioStreamToVehicle},
-        {"SA_SearchAudio", n_SA_SearchAudio},
-        {"SA_CancelAudioSearch", n_SA_CancelAudioSearch},
+        {"SA_SearchAudioStream", n_SA_SearchAudioStream},
+        {"SA_CancelAudioStreamSearch", n_SA_CancelAudioStreamSearch},
         {"SA_CreateChannel", n_SA_CreateChannel},
         {"SA_DestroyChannel", n_SA_DestroyChannel},
         {"SA_PlayChannel", n_SA_PlayChannel},
@@ -347,6 +421,7 @@ const std::vector<AMX_NATIVE_INFO>& GetPluginNatives() {
         {"SA_GetStreamInfo", n_SA_GetStreamInfo},
         {"SA_IsExtractorReady", n_SA_IsExtractorReady},
         {"SA_GetHttpPort", n_SA_GetHttpPort},
+        {"SA_Internal_PlayerDisconnect", n_SA_Internal_PlayerDisconnect},
         {nullptr, nullptr}
     };
     return natives;

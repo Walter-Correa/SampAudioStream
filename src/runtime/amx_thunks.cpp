@@ -1,6 +1,8 @@
 #include <amx/amx.h>
 #include <plugincommon.h>
 
+#include <cstdint>
+
 void* pAMXFunctions = nullptr;
 
 namespace {

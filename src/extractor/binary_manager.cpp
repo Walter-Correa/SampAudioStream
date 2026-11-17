@@ -3,10 +3,20 @@
 #include "sampaudiostream/core/logger.hpp"
 #include "sampaudiostream/network/http_client.hpp"
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cctype>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <mutex>
 #include <nlohmann/json.hpp>
+#include <sstream>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -70,55 +80,404 @@ std::string GetJsRuntimeFilename() {
 #endif
 }
 
-std::string GetYtDlpDownloadUrl() {
+std::string GetYtDlpAssetName() {
     HostArch arch = DetectHostArch();
 #ifdef _WIN32
-    if (arch == HostArch::X86) {
-        return "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_x86.exe";
-    }
-    return "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+    return (arch == HostArch::X86) ? "yt-dlp_x86.exe" : "yt-dlp.exe";
 #else
     switch (arch) {
         case HostArch::Arm64:
-            return "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64";
+            return "yt-dlp_linux_aarch64";
         case HostArch::Armv7:
-            return "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_armv7l";
+            return "yt-dlp_linux_armv7l";
         case HostArch::X64:
         case HostArch::X86:
         default:
-            return "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
+            return "yt-dlp_linux";
     }
 #endif
 }
 
-std::string GetJsRuntimeDownloadUrl() {
+std::string GetYtDlpOnedirZipAssetName() {
     HostArch arch = DetectHostArch();
 #ifdef _WIN32
-    if (arch == HostArch::X86) {
-        return "https://github.com/quickjs-ng/quickjs/releases/latest/download/qjs-windows-x86.exe";
-    }
-    return "https://github.com/quickjs-ng/quickjs/releases/latest/download/qjs-windows-x86_64.exe";
+    return (arch == HostArch::X86) ? "yt-dlp_win_x86.zip" : "yt-dlp_win.zip";
 #else
     switch (arch) {
         case HostArch::Arm64:
-            return "https://github.com/quickjs-ng/quickjs/releases/latest/download/qjs-linux-aarch64";
+            return "yt-dlp_linux_aarch64.zip";
         case HostArch::Armv7:
-            return "https://github.com/quickjs-ng/quickjs/releases/latest/download/qjs-linux-armv7";
-        case HostArch::X86:
-            return "https://github.com/quickjs-ng/quickjs/releases/latest/download/qjs-linux-x86";
+            return "yt-dlp_linux_armv7l.zip";
         case HostArch::X64:
+        case HostArch::X86:
         default:
-            return "https://github.com/quickjs-ng/quickjs/releases/latest/download/qjs-linux-x86_64";
+            return "yt-dlp_linux.zip";
     }
 #endif
+}
+
+std::string FindSystemZipExtractor(std::vector<std::string>& out_prefix_args, bool& out_is_python_zipfile) {
+    out_prefix_args.clear();
+    out_is_python_zipfile = false;
+#ifdef _WIN32
+    wchar_t sys_dir[MAX_PATH]{};
+    UINT len = GetSystemDirectoryW(sys_dir, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        std::filesystem::path tar_path = std::filesystem::path(sys_dir) / L"tar.exe";
+        if (std::filesystem::exists(tar_path)) {
+            return tar_path.string();
+        }
+    }
+    return "";
+#else
+    for (const char* p : {"/usr/bin/unzip", "/bin/unzip"}) {
+        if (std::filesystem::exists(p)) {
+            out_prefix_args = {"-o", "-q"};
+            return p;
+        }
+    }
+    for (const char* p : {"/usr/bin/bsdtar", "/usr/bin/tar", "/bin/tar"}) {
+        if (std::filesystem::exists(p)) {
+            return p;
+        }
+    }
+    for (const char* p : {"/usr/bin/python3", "/bin/python3"}) {
+        if (std::filesystem::exists(p)) {
+            out_is_python_zipfile = true;
+            return p;
+        }
+    }
+    return "";
+#endif
+}
+
+bool ExtractZipArchive(const std::string& zip_path, const std::string& dest_dir, const std::atomic<bool>* cancel_flag, std::string& out_error) {
+    std::vector<std::string> prefix;
+    bool is_python = false;
+    std::string tool = FindSystemZipExtractor(prefix, is_python);
+    if (tool.empty()) {
+        out_error = "No system zip extractor found";
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(dest_dir, ec);
+    std::vector<std::string> args;
+    if (is_python) {
+        args = {"-m", "zipfile", "-e", zip_path, dest_dir};
+    } else if (!prefix.empty()) {
+        // unzip -o -q <zip> -d <dest>
+        args = prefix;
+        args.push_back(zip_path);
+        args.push_back("-d");
+        args.push_back(dest_dir);
+    } else {
+        // bsdtar / Windows tar.exe: tar -xf <zip> -C <dest>
+        args = {"-xf", zip_path, "-C", dest_dir};
+    }
+    std::string out_stdout, out_stderr;
+    if (!ExecuteSubprocess(tool, args, out_stdout, out_stderr, 60000, cancel_flag, nullptr)) {
+        out_error = out_stderr.empty() ? "Archive extraction failed" : out_stderr;
+        return false;
+    }
+    return true;
+}
+
+std::string FindExtractedYtDlpExe(const std::filesystem::path& dir) {
+#ifdef _WIN32
+    const char* candidates[] = {"yt-dlp.exe", "yt-dlp_x86.exe"};
+#else
+    const char* candidates[] = {"yt-dlp_linux", "yt-dlp_linux_aarch64", "yt-dlp_linux_armv7l", "yt-dlp"};
+#endif
+    for (const char* name : candidates) {
+        std::filesystem::path p = dir / name;
+        if (std::filesystem::exists(p) && std::filesystem::file_size(p) > 100 * 1024) {
+            return p.string();
+        }
+    }
+    return "";
+}
+
+std::string GetYtDlpDownloadUrlForTag(const std::string& tag, const std::string& asset_name) {
+    return "https://github.com/yt-dlp/yt-dlp/releases/download/" + tag + "/" + asset_name;
+}
+
+std::string GetYtDlpChecksumsUrlForTag(const std::string& tag) {
+    return "https://github.com/yt-dlp/yt-dlp/releases/download/" + tag + "/SHA2-256SUMS";
+}
+
+// Standalone RFC 6234 SHA-256 computation (zero extra platform library requirements)
+std::string ComputeFileSha256Hex(const std::string& file_path) {
+    std::ifstream ifs(file_path, std::ios::binary);
+    if (!ifs.is_open()) return "";
+
+    static constexpr std::array<std::uint32_t, 64> K = {
+        0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+        0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+        0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+        0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+        0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+        0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+        0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+        0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+    };
+
+    auto rotr = [](std::uint32_t x, std::uint32_t n) -> std::uint32_t {
+        return (x >> n) | (x << (32 - n));
+    };
+
+    std::array<std::uint32_t, 8> H = {
+        0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+        0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u
+    };
+
+    auto transform = [&](const std::uint8_t block[64]) {
+        std::array<std::uint32_t, 64> w{};
+        for (int i = 0; i < 16; ++i) {
+            w[i] = (static_cast<std::uint32_t>(block[i * 4]) << 24) |
+                   (static_cast<std::uint32_t>(block[i * 4 + 1]) << 16) |
+                   (static_cast<std::uint32_t>(block[i * 4 + 2]) << 8) |
+                   static_cast<std::uint32_t>(block[i * 4 + 3]);
+        }
+        for (int i = 16; i < 64; ++i) {
+            std::uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            std::uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        std::uint32_t a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+        for (int i = 0; i < 64; ++i) {
+            std::uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+            std::uint32_t ch = (e & f) ^ ((~e) & g);
+            std::uint32_t temp1 = h + S1 + ch + K[i] + w[i];
+            std::uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+            std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+            std::uint32_t temp2 = S0 + maj;
+            h = g; g = f; f = e; e = d + temp1;
+            d = c; c = b; b = a; a = temp1 + temp2;
+        }
+        H[0] += a; H[1] += b; H[2] += c; H[3] += d;
+        H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+    };
+
+    std::array<std::uint8_t, 64> block{};
+    std::size_t block_len = 0;
+    std::uint64_t total_bits = 0;
+    std::array<char, 8192> rbuf{};
+
+    while (ifs.good()) {
+        ifs.read(rbuf.data(), static_cast<std::streamsize>(rbuf.size()));
+        std::streamsize got = ifs.gcount();
+        if (got <= 0) break;
+        total_bits += static_cast<std::uint64_t>(got) * 8ULL;
+        const auto* p = reinterpret_cast<const std::uint8_t*>(rbuf.data());
+        std::size_t rem = static_cast<std::size_t>(got);
+        while (rem > 0) {
+            std::size_t take = std::min<std::size_t>(64 - block_len, rem);
+            std::memcpy(block.data() + block_len, p, take);
+            block_len += take;
+            p += take;
+            rem -= take;
+            if (block_len == 64) {
+                transform(block.data());
+                block_len = 0;
+            }
+        }
+    }
+
+    block[block_len++] = 0x80;
+    if (block_len > 56) {
+        while (block_len < 64) block[block_len++] = 0;
+        transform(block.data());
+        block_len = 0;
+    }
+    while (block_len < 56) block[block_len++] = 0;
+    for (int i = 0; i < 8; ++i) {
+        block[56 + i] = static_cast<std::uint8_t>((total_bits >> ((7 - i) * 8)) & 0xFF);
+    }
+    transform(block.data());
+
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (std::uint32_t word : H) {
+        oss << std::setw(8) << word;
+    }
+    return oss.str();
+}
+
+bool VerifyYtDlpChecksum(
+    const std::string& downloaded_path,
+    const std::string& tag,
+    const std::string& asset_name,
+    const std::atomic<bool>* cancel_flag,
+    std::string& out_error) {
+    if (tag.empty()) {
+        out_error = "Missing release tag for yt-dlp integrity verification";
+        return false;
+    }
+    auto resp = HttpClient::Get(
+        GetYtDlpChecksumsUrlForTag(tag),
+        {},
+        15000,
+        cancel_flag);
+    if (!resp.Ok() || resp.body.empty()) {
+        out_error = "Failed to download yt-dlp SHA2-256SUMS for integrity verification";
+        return false;
+    }
+
+    std::string expected_hash;
+    std::istringstream iss(resp.body);
+    std::string line;
+    while (std::getline(iss, line)) {
+        std::istringstream lss(line);
+        std::string hash, name;
+        if (lss >> hash >> name) {
+            if (!name.empty() && name.front() == '*') name.erase(name.begin());
+            if (name == asset_name) {
+                for (char& ch : hash) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                expected_hash = std::move(hash);
+                break;
+            }
+        }
+    }
+    if (expected_hash.size() != 64) {
+        out_error = "Asset checksum entry not found in SHA2-256SUMS for " + asset_name;
+        return false;
+    }
+
+    std::string actual_hash = ComputeFileSha256Hex(downloaded_path);
+    if (actual_hash != expected_hash) {
+        out_error = "SHA-256 checksum mismatch for " + asset_name;
+        return false;
+    }
+    return true;
+}
+
+struct JsRuntimeAsset {
+    const char* name;
+    const char* url;
+    const char* sha256;
+};
+
+constexpr const char* kPinnedQuickJsVersion = "v0.18.0";
+
+JsRuntimeAsset GetJsRuntimeAsset() {
+    HostArch arch = DetectHostArch();
+#ifdef _WIN32
+    if (arch == HostArch::X86) {
+        return {
+            "qjs-windows-x86.exe",
+            "https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/qjs-windows-x86.exe",
+            "79aa85a8208596dc04333e99726c254d43b9e814803f2100ea593341f2c95b0e"
+        };
+    }
+    return {
+        "qjs-windows-x86_64.exe",
+        "https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/qjs-windows-x86_64.exe",
+        "ff03398d74ea6e6bd3a8e58058f7003225abcac229d7d57775b7aaae812a49c7"
+    };
+#else
+    switch (arch) {
+        case HostArch::Arm64:
+            return {
+                "qjs-linux-aarch64",
+                "https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/qjs-linux-aarch64",
+                "2c005c7171424a598d31c53c8dc4a0ae2e4958eb6fbb37908c885a307c78187c"
+            };
+        case HostArch::Armv7:
+            return {
+                "qjs-linux-armv7",
+                "https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/qjs-linux-armv7",
+                "4bbc426083b4a31f35cbb9471ce6138a8d8db8efdfce15b596597ad60ddd79ac"
+            };
+        case HostArch::X86:
+            return {
+                "qjs-linux-x86",
+                "https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/qjs-linux-x86",
+                "6e4e46849f6450a0afc572b8d10a0178d70040314f39669ca98ca8e95f114648"
+            };
+        case HostArch::X64:
+        default:
+            return {
+                "qjs-linux-x86_64",
+                "https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/qjs-linux-x86_64",
+                "85ded23b9fabe8c1644fc40a8d2bbdd71157affcbd807359c618cc717ee24d7d"
+            };
+    }
+#endif
+}
+
+std::string TrimAscii(std::string s) {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+    return s;
+}
+
+nlohmann::json LoadJsonObjectOrEmpty(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) {
+        return nlohmann::json::object();
+    }
+    try {
+        std::ifstream ifs(path);
+        nlohmann::json j;
+        ifs >> j;
+        if (j.is_object()) {
+            return j;
+        }
+    } catch (...) {
+    }
+    return nlohmann::json::object();
+}
+
+std::string QueryLatestYtDlpTag(const std::atomic<bool>* cancel_flag, std::string& out_error) {
+    auto resp = HttpClient::Get("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", {}, 10000, cancel_flag);
+    if (!resp.Ok()) {
+        out_error = resp.error.empty() ? ("GitHub API HTTP " + std::to_string(resp.status_code)) : resp.error;
+        return "";
+    }
+    try {
+        auto j = nlohmann::json::parse(resp.body);
+        std::string tag = j.value("tag_name", "");
+        if (tag.empty()) {
+            out_error = "GitHub release JSON missing tag_name";
+        }
+        return tag;
+    } catch (const std::exception& ex) {
+        out_error = std::string("Failed to parse GitHub release JSON: ") + ex.what();
+        return "";
+    }
+}
+
+void SaveJsonObject(const std::filesystem::path& path, const nlohmann::json& j) {
+    try {
+        std::ofstream ofs(path, std::ios::trunc);
+        ofs << j.dump(2);
+    } catch (...) {
+    }
 }
 
 } // namespace
 
+YtDlpUpdateAction DecideYtDlpUpdateAction(const YtDlpUpdateDecisionInput& input) {
+    if (input.last_check_epoch > 0 && (input.now_epoch - input.last_check_epoch) < 86400) {
+        return YtDlpUpdateAction::SkipRecentlyChecked;
+    }
+    if (input.latest_tag.empty()) {
+        return YtDlpUpdateAction::CheckLatestVersion;
+    }
+    if (input.current_tag != input.latest_tag) {
+        return YtDlpUpdateAction::DownloadAndUpdate;
+    }
+    return YtDlpUpdateAction::UpToDate;
+}
+
 BinaryManager::BinaryManager(const PluginConfig& config)
     : config_(config) {
     std::filesystem::path bin_dir(config_.bin_dir);
-    ytdlp_path_ = (bin_dir / GetYtDlpFilename()).string();
+    std::string onedir_exe = FindExtractedYtDlpExe(bin_dir / "yt-dlp-onedir");
+    if (!onedir_exe.empty()) {
+        ytdlp_path_ = std::move(onedir_exe);
+    } else {
+        ytdlp_path_ = (bin_dir / GetYtDlpFilename()).string();
+    }
     js_runtime_path_ = (bin_dir / GetJsRuntimeFilename()).string();
 }
 
@@ -128,10 +487,55 @@ void BinaryManager::InitializeAsync(ThreadPool& pool) {
         return;
     }
 
-    pool.Post([this]() {
-        EnsureBinaries();
+    last_periodic_check_ = std::chrono::steady_clock::now();
+    cancel_flag_.store(false);
+    if (!pool.Post([this]() {
+            if (!cancel_flag_.load()) {
+                EnsureBinaries();
+            }
+            initializing_.store(false);
+        })) {
         initializing_.store(false);
-    });
+    }
+}
+
+void BinaryManager::MaybePeriodicUpdate(ThreadPool& pool, std::uint32_t active_extractors) {
+    if (!config_.auto_update_extractor || !ready_.load() || initializing_.load() ||
+        updating_.load() || active_extractors > 0 || cancel_flag_.load()) {
+        return;
+    }
+#ifndef _WIN32
+    {
+        HostArch arch = DetectHostArch();
+        if (arch == HostArch::X86 || arch == HostArch::Armv7) {
+            return;
+        }
+    }
+#endif
+
+    auto now = std::chrono::steady_clock::now();
+    if (last_periodic_check_ != std::chrono::steady_clock::time_point{} &&
+        std::chrono::duration_cast<std::chrono::hours>(now - last_periodic_check_).count() < 24) {
+        return;
+    }
+    last_periodic_check_ = now;
+
+    bool expected = false;
+    if (!updating_.compare_exchange_strong(expected, true)) {
+        return;
+    }
+    if (!pool.Post([this]() {
+            if (!cancel_flag_.load()) {
+                UpdateYtDlpIfDue();
+            }
+            updating_.store(false);
+        })) {
+        updating_.store(false);
+    }
+}
+
+void BinaryManager::Cancel() {
+    cancel_flag_.store(true);
 }
 
 bool BinaryManager::IsReady() const {
@@ -169,11 +573,177 @@ void BinaryManager::EnsureBinaries() {
     }
 
     ready_.store(true);
-    Logger::Instance().Info("Audio extractor subsystem ready (Zero-Setup).");
+    if (config_.log_extractor_status) {
+        Logger::Instance().Info("Audio extractor subsystem ready.");
+    }
 
     if (config_.auto_update_extractor) {
         UpdateYtDlpIfDue();
     }
+}
+
+bool BinaryManager::DownloadAndInstallYtDlpTag(const std::string& tag, bool is_update, std::string& out_installed_path) {
+    std::filesystem::path bin_dir(config_.bin_dir);
+    std::string err;
+
+    // Prefer official onedir archive (avoids PyInstaller ~1-1.5s self-extraction delay per call)
+    // when a system zip extractor exists, falling back cleanly to the single-file asset.
+    std::vector<std::string> dummy_prefix;
+    bool dummy_py = false;
+    bool has_zip_tool = !FindSystemZipExtractor(dummy_prefix, dummy_py).empty();
+    if (has_zip_tool && !cancel_flag_.load()) {
+        std::string zip_asset = GetYtDlpOnedirZipAssetName();
+        std::string zip_url = GetYtDlpDownloadUrlForTag(tag, zip_asset);
+        if (config_.log_extractor_status) {
+            Logger::Instance().Info(
+                std::string(is_update ? "Downloading yt-dlp update (" : "Downloading stream extractor (yt-dlp ") +
+                tag + ") onedir archive from " + zip_url + " ...");
+        }
+        std::filesystem::path zip_stage = bin_dir / (zip_asset + ".stage");
+        std::filesystem::path extract_stage = bin_dir / "yt-dlp-onedir.stage";
+        std::filesystem::path target_dir = bin_dir / "yt-dlp-onedir";
+        std::filesystem::path bak_dir = bin_dir / "yt-dlp-onedir.bak";
+        std::error_code ec;
+        std::filesystem::remove_all(extract_stage, ec);
+
+        if (HttpClient::DownloadToFile(zip_url, zip_stage.string(), err, {}, 120000, &cancel_flag_)) {
+            if (VerifyYtDlpChecksum(zip_stage.string(), tag, zip_asset, &cancel_flag_, err)) {
+                if (ExtractZipArchive(zip_stage.string(), extract_stage.string(), &cancel_flag_, err)) {
+                    std::filesystem::remove(zip_stage, ec);
+                    std::string exe_rel = FindExtractedYtDlpExe(extract_stage);
+                    if (!exe_rel.empty()) {
+                        std::string exe_name = std::filesystem::path(exe_rel).filename().string();
+                        bool swapped = false;
+                        {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            bool prev_ready = ready_.exchange(false);
+                            std::filesystem::remove_all(bak_dir, ec);
+                            ec.clear();
+                            bool moved_old = false;
+                            if (std::filesystem::exists(target_dir)) {
+                                std::filesystem::rename(target_dir, bak_dir, ec);
+                                moved_old = !ec;
+                            }
+                            if (!ec || !std::filesystem::exists(target_dir)) {
+                                ec.clear();
+                                std::filesystem::rename(extract_stage, target_dir, ec);
+                                if (!ec) {
+                                    swapped = true;
+                                    ytdlp_path_ = (target_dir / exe_name).string();
+                                    MakeExecutable(ytdlp_path_);
+                                    out_installed_path = ytdlp_path_;
+                                    if (moved_old) {
+                                        std::filesystem::remove_all(bak_dir, ec);
+                                    }
+                                } else if (moved_old) {
+                                    std::filesystem::rename(bak_dir, target_dir, ec);
+                                }
+                            }
+                            ready_.store(prev_ready);
+                        }
+                        if (swapped) {
+                            return true;
+                        }
+                        Logger::Instance().Warn("Failed to swap extracted yt-dlp onedir directory; falling back to single-file binary.");
+                    } else {
+                        Logger::Instance().Warn("Extracted yt-dlp archive missing executable; falling back to single-file binary.");
+                    }
+                } else {
+                    std::filesystem::remove(zip_stage, ec);
+                    Logger::Instance().Warn("yt-dlp onedir extraction failed (" + err + "); falling back to single-file binary.");
+                }
+            } else {
+                std::filesystem::remove(zip_stage, ec);
+                Logger::Instance().Warn("yt-dlp onedir checksum verification failed (" + err + "); skipping update.");
+                return false;
+            }
+        } else {
+            std::filesystem::remove(zip_stage, ec);
+        }
+        std::filesystem::remove_all(extract_stage, ec);
+    }
+
+#ifndef _WIN32
+    {
+        HostArch arch = DetectHostArch();
+        if (arch == HostArch::X86 || arch == HostArch::Armv7) {
+            Logger::Instance().Error(
+                "yt-dlp does not provide a standalone single-file binary for this 32-bit Linux architecture; "
+                "auto-download disabled. Install a compatible yt-dlp binary manually into " +
+                (bin_dir / GetYtDlpFilename()).string() + " or run on a 64-bit Linux kernel.");
+            return false;
+        }
+    }
+#endif
+
+    if (cancel_flag_.load()) return false;
+    std::string single_path = (bin_dir / GetYtDlpFilename()).string();
+    std::string asset_name = GetYtDlpAssetName();
+    std::string url = GetYtDlpDownloadUrlForTag(tag, asset_name);
+    if (config_.log_extractor_status) {
+        Logger::Instance().Info(
+            std::string(is_update ? "Downloading yt-dlp update (" : "Downloading stream extractor (yt-dlp ") +
+            tag + ") from " + url + " ...");
+    }
+
+    std::string stage_path = single_path + ".stage";
+    if (!HttpClient::DownloadToFile(url, stage_path, err, {}, 120000, &cancel_flag_)) {
+        if (!is_update) {
+            Logger::Instance().Error("yt-dlp download failed: " + err);
+        }
+        return false;
+    }
+
+    if (!VerifyYtDlpChecksum(stage_path, tag, asset_name, &cancel_flag_, err)) {
+        std::error_code ec;
+        std::filesystem::remove(stage_path, ec);
+        if (is_update) {
+            Logger::Instance().Warn("Skipped yt-dlp update due to checksum verification failure: " + err);
+        } else {
+            Logger::Instance().Error("yt-dlp integrity verification failed: " + err);
+        }
+        return false;
+    }
+
+    bool swapped = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        bool prev_ready = ready_.exchange(false);
+        std::string bak_path = single_path + ".bak";
+        std::error_code ec;
+        std::filesystem::remove(bak_path, ec);
+        ec.clear();
+        bool moved_old = false;
+        if (std::filesystem::exists(single_path)) {
+            std::filesystem::rename(single_path, bak_path, ec);
+            moved_old = !ec;
+        }
+        if (!ec || !std::filesystem::exists(single_path)) {
+            ec.clear();
+            std::filesystem::rename(stage_path, single_path, ec);
+            if (!ec) {
+                swapped = true;
+                ytdlp_path_ = single_path;
+                MakeExecutable(ytdlp_path_);
+                out_installed_path = ytdlp_path_;
+                if (moved_old) {
+                    std::filesystem::remove(bak_path, ec);
+                }
+            } else {
+                if (moved_old) {
+                    std::filesystem::rename(bak_path, single_path, ec);
+                }
+                std::filesystem::remove(stage_path, ec);
+            }
+        } else {
+            std::filesystem::remove(stage_path, ec);
+        }
+        ready_.store(prev_ready);
+    }
+    if (!swapped) {
+        Logger::Instance().Warn("Failed to install verified yt-dlp binary.");
+    }
+    return swapped;
 }
 
 bool BinaryManager::EnsureYtDlp() {
@@ -188,17 +758,29 @@ bool BinaryManager::EnsureYtDlp() {
         return false;
     }
 
-    std::string url = GetYtDlpDownloadUrl();
-    Logger::Instance().Info("Downloading stream extractor (yt-dlp) from " + url + " ...");
-
+    if (cancel_flag_.load()) return false;
     std::string err;
-    if (!HttpClient::DownloadToFile(url, path, err)) {
-        Logger::Instance().Error("yt-dlp download failed: " + err);
+    std::string tag = QueryLatestYtDlpTag(&cancel_flag_, err);
+    if (tag.empty()) {
+        Logger::Instance().Error("Failed to query latest yt-dlp release tag: " + err);
         return false;
     }
 
-    MakeExecutable(path);
-    Logger::Instance().Info("yt-dlp downloaded successfully to " + path);
+    std::string installed;
+    if (!DownloadAndInstallYtDlpTag(tag, false, installed)) {
+        return false;
+    }
+
+    std::filesystem::path state_file = std::filesystem::path(config_.bin_dir) / "extractor_state.json";
+    nlohmann::json state = LoadJsonObjectOrEmpty(state_file);
+    state["ytdlp_tag"] = tag;
+    state["last_update_check"] = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    SaveJsonObject(state_file, state);
+
+    if (config_.log_extractor_status) {
+        Logger::Instance().Info("yt-dlp " + tag + " downloaded and SHA-256 verified at " + installed);
+    }
     return true;
 }
 
@@ -213,17 +795,47 @@ bool BinaryManager::EnsureJsRuntime() {
         return false;
     }
 
-    std::string url = GetJsRuntimeDownloadUrl();
-    Logger::Instance().Info("Downloading lightweight JS runtime (QuickJS-ng) from " + url + " ...");
+    if (cancel_flag_.load()) return false;
+    JsRuntimeAsset asset = GetJsRuntimeAsset();
+    if (config_.log_extractor_status) {
+        Logger::Instance().Info(
+            std::string("Downloading pinned JS runtime (QuickJS-ng ") + kPinnedQuickJsVersion +
+            ") from " + asset.url + " ...");
+    }
 
     std::string err;
-    if (!HttpClient::DownloadToFile(url, path, err)) {
+    std::string stage_path = path + ".stage";
+    if (!HttpClient::DownloadToFile(asset.url, stage_path, err, {}, 120000, &cancel_flag_)) {
+        std::error_code ec;
+        std::filesystem::remove(stage_path, ec);
         Logger::Instance().Warn("QuickJS-ng download failed: " + err);
         return false;
     }
 
+    std::string actual_hash = ComputeFileSha256Hex(stage_path);
+    if (actual_hash != asset.sha256) {
+        std::error_code ec;
+        std::filesystem::remove(stage_path, ec);
+        Logger::Instance().Error(
+            std::string("QuickJS-ng SHA-256 verification failed for ") + asset.name +
+            " (expected " + asset.sha256 + ", got " + actual_hash + "); refusing to install.");
+        return false;
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    ec.clear();
+    std::filesystem::rename(stage_path, path, ec);
+    if (ec) {
+        std::filesystem::remove(stage_path, ec);
+        Logger::Instance().Warn("Failed to install verified QuickJS-ng binary: " + ec.message());
+        return false;
+    }
+
     MakeExecutable(path);
-    Logger::Instance().Info("QuickJS-ng downloaded successfully to " + path);
+    if (config_.log_extractor_status) {
+        Logger::Instance().Info("QuickJS-ng downloaded and SHA-256 verified at " + path);
+    }
     return true;
 }
 
@@ -232,60 +844,56 @@ void BinaryManager::UpdateYtDlpIfDue() {
     auto now_epoch = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
 
-    std::int64_t last_check = 0;
-    if (std::filesystem::exists(state_file)) {
-        try {
-            std::ifstream ifs(state_file);
-            nlohmann::json j;
-            ifs >> j;
-            last_check = j.value("last_update_check", std::int64_t{0});
-        } catch (...) {}
-    }
+    nlohmann::json state = LoadJsonObjectOrEmpty(state_file);
+    std::int64_t last_check = state.value("last_update_check", std::int64_t{0});
+    std::string current_tag = state.value("ytdlp_tag", "");
 
-    // Check once every 24 hours
-    if (now_epoch - last_check < 86400) {
+    if (DecideYtDlpUpdateAction({now_epoch, last_check, current_tag, ""}) == YtDlpUpdateAction::SkipRecentlyChecked) {
         return;
     }
 
-    // Update timestamp first so failed network doesn't spam every boot
-    try {
-        std::ofstream ofs(state_file, std::ios::trunc);
-        ofs << nlohmann::json{{"last_update_check", now_epoch}}.dump(2);
-    } catch (...) {}
-
-    // Check GitHub latest release tag vs stored tag or re-download if newer
-    auto resp = HttpClient::Get("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", {}, 10000);
-    if (!resp.Ok()) {
-        return;
-    }
-
-    try {
-        auto j = nlohmann::json::parse(resp.body);
-        std::string latest_tag = j.value("tag_name", "");
-        if (latest_tag.empty()) return;
-
-        std::string current_tag;
-        if (std::filesystem::exists(state_file)) {
-            std::ifstream ifs(state_file);
-            nlohmann::json sj;
-            ifs >> sj;
-            current_tag = sj.value("ytdlp_tag", "");
-        }
-
-        if (current_tag != latest_tag) {
-            if (!current_tag.empty()) {
-                Logger::Instance().Info("New yt-dlp version available (" + latest_tag + "), updating in background...");
-                std::string err;
-                std::string path = GetYtDlpPath();
-                if (HttpClient::DownloadToFile(GetYtDlpDownloadUrl(), path, err)) {
-                    MakeExecutable(path);
-                    Logger::Instance().Info("yt-dlp updated to " + latest_tag);
-                }
+    // First run without a stored tag: probe installed binary via `--version`
+    std::string ytdlp_path = GetYtDlpPath();
+    if (current_tag.empty() && !ytdlp_path.empty() && std::filesystem::exists(ytdlp_path)) {
+        std::string ver_out, ver_err;
+        if (ExecuteSubprocess(ytdlp_path, {"--version"}, ver_out, ver_err, 5000, &cancel_flag_, nullptr)) {
+            std::string probed = TrimAscii(ver_out);
+            if (!probed.empty() && probed.size() <= 64) {
+                current_tag = probed;
+                state["ytdlp_tag"] = current_tag;
             }
-            std::ofstream ofs(state_file, std::ios::trunc);
-            ofs << nlohmann::json{{"last_update_check", now_epoch}, {"ytdlp_tag", latest_tag}}.dump(2);
         }
-    } catch (...) {}
+    }
+
+    // Persist last_update_check while preserving ytdlp_tag and all other fields
+    state["last_update_check"] = now_epoch;
+    SaveJsonObject(state_file, state);
+
+    if (cancel_flag_.load()) return;
+
+    // Query GitHub latest release tag once and use tag-pinned URLs for both binary & SHA2-256SUMS
+    std::string tag_err;
+    std::string latest_tag = QueryLatestYtDlpTag(&cancel_flag_, tag_err);
+    if (latest_tag.empty() || cancel_flag_.load()) {
+        return;
+    }
+
+    auto action = DecideYtDlpUpdateAction({now_epoch, last_check, current_tag, latest_tag});
+    if (action == YtDlpUpdateAction::DownloadAndUpdate && !cancel_flag_.load()) {
+        if (config_.log_extractor_status) {
+            Logger::Instance().Info(
+                "New yt-dlp version available (" + (current_tag.empty() ? "unknown" : current_tag) +
+                " -> " + latest_tag + "), updating in background...");
+        }
+        std::string installed;
+        if (DownloadAndInstallYtDlpTag(latest_tag, true, installed)) {
+            state["ytdlp_tag"] = latest_tag;
+            SaveJsonObject(state_file, state);
+            if (config_.log_extractor_status) {
+                Logger::Instance().Info("yt-dlp updated and SHA-256 verified to " + latest_tag);
+            }
+        }
+    }
 }
 
 bool BinaryManager::MakeExecutable(const std::string& path) {

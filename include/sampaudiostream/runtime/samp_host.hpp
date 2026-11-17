@@ -1,8 +1,11 @@
 #pragma once
 
+#include "sampaudiostream/core/config.hpp"
 #include "sampaudiostream/runtime/platform_host.hpp"
 
 #include <amx/amx.h>
+#include <atomic>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <unordered_map>
@@ -35,8 +38,12 @@ public:
     std::int32_t GetServerPort() const override;
     std::string GetServerBindIp() const override;
 
+    bool TracksDisconnectEvents() const override { return disconnect_event_seen_.load(); }
+    void OnDisconnectHookObserved() override { disconnect_event_seen_.store(true); }
+
     bool IsPlayerConnected(PlayerId player_id) const override;
     std::vector<PlayerId> GetConnectedPlayers() const override;
+    std::vector<PlayerSnapshot> GetConnectedPlayerSnapshots() const override;
     bool GetPlayerPos(PlayerId player_id, Vector3& out_pos) const override;
     std::int32_t GetPlayerVirtualWorld(PlayerId player_id) const override;
     std::int32_t GetPlayerInterior(PlayerId player_id) const override;
@@ -59,9 +66,12 @@ private:
     LogPrintfFn logprintf_{nullptr};
     AudioEngine* engine_{nullptr};
     bool hook_native_audio_{true};
+    std::atomic<bool> disconnect_event_seen_{false};
 
     mutable std::mutex amx_mutex_;
     std::vector<AMX*> loaded_amxs_;
+    AMX* gamemode_amx_{nullptr};
+    ServerCfgInfo server_cfg_{};
 
     // Captured original SA-MP server native function pointers
     AMX_NATIVE orig_play_audio_{nullptr};

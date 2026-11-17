@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(SampAudioStream VERSION 1.0.0 LANGUAGES C CXX)
+project(SampAudioStream VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
 set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
@@ -14,14 +14,9 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-# Enforce 32-bit target on GCC/Clang (SA-MP & open.mp plugins are 32-bit)
-if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang") AND NOT WIN32)
-    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -m32")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m32")
-        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -m32")
-        set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -m32")
-    endif()
+# Enforce 32-bit target (SA-MP & open.mp plugins are 32-bit only)
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+    message(FATAL_ERROR "SampAudioStream requires a 32-bit target (use -A Win32 on Windows or -DCMAKE_TOOLCHAIN_FILE=cmake/linux-x86.cmake on Linux).")
 endif()
 
 include(cmake/Dependencies.cmake)
@@ -67,9 +62,12 @@ set_target_properties(sampaudiostream PROPERTIES
     OUTPUT_NAME "sampaudiostream"
 )
 
+target_include_directories(sampaudiostream BEFORE PRIVATE
+    "${SAMP_SDK_DIR}"
+)
+
 target_include_directories(sampaudiostream PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${SAMP_SDK_DIR}"
     "${asio_SOURCE_DIR}/asio/include"
     "${dr_libs_SOURCE_DIR}"
     "${stb_SOURCE_DIR}"
@@ -85,16 +83,18 @@ target_compile_definitions(sampaudiostream PRIVATE
 )
 
 if(WIN32)
-    target_compile_definitions(sampaudiostream PRIVATE WIN32 _WIN32 _WIN32_WINNT=0x0601)
+    target_compile_definitions(sampaudiostream PRIVATE WIN32 _WIN32 _WIN32_WINNT=0x0601 HAVE_MALLOC_H=1)
     if(MSVC)
         target_compile_options(sampaudiostream PRIVATE /W3 /utf-8 /EHsc)
     endif()
     target_link_libraries(sampaudiostream PRIVATE
         ws2_32
         winhttp
+        bcrypt
+        iphlpapi
     )
 else()
-    target_compile_definitions(sampaudiostream PRIVATE LINUX)
+    target_compile_definitions(sampaudiostream PRIVATE LINUX HAVE_ALLOCA_H=1)
     target_compile_options(sampaudiostream PRIVATE
         -Wall
         -Wextra
@@ -137,10 +137,14 @@ if(SAMPAUDIO_BUILD_TESTS)
         src/extractor/metadata_cache.cpp
         src/extractor/resolver.cpp
         src/audio/ring_buffer.cpp
+        src/audio/transcoder.cpp
+        src/engine/audio_engine.cpp
     )
     target_include_directories(sampaudiostream_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         "${asio_SOURCE_DIR}/asio/include"
+        "${dr_libs_SOURCE_DIR}"
+        "${stb_SOURCE_DIR}"
     )
     target_compile_definitions(sampaudiostream_tests PRIVATE
         ASIO_STANDALONE
@@ -148,15 +152,21 @@ if(SAMPAUDIO_BUILD_TESTS)
         NOMINMAX
         WIN32_LEAN_AND_MEAN
         _CRT_SECURE_NO_WARNINGS
+        HAVE_STDINT_H=1
     )
     target_link_libraries(sampaudiostream_tests PRIVATE
         nlohmann_json::nlohmann_json
+        ogg
+        opus
+        fdk-aac
+        mp3lame_static
     )
     if(WIN32)
         target_compile_definitions(sampaudiostream_tests PRIVATE WIN32 _WIN32 _WIN32_WINNT=0x0601)
-        target_link_libraries(sampaudiostream_tests PRIVATE ws2_32 winhttp)
+        target_link_libraries(sampaudiostream_tests PRIVATE ws2_32 winhttp bcrypt iphlpapi)
     else()
         target_link_libraries(sampaudiostream_tests PRIVATE pthread dl)
     endif()
     add_test(NAME core_tests COMMAND sampaudiostream_tests)
+    set_tests_properties(core_tests PROPERTIES TIMEOUT 60)
 endif()

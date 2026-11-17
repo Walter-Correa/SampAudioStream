@@ -4,6 +4,7 @@
 #include "sampaudiostream/core/types.hpp"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -31,7 +32,7 @@ public:
     HttpStreamingServer(const HttpStreamingServer&) = delete;
     HttpStreamingServer& operator=(const HttpStreamingServer&) = delete;
 
-    bool Start(const std::string& bind_ip, std::uint16_t port, std::string& out_error);
+    bool Start(const std::string& bind_ip, std::uint16_t port, std::string& out_error, bool log_listen = true);
     void Stop();
 
     bool IsRunning() const;
@@ -40,6 +41,9 @@ public:
     void RegisterEndpoint(const StreamEndpointInfo& info);
     void UnregisterEndpoint(const std::string& token);
     void UpdateEndpointMetadata(const std::string& token, const std::string& title, const std::string& artist, std::shared_ptr<AudioStreamBuffer> new_buffer = nullptr);
+    std::uint64_t GetEndpointServedOffset(const std::string& token) const;
+    std::uint64_t GetEndpointPlayedOffset(const std::string& token) const;
+    std::size_t GetActiveConnectionCount(const std::string& token) const;
 
 private:
     struct Impl;

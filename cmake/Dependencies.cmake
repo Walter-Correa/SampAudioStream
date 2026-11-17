@@ -51,28 +51,28 @@ FetchContent_Declare(
     GIT_SHALLOW TRUE
 )
 
-# 6. libmp3lame (CMake wrapper)
+# 6. libmp3lame (CMake wrapper, pinned archive + SHA-256)
 FetchContent_Declare(
     mp3lame
-    GIT_REPOSITORY https://github.com/Iunusov/libmp3lame-CMAKE.git
-    GIT_TAG master
-    GIT_SHALLOW TRUE
+    URL https://github.com/Iunusov/libmp3lame-CMAKE/archive/bb770fb6e4b4dfc963860380a5e7765c370aaef1.tar.gz
+    URL_HASH SHA256=f7302418606988264d2ae5f68aa1ffbef034d1acd73448d1b1814cd341c81ff8
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
-# 7. dr_libs (header-only dr_mp3, dr_wav, dr_flac)
+# 7. dr_libs (header-only dr_mp3, dr_wav, dr_flac, pinned archive + SHA-256)
 FetchContent_Declare(
     dr_libs
-    GIT_REPOSITORY https://github.com/mackron/dr_libs.git
-    GIT_TAG master
-    GIT_SHALLOW TRUE
+    URL https://github.com/mackron/dr_libs/archive/f12e197fd462e4c22873fbd70d11b1d2f2c1dc3c.tar.gz
+    URL_HASH SHA256=65d6c9c34d9b03fe0c47536e0e83c764402230994c9a6633e6e9d3aa92be90ac
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
-# 8. stb (stb_vorbis)
+# 8. stb (stb_vorbis, pinned archive + SHA-256)
 FetchContent_Declare(
     stb
-    GIT_REPOSITORY https://github.com/nothings/stb.git
-    GIT_TAG master
-    GIT_SHALLOW TRUE
+    URL https://github.com/nothings/stb/archive/9600522de53973336fa033a289858a4354cbb04c.tar.gz
+    URL_HASH SHA256=8546b1281cf61e4b5229e9eb05055d765f1b076f6ba03aab377df09a20fb613b
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
 FetchContent_MakeAvailable(nlohmann_json ogg opus fdk-aac dr_libs stb)

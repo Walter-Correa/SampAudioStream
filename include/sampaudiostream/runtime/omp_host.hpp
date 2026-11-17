@@ -6,6 +6,8 @@
 #include <Server/Components/Pawn/pawn.hpp>
 #include <Server/Components/Vehicles/vehicles.hpp>
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -27,7 +29,7 @@ public:
 
     // IComponent
     StringView componentName() const override { return "SampAudioStream"; }
-    SemanticVersion componentVersion() const override { return SemanticVersion(1, 0, 0, 0); }
+    SemanticVersion componentVersion() const override { return SemanticVersion(1, 1, 0, 0); }
     void onLoad(ICore* c) override;
     void onInit(IComponentList* components) override;
     void onReady() override;
@@ -51,8 +53,10 @@ public:
     std::int32_t GetServerPort() const override;
     std::string GetServerBindIp() const override;
 
+    bool TracksDisconnectEvents() const override { return true; }
     bool IsPlayerConnected(PlayerId player_id) const override;
     std::vector<PlayerId> GetConnectedPlayers() const override;
+    std::vector<PlayerSnapshot> GetConnectedPlayerSnapshots() const override;
     bool GetPlayerPos(PlayerId player_id, sampaudiostream::Vector3& out_pos) const override;
     std::int32_t GetPlayerVirtualWorld(PlayerId player_id) const override;
     std::int32_t GetPlayerInterior(PlayerId player_id) const override;
@@ -71,6 +75,7 @@ public:
 
 private:
     bool PatchScriptNative(IPawnScript& script, const char* name, AMX_NATIVE replacement, AMX_NATIVE* out_original);
+    void PatchPendingScripts();
 
     ICore* core_{nullptr};
     IPawnComponent* pawn_{nullptr};
@@ -79,10 +84,13 @@ private:
 
     mutable std::mutex scripts_mutex_;
     std::vector<IPawnScript*> scripts_;
+    std::vector<IPawnScript*> pending_patch_scripts_;
+    std::atomic<bool> has_pending_patches_{false};
 
     AMX_NATIVE orig_play_audio_{nullptr};
     AMX_NATIVE orig_stop_audio_{nullptr};
     bool hook_native_audio_{true};
+    bool instance_acquired_{false};
 };
 
 } // namespace sampaudiostream

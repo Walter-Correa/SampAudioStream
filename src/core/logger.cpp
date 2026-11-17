@@ -1,6 +1,9 @@
 #include "sampaudiostream/core/logger.hpp"
 
+#include <algorithm>
 #include <iostream>
+#include <mutex>
+#include <utility>
 
 namespace sampaudiostream {
 

@@ -1,6 +1,6 @@
 /*
  * SampAudioStream - Universal Audio Streaming Plugin/Component for SA-MP & open.mp
- * Version: 1.0.0
+ * Version: 1.1.0
  *
  * Features:
  *  - YouTube, SoundCloud, Twitch, Vimeo, TikTok, Direct MP3/OGG/WAV/FLAC & HLS streams
@@ -9,6 +9,10 @@
  *  - Extended parameters: worldid, interiorid, volume, 3D spatial tracking
  *  - Asynchronous music search with structured callbacks for interactive dialogs
  *  - Synchronized multi-player radio channels with queue support
+ *
+ * Include Order:
+ *  Include <a_samp> or <open.mp> BEFORE <sampaudiostream> so native hooking
+ *  cleanly overrides PlayAudioStreamForPlayer and StopAudioStreamForPlayer.
  */
 
 #if defined _sampaudiostream_included
@@ -16,10 +20,14 @@
 #endif
 #define _sampaudiostream_included
 
+#if !defined _samp_included && !defined _INC_open_mp
+    #error Please include <a_samp> or <open.mp> BEFORE <sampaudiostream>.
+#endif
+
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (1)
-#define SAMPAUDIOSTREAM_VERSION_MINOR  (0)
+#define SAMPAUDIOSTREAM_VERSION_MINOR  (1)
 #define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
-#define SAMPAUDIOSTREAM_VERSION_STRING "1.0.0"
+#define SAMPAUDIOSTREAM_VERSION_STRING "1.1.0"
 
 // -----------------------------------------------------------------------------
 // Constants & Enums
@@ -72,7 +80,7 @@ native SA_StopAudioStreamForPlayer(playerid);
 native SA_StopAudioStream(streamid);
 
 native SA_PauseAudioStreamForPlayer(playerid, bool:pause);
-native SA_SetPlayerAudioVolume(playerid, Float:volume);
+native SA_SetPlayerAudioStreamVolume(playerid, Float:volume);
 native SA_SetAudioStreamVolume(streamid, Float:volume);
 
 native SA_AttachAudioStreamToPlayer(streamid, target_playerid);
@@ -82,8 +90,8 @@ native SA_AttachAudioStreamToVehicle(streamid, vehicleid);
 // Asynchronous Search Natives
 // -----------------------------------------------------------------------------
 
-native SA_SearchAudio(playerid, const query[], max_results = 5);
-native SA_CancelAudioSearch(playerid);
+native SA_SearchAudioStream(playerid, const query[], max_results = 5);
+native SA_CancelAudioStreamSearch(playerid);
 
 // -----------------------------------------------------------------------------
 // Synchronized Channel / Radio Natives
@@ -95,6 +103,8 @@ native SA_PlayChannel(channelid, const url[]);
 native SA_QueueChannel(channelid, const url[]);
 native SA_SkipChannel(channelid);
 native SA_StopChannel(channelid);
+// Pausing a channel while a track is completing or transitioning preserves the
+// paused state into the next queued track until resumed with pause=false.
 native SA_PauseChannel(channelid, bool:pause);
 native SA_SetChannelVolume(channelid, Float:volume);
 native SA_JoinChannel(playerid, channelid);
@@ -115,13 +125,61 @@ native SA_GetHttpPort();
 // Callbacks
 // -----------------------------------------------------------------------------
 
+// Notes:
+//  - OnAudioStreamReady receives the resolved stream URL for personal streams,
+//    or the full public stream URL (empty if the public IP is not known yet)
+//    for global streams.
+//  - OnAudioStreamFinished only fires for server-transcoded streams. Direct HTTP
+//    passthrough streams (plain http:// direct audio at 100.0% volume) are played
+//    directly by the client without server-side completion tracking.
+//  - On synchronized radio channels (SA_QueueChannel / SA_SkipChannel), listeners
+//    cleanly reconnect on track changes, causing a brief audible transition gap.
+//  - For synchronized channel errors, OnAudioStreamError is dispatched with
+//    playerid = INVALID_PLAYER_ID and streamid = (-channelid - 1).
 forward OnAudioStreamReady(playerid, streamid, const title[], const artist[], duration, const url[]);
 forward OnAudioStreamStart(playerid, streamid);
 forward OnAudioStreamFinished(playerid, streamid);
 forward OnAudioStreamError(playerid, streamid, E_SA_ERROR_CODE:error_code, const error_message[]);
 
-forward OnAudioSearchResults(playerid, search_id, total_found);
-forward OnAudioSearchResultItem(playerid, search_id, item_index, const title[], const artist[], duration, const video_id[]);
+forward OnAudioStreamSearchResults(playerid, search_id, total_found);
+forward OnAudioStreamSearchResultItem(playerid, search_id, item_index, const title[], const artist[], duration, const video_id[]);
+
+// -----------------------------------------------------------------------------
+// Internal Runtime Bridge (do not call directly)
+// -----------------------------------------------------------------------------
+
+// Internal disconnect notification bridge used by the ALS OnPlayerDisconnect hook.
+native SA_Internal_PlayerDisconnect(playerid);
+
+// Forces the Pawn compiler to retain all host natives required by SampHost in
+// the AMX native table even when hooked or unused directly in script code.
+#if defined __Pawn && __Pawn >= 0x030A
+    #pragma warning push
+    #pragma warning disable 234
+#endif
+forward SA_Internal_ImportNatives();
+public SA_Internal_ImportNatives()
+{
+    new Float:f, s[16];
+    PlayAudioStreamForPlayer(0, "");
+    StopAudioStreamForPlayer(0);
+    IsPlayerConnected(0);
+    GetPlayerPos(0, f, f, f);
+    GetPlayerVirtualWorld(0);
+    GetPlayerInterior(0);
+    GetPlayerVehicleID(0);
+    GetVehiclePos(0, f, f, f);
+    GetPlayerIp(0, s, sizeof s);
+    GetServerVarAsInt("port");
+    GetServerVarAsString("bind", s, sizeof s);
+#if defined GetPlayerPoolSize
+    GetPlayerPoolSize();
+#endif
+    return 0;
+}
+#if defined __Pawn && __Pawn >= 0x030A
+    #pragma warning pop
+#endif
 
 // -----------------------------------------------------------------------------
 // Transparent Native Hooking (PlayAudioStreamForPlayer & StopAudioStreamForPlayer)
@@ -130,7 +188,7 @@ forward OnAudioSearchResultItem(playerid, search_id, item_index, const title[], 
 
 #if !defined SA_DISABLE_NATIVE_HOOKS
 
-stock SA_Hook_PlayAudioStream(playerid, const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0)
+stock bool:SA_Hook_PlayAudioStream(playerid, const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0)
 {
     return (SA_PlayAudioStreamForPlayer(playerid, url, posX, posY, posZ, distance, usepos, worldid, interiorid, volume) != INVALID_AUDIO_STREAM_ID);
 }
@@ -155,3 +213,30 @@ stock SA_Hook_StopAudioStream(playerid)
 #define StopAudioStreamForPlayer SA_Hook_StopAudioStream
 
 #endif // !SA_DISABLE_NATIVE_HOOKS
+
+// -----------------------------------------------------------------------------
+// Disconnect Lifecycle Hook (reduces SA-MP player connection polling overhead)
+// Define SA_DISABLE_DISCONNECT_HOOK before including <sampaudiostream> to disable.
+// -----------------------------------------------------------------------------
+
+#if !defined SA_DISABLE_DISCONNECT_HOOK
+
+public OnPlayerDisconnect(playerid, reason)
+{
+    SA_Internal_PlayerDisconnect(playerid);
+    if (funcidx("SA_OnPlayerDisconnect") != -1)
+    {
+        return CallLocalFunction("SA_OnPlayerDisconnect", "ii", playerid, reason);
+    }
+    return 1;
+}
+
+#if defined _ALS_OnPlayerDisconnect
+    #undef OnPlayerDisconnect
+#else
+    #define _ALS_OnPlayerDisconnect
+#endif
+#define OnPlayerDisconnect SA_OnPlayerDisconnect
+forward SA_OnPlayerDisconnect(playerid, reason);
+
+#endif // !SA_DISABLE_DISCONNECT_HOOK

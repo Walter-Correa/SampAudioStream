@@ -1,5 +1,10 @@
 #include "sampaudiostream/extractor/metadata_cache.hpp"
 
+#include <cstddef>
+#include <cstdint>
+#include <mutex>
+#include <optional>
+
 namespace sampaudiostream {
 
 MetadataCache::MetadataCache(std::size_t max_entries, std::uint32_t ttl_seconds)

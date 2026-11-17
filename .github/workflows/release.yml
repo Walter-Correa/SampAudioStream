@@ -24,10 +24,17 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path deps | Out-Null
           if (-not (Test-Path "deps/open.mp-sdk/CMakeLists.txt")) {
-            git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/openmultiplayer/open.mp-sdk.git deps/open.mp-sdk
+            git init deps/open.mp-sdk
+            git -C deps/open.mp-sdk remote add origin https://github.com/openmultiplayer/open.mp-sdk.git
+            git -C deps/open.mp-sdk fetch --depth 1 origin 08cc69a32d96c0eb8fe063d26c78259e54ca853f
+            git -C deps/open.mp-sdk checkout FETCH_HEAD
+            git -C deps/open.mp-sdk submodule update --init --recursive --depth 1
           }
           if (-not (Test-Path "deps/samp-plugin-sdk/plugincommon.h")) {
-            git clone --depth 1 https://github.com/maddinat0r/samp-plugin-sdk.git deps/samp-plugin-sdk
+            git init deps/samp-plugin-sdk
+            git -C deps/samp-plugin-sdk remote add origin https://github.com/maddinat0r/samp-plugin-sdk.git
+            git -C deps/samp-plugin-sdk fetch --depth 1 origin a5ce36a9b6ebbea6ad36705603f653bf3d4f41c5
+            git -C deps/samp-plugin-sdk checkout FETCH_HEAD
           }
 
       - name: Configure CMake (Win32)
@@ -37,7 +44,7 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Run Unit Tests
-        run: ctest --test-dir build -C Release -R core_tests --output-on-failure
+        run: ctest --test-dir build -C Release -R core_tests --output-on-failure --timeout 300
 
       - name: Prepare Package
         shell: pwsh
@@ -98,10 +105,17 @@ jobs:
         run: |
           mkdir -p deps
           if [ ! -f "deps/open.mp-sdk/CMakeLists.txt" ]; then
-            git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/openmultiplayer/open.mp-sdk.git deps/open.mp-sdk
+            git init deps/open.mp-sdk
+            git -C deps/open.mp-sdk remote add origin https://github.com/openmultiplayer/open.mp-sdk.git
+            git -C deps/open.mp-sdk fetch --depth 1 origin 08cc69a32d96c0eb8fe063d26c78259e54ca853f
+            git -C deps/open.mp-sdk checkout FETCH_HEAD
+            git -C deps/open.mp-sdk submodule update --init --recursive --depth 1
           fi
           if [ ! -f "deps/samp-plugin-sdk/plugincommon.h" ]; then
-            git clone --depth 1 https://github.com/maddinat0r/samp-plugin-sdk.git deps/samp-plugin-sdk
+            git init deps/samp-plugin-sdk
+            git -C deps/samp-plugin-sdk remote add origin https://github.com/maddinat0r/samp-plugin-sdk.git
+            git -C deps/samp-plugin-sdk fetch --depth 1 origin a5ce36a9b6ebbea6ad36705603f653bf3d4f41c5
+            git -C deps/samp-plugin-sdk checkout FETCH_HEAD
           fi
 
       - name: Build inside debian:bullseye container
@@ -115,16 +129,22 @@ jobs:
             set -e
             rm -f /etc/apt/sources.list.d/debian.sources
             printf "deb http://archive.debian.org/debian bullseye main\ndeb http://archive.debian.org/debian bullseye-updates main\ndeb http://archive.debian.org/debian-security bullseye-security main\n" > /etc/apt/sources.list
+            dpkg --add-architecture i386
             apt-get -o Acquire::Check-Valid-Until=false update
-            apt-get install -y --no-install-recommends ca-certificates curl git g++-multilib gcc-multilib make zip binutils file
+            apt-get install -y --no-install-recommends ca-certificates curl git g++-multilib gcc-multilib make zip binutils file gdb libcurl4:i386
             curl -sSL https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-linux-x86_64.tar.gz -o /tmp/cmake.tar.gz
             echo "f747d9b23e1a252a8beafb4ed2bc2ddf78cff7f04a8e4de19f4ff88e9b51dc9d  /tmp/cmake.tar.gz" | sha256sum -c -
             tar --strip-components=1 -xz -C /usr/local -f /tmp/cmake.tar.gz
             rm -f /tmp/cmake.tar.gz
             git config --global --add safe.directory "*"
-            cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32
+            cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=cmake/linux-x86.cmake
             cmake --build build --parallel
-            ctest --test-dir build -R core_tests --output-on-failure
+            set -o pipefail
+            timeout -s INT --kill-after=30 300 gdb --return-child-result -q -batch \
+              -ex "set pagination off" -ex "handle SIGPIPE nostop noprint pass" \
+              -ex run -ex "thread apply all bt" -ex "info threads" \
+              --args ./build/sampaudiostream_tests | tee /tmp/test.log
+            grep -q "All core unit tests passed!" /tmp/test.log
             chown -R "${HOST_UID}:${HOST_GID}" /workspace/build
           '
 

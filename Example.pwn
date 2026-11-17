@@ -88,7 +88,7 @@ public OnPlayerConnect(playerid)
 public OnPlayerDisconnect(playerid, reason)
 {
     SA_StopAudioStreamForPlayer(playerid);
-    SA_CancelAudioSearch(playerid);
+    SA_CancelAudioStreamSearch(playerid);
     return 1;
 }
 
@@ -133,7 +133,7 @@ public OnPlayerCommandText(playerid, cmdtext[])
         {
             gSearchItems[playerid][i][seUsed] = false;
         }
-        gSearchId[playerid] = SA_SearchAudio(playerid, params, MAX_SEARCH_CACHE);
+        gSearchId[playerid] = SA_SearchAudioStream(playerid, params, MAX_SEARCH_CACHE);
         SendClientMessage(playerid, -1, "{00CCFF}[Audio] {FFFFFF}Searching tracks...");
         return 1;
     }
@@ -169,7 +169,7 @@ public OnPlayerCommandText(playerid, cmdtext[])
             return SendClientMessage(playerid, -1, "{FFAA00}[Audio] {FFFFFF}Usage: /volume <0 - 200>");
 
         new Float:vol = floatstr(params);
-        if (SA_SetPlayerAudioVolume(playerid, vol))
+        if (SA_SetPlayerAudioStreamVolume(playerid, vol))
         {
             new msg[96];
             format(msg, sizeof(msg), "{00CCFF}[Audio] {FFFFFF}Volume set to %.0f%%.", vol);
@@ -270,7 +270,7 @@ public OnPlayerCommandText(playerid, cmdtext[])
 // Search Callbacks & Interactive Dialog
 // -----------------------------------------------------------------------------
 
-public OnAudioSearchResults(playerid, search_id, total_found)
+public OnAudioStreamSearchResults(playerid, search_id, total_found)
 {
     if (search_id != gSearchId[playerid]) return 1;
 
@@ -299,7 +299,7 @@ public OnAudioSearchResults(playerid, search_id, total_found)
     return 1;
 }
 
-public OnAudioSearchResultItem(playerid, search_id, item_index, const title[], const artist[], duration, const video_id[])
+public OnAudioStreamSearchResultItem(playerid, search_id, item_index, const title[], const artist[], duration, const video_id[])
 {
     if (search_id != gSearchId[playerid] || item_index < 0 || item_index >= MAX_SEARCH_CACHE)
         return 1;

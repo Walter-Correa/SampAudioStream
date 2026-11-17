@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`sampaudiostream.inc`** (`v1.0.0`), covering all **27 `SA_*` natives**, **2 hooked standard natives**, **6 callbacks**, **2 enums**, and constants.
+Exhaustive technical reference for **`sampaudiostream.inc`** (`v1.1.0`), covering all **27 `SA_*` natives**, **2 hooked standard natives**, **6 callbacks**, **2 enums**, and constants.
 
 ---
 
@@ -54,9 +54,9 @@ native SA_PauseAudioStreamForPlayer(playerid, bool:pause);
 Pauses (`true`) or resumes (`false`) the personal audio stream owned by `playerid`.
 * **Returns:** `1` on success, `0` if no personal stream is active for `playerid`.
 
-### `SA_SetPlayerAudioVolume`
+### `SA_SetPlayerAudioStreamVolume`
 ```pawn
-native SA_SetPlayerAudioVolume(playerid, Float:volume);
+native SA_SetPlayerAudioStreamVolume(playerid, Float:volume);
 ```
 Adjusts volume (`0.0` to `200.0`, clamped) for `playerid`'s active personal stream.
 * **Returns:** `1` on success, `0` if no personal stream is active.
@@ -90,16 +90,16 @@ Attaches an active stream to dynamically track `vehicleid`'s 3D position every `
 
 ## 3. Asynchronous Music Search Natives
 
-### `SA_SearchAudio`
+### `SA_SearchAudioStream`
 ```pawn
-native SA_SearchAudio(playerid, const query[], max_results = 5);
+native SA_SearchAudioStream(playerid, const query[], max_results = 5);
 ```
-Starts a non-blocking background search for `query` (clamped between `1` and `performance.max_search_results`). Cancels/supersedes any older pending search for `playerid`. Triggers `OnAudioSearchResultItem` per item followed by `OnAudioSearchResults`.
+Starts a non-blocking background search for `query` (clamped between `1` and `performance.max_search_results`). Cancels/supersedes any older pending search for `playerid`. Triggers `OnAudioStreamSearchResultItem` per item followed by `OnAudioStreamSearchResults`.
 * **Returns:** Valid `search_id` (`>= 1`), or `INVALID_AUDIO_SEARCH_ID` (`-1`) if the query is empty or engine uninitialized.
 
-### `SA_CancelAudioSearch`
+### `SA_CancelAudioStreamSearch`
 ```pawn
-native SA_CancelAudioSearch(playerid);
+native SA_CancelAudioStreamSearch(playerid);
 ```
 Cancels any pending asynchronous search for `playerid` so its callbacks will not be delivered.
 * **Returns:** `1` if a pending search was cancelled, `0` otherwise.
@@ -244,25 +244,25 @@ Fired when playback packets/URL dispatch starts (`playerid == INVALID_PLAYER_ID`
 ```pawn
 forward OnAudioStreamFinished(playerid, streamid);
 ```
-Fired when a non-cancelled transcoded stream completes playback naturally.
+Fired when a non-cancelled server-transcoded stream completes playback naturally. **Note:** Direct plain-HTTP passthrough streams (`http://...` direct audio URLs played at `volume == 100.0`) are handed directly to the GTA client without server-side transcoder completion tracking, so `OnAudioStreamFinished` does not fire for passthrough sessions.
 
 ### `OnAudioStreamError`
 ```pawn
 forward OnAudioStreamError(playerid, streamid, E_SA_ERROR_CODE:error_code, const error_message[]);
 ```
-Fired if extraction, network fetching, or transcoding fails.
+Fired if extraction, network fetching, remote URL generation, or transcoding fails. For synchronized radio channel errors, `playerid` is `INVALID_PLAYER_ID` and `streamid` encodes the channel as `(-channelid - 1)`.
 
-### `OnAudioSearchResults`
+### `OnAudioStreamSearchResults`
 ```pawn
-forward OnAudioSearchResults(playerid, search_id, total_found);
+forward OnAudioStreamSearchResults(playerid, search_id, total_found);
 ```
-Fired after all `OnAudioSearchResultItem` events for `search_id` have been dispatched (`total_found == 0` when nothing matched or on error).
+Fired after all `OnAudioStreamSearchResultItem` events for `search_id` have been dispatched (`total_found == 0` when nothing matched or on error).
 
-### `OnAudioSearchResultItem`
+### `OnAudioStreamSearchResultItem`
 ```pawn
-forward OnAudioSearchResultItem(playerid, search_id, item_index, const title[], const artist[], duration, const video_id[]);
+forward OnAudioStreamSearchResultItem(playerid, search_id, item_index, const title[], const artist[], duration, const video_id[]);
 ```
-Fired once per search result before `OnAudioSearchResults`. Build the YouTube URL as `"https://www.youtube.com/watch?v=" + video_id` or pass the URL/ID to `SA_PlayAudioStreamForPlayer`.
+Fired once per search result before `OnAudioStreamSearchResults`. Build the YouTube URL as `"https://www.youtube.com/watch?v=" + video_id` or pass the URL/ID to `SA_PlayAudioStreamForPlayer`.
 
 ---
 
@@ -271,9 +271,9 @@ Fired once per search result before `OnAudioSearchResults`. Build the YouTube UR
 ### Constants
 ```pawn
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (1)
-#define SAMPAUDIOSTREAM_VERSION_MINOR  (0)
+#define SAMPAUDIOSTREAM_VERSION_MINOR  (1)
 #define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
-#define SAMPAUDIOSTREAM_VERSION_STRING "1.0.0"
+#define SAMPAUDIOSTREAM_VERSION_STRING "1.1.0"
 
 #define INVALID_AUDIO_STREAM_ID  (-1)
 #define INVALID_AUDIO_CHANNEL_ID (-1)
