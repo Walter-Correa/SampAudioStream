@@ -14,9 +14,13 @@ void SetOriginalAudioNatives(AMX_NATIVE play_orig, AMX_NATIVE stop_orig);
 AMX_NATIVE GetOriginalPlayAudioNative();
 AMX_NATIVE GetOriginalStopAudioNative();
 
+void SetOriginalSetPlayerNameNative(AMX_NATIVE set_name_orig);
+AMX_NATIVE GetOriginalSetPlayerNameNative();
+
 const std::vector<AMX_NATIVE_INFO>& GetPluginNatives();
 
 cell AMX_NATIVE_CALL Hooked_PlayAudioStreamForPlayer(AMX* amx, cell* params);
 cell AMX_NATIVE_CALL Hooked_StopAudioStreamForPlayer(AMX* amx, cell* params);
+cell AMX_NATIVE_CALL Hooked_SetPlayerName(AMX* amx, cell* params);
 
 } // namespace sampaudiostream

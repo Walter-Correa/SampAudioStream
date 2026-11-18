@@ -19,6 +19,7 @@ public:
 
     std::optional<TrackMetadata> GetTrack(const std::string& key);
     void PutTrack(const std::string& key, const TrackMetadata& metadata);
+    void InvalidateTrack(const std::string& key);
 
     std::optional<std::vector<SearchResultItem>> GetSearch(const std::string& query_key);
     void PutSearch(const std::string& query_key, const std::vector<SearchResultItem>& items);
@@ -73,6 +74,15 @@ private:
             }
             lru_list.push_front(Entry{key, val, Clock::now() + ttl});
             map[key] = lru_list.begin();
+        }
+
+        void Invalidate(const std::string& key) {
+            auto it = map.find(key);
+            if (it == map.end()) {
+                return;
+            }
+            lru_list.erase(it->second);
+            map.erase(it);
         }
 
         void Clear() {

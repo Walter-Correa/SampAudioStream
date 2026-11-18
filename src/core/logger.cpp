@@ -69,11 +69,13 @@ void Logger::Flush() {
 
         if (local_sink) {
             local_sink(severity, msg);
+        } else if (severity == LogSeverity::Info) {
+            std::cout << "[SampAudioStream] " << msg << '\n';
         } else {
-            const char* prefix = "[INFO]";
+            const char* prefix = "[DEBUG]";
             switch (severity) {
                 case LogSeverity::Debug: prefix = "[DEBUG]"; break;
-                case LogSeverity::Info: prefix = "[INFO]"; break;
+                case LogSeverity::Info: break;
                 case LogSeverity::Warning: prefix = "[WARN]"; break;
                 case LogSeverity::Error: prefix = "[ERROR]"; break;
             }

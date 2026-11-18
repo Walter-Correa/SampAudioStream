@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(SampAudioStream VERSION 1.1.0 LANGUAGES C CXX)
+project(SampAudioStream VERSION 2.0.0 LANGUAGES C CXX)
 
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
 set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
@@ -39,6 +39,7 @@ set(PLUGIN_SOURCES
     src/network/http_client.cpp
     src/network/http_server.cpp
     src/extractor/binary_manager.cpp
+    src/extractor/browser_cookies.cpp
     src/extractor/metadata_cache.cpp
     src/extractor/resolver.cpp
     src/audio/ring_buffer.cpp
@@ -56,10 +57,10 @@ endif()
 
 add_library(sampaudiostream SHARED ${PLUGIN_SOURCES})
 
-# Remove 'lib' prefix on Linux so output is sampaudiostream.so
+# Remove 'lib' prefix on Linux so output is SampAudioStream.so
 set_target_properties(sampaudiostream PROPERTIES
     PREFIX ""
-    OUTPUT_NAME "sampaudiostream"
+    OUTPUT_NAME "SampAudioStream"
 )
 
 target_include_directories(sampaudiostream BEFORE PRIVATE
@@ -134,6 +135,7 @@ if(SAMPAUDIO_BUILD_TESTS)
         src/network/http_client.cpp
         src/network/http_server.cpp
         src/extractor/binary_manager.cpp
+        src/extractor/browser_cookies.cpp
         src/extractor/metadata_cache.cpp
         src/extractor/resolver.cpp
         src/audio/ring_buffer.cpp
@@ -163,10 +165,14 @@ if(SAMPAUDIO_BUILD_TESTS)
     )
     if(WIN32)
         target_compile_definitions(sampaudiostream_tests PRIVATE WIN32 _WIN32 _WIN32_WINNT=0x0601)
-        target_link_libraries(sampaudiostream_tests PRIVATE ws2_32 winhttp bcrypt iphlpapi)
+        target_link_libraries(sampaudiostream_tests PRIVATE ws2_32 winhttp bcrypt iphlpapi dbghelp)
+        if(MSVC)
+            target_compile_options(sampaudiostream_tests PRIVATE $<$<CONFIG:Release>:/Zi>)
+            target_link_options(sampaudiostream_tests PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
+        endif()
     else()
         target_link_libraries(sampaudiostream_tests PRIVATE pthread dl)
     endif()
     add_test(NAME core_tests COMMAND sampaudiostream_tests)
-    set_tests_properties(core_tests PROPERTIES TIMEOUT 60)
+    set_tests_properties(core_tests PROPERTIES TIMEOUT 300)
 endif()

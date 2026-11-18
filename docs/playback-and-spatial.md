@@ -81,16 +81,24 @@ if (vehid > 0)
 }
 ```
 
-* When attached to a player (`SA_AttachAudioStreamToPlayer`), the stream tracks that player's position, Virtual World, and Interior every `200 ms` tick interval.
-* When attached to a vehicle (`SA_AttachAudioStreamToVehicle`), the stream tracks the vehicle's position every `200 ms` tick interval so nearby players enter and leave hearing range dynamically as the car drives around. *(Note: due to SA-MP client protocol behavior, once a client receives `PlayAudioStreamForPlayer`, the client fixes the 3D sound coordinate at the position sent when the player entered range.)*
+* When attached to a player (`SA_AttachAudioStreamToPlayer` or `SA_AttachAudioStreamChannelToPlayer`), playback tracks that player's position, Virtual World, and Interior every `spatial_update_interval_ms` tick interval (even if playback started with `usepos = false`).
+* When attached to a vehicle (`SA_AttachAudioStreamToVehicle` or `SA_AttachAudioStreamChannelToVehicle`), playback tracks the vehicle's position every `spatial_update_interval_ms` tick interval so nearby players enter and leave hearing range dynamically as the vehicle moves.
+* **Client-side 2D vs. 3D Attenuation:** Because the SA-MP client protocol fixes 3D sound coordinates at the moment `PlayAudioStreamForPlayer` is called and cannot move an active 3D sound afterward, **attached** sources always send `usepos = false` to the client — playing at **full volume (no distance attenuation) while inside server range and stopping cleanly outside range**. **Fixed-position** sources (`SA_SetAudioStreamPos`, `SA_SetAudioStreamChannelPos`, or `SA_PlayAudioStream` with `usepos = true`) continue sending `usepos = true` with client-side distance attenuation. Detaching or calling `SA_SetAudioStream*Pos` switches affected listeners back to `usepos = true` automatically.
 
 ---
 
-## 4. Real-Time Volume & Pause Control
+## 4. Real-Time Volume, Distance, Position & Pause Control
 
-* **Volume range**: `0.0` to `200.0` percent (`100.0` = unity gain).
+* **Volume range**: `0.0` to `200.0` percent (`100.0` = unity gain, applied live on server-transcoded streams; passthrough `http://`/`https://` direct streams started at `100.0` cannot adjust volume afterward and return `0` — start with `volume != 100.0` or `.process_direct_audio_files = true` for direct files):
   * `SA_SetPlayerAudioStreamVolume(playerid, volume)`
   * `SA_SetAudioStreamVolume(streamid, volume)`
+* **Dynamic Distance & Position**:
+  * `SA_SetPlayerAudioStreamDistance(playerid, distance)` / `SA_SetAudioStreamDistance(streamid, distance)`
+  * `SA_SetPlayerAudioStreamPos(playerid, posX, posY, posZ)` / `SA_SetAudioStreamPos(streamid, posX, posY, posZ)` (also automatically enables `usepos = true` and detaches from any player/vehicle)
+  * Updates spatial filtering immediately across all listeners (stopping listeners outside the new radius, starting new ones inside it) and refreshes active clients cleanly. Transcoded streams reconnect seamlessly at the current MP3 frame boundary; native passthrough streams restart externally per SA-MP client behavior.
 * **Pause / Resume**:
   * `SA_PauseAudioStreamForPlayer(playerid, bool:pause)`
-  * When paused, the player's audio stream stops cleanly and resumes seamlessly on unpause.
+  * When paused, server-transcoded streams resume seamlessly from their paused offset; passthrough `http://` streams stop on pause and restart externally on unpause.
+* **Direct Audio Files (`process_direct_audio_files` parameter)**:
+  * By default (`process_direct_audio_files = false`), `http://` and `https://` direct native audio links at `100.0` volume (`.mp3`, `.ogg`, `.wav`, `.flac`, `.aac`, `.pls`, `.m3u`, and probed Shoutcast/Icecast radios — excluding `.m3u8`/HLS and platform URLs) use zero-CPU native client passthrough — which means pause/resume, `0..200%` volume scaling, frame-accurate `SA_Set*Distance`, and `OnAudioStreamFinished` are unavailable for those sessions.
+  * Passing `.process_direct_audio_files = true` in `SA_PlayAudioStreamForPlayer`, `SA_PlayAudioStream`, or `PlayAudioStreamForPlayer` intercepts direct music file links (`.mp3`, `.ogg`, `.wav`, `.flac`, `.aac`, `.m4a`, `.opus`) through `SampAudioStream`'s server pipeline for full pause/volume/distance/callback support, while live radio stations and `.pls`/`.m3u` playlists continue on passthrough.

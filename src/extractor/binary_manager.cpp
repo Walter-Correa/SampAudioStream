@@ -17,6 +17,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <thread>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -205,32 +206,68 @@ std::string GetYtDlpChecksumsUrlForTag(const std::string& tag) {
     return "https://github.com/yt-dlp/yt-dlp/releases/download/" + tag + "/SHA2-256SUMS";
 }
 
-// Standalone RFC 6234 SHA-256 computation (zero extra platform library requirements)
-std::string ComputeFileSha256Hex(const std::string& file_path) {
-    std::ifstream ifs(file_path, std::ios::binary);
-    if (!ifs.is_open()) return "";
+// Standalone RFC 6234 SHA-256 hasher (zero extra platform library requirements)
+class Sha256Hasher {
+public:
+    Sha256Hasher()
+        : H_{0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+             0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u} {}
 
-    static constexpr std::array<std::uint32_t, 64> K = {
-        0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
-        0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
-        0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
-        0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
-        0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
-        0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
-        0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
-        0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
-    };
+    void Update(const void* data, std::size_t size) {
+        if (!data || size == 0) return;
+        total_bits_ += static_cast<std::uint64_t>(size) * 8ULL;
+        const auto* p = static_cast<const std::uint8_t*>(data);
+        std::size_t rem = size;
+        while (rem > 0) {
+            std::size_t take = std::min<std::size_t>(64 - block_len_, rem);
+            std::memcpy(block_.data() + block_len_, p, take);
+            block_len_ += take;
+            p += take;
+            rem -= take;
+            if (block_len_ == 64) {
+                Transform(block_.data());
+                block_len_ = 0;
+            }
+        }
+    }
 
-    auto rotr = [](std::uint32_t x, std::uint32_t n) -> std::uint32_t {
+    std::string FinalizeHex() {
+        block_[block_len_++] = 0x80;
+        if (block_len_ > 56) {
+            while (block_len_ < 64) block_[block_len_++] = 0;
+            Transform(block_.data());
+            block_len_ = 0;
+        }
+        while (block_len_ < 56) block_[block_len_++] = 0;
+        for (int i = 0; i < 8; ++i) {
+            block_[56 + i] = static_cast<std::uint8_t>((total_bits_ >> ((7 - i) * 8)) & 0xFF);
+        }
+        Transform(block_.data());
+
+        std::ostringstream oss;
+        oss << std::hex << std::setfill('0');
+        for (std::uint32_t word : H_) {
+            oss << std::setw(8) << word;
+        }
+        return oss.str();
+    }
+
+private:
+    static std::uint32_t Rotr(std::uint32_t x, std::uint32_t n) {
         return (x >> n) | (x << (32 - n));
-    };
+    }
 
-    std::array<std::uint32_t, 8> H = {
-        0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
-        0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u
-    };
-
-    auto transform = [&](const std::uint8_t block[64]) {
+    void Transform(const std::uint8_t block[64]) {
+        static constexpr std::array<std::uint32_t, 64> K = {
+            0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+            0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+            0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+            0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+            0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+            0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+            0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+            0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+        };
         std::array<std::uint32_t, 64> w{};
         for (int i = 0; i < 16; ++i) {
             w[i] = (static_cast<std::uint32_t>(block[i * 4]) << 24) |
@@ -239,69 +276,30 @@ std::string ComputeFileSha256Hex(const std::string& file_path) {
                    static_cast<std::uint32_t>(block[i * 4 + 3]);
         }
         for (int i = 16; i < 64; ++i) {
-            std::uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
-            std::uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            std::uint32_t s0 = Rotr(w[i - 15], 7) ^ Rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            std::uint32_t s1 = Rotr(w[i - 2], 17) ^ Rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
             w[i] = w[i - 16] + s0 + w[i - 7] + s1;
         }
-        std::uint32_t a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+        std::uint32_t a = H_[0], b = H_[1], c = H_[2], d = H_[3], e = H_[4], f = H_[5], g = H_[6], h = H_[7];
         for (int i = 0; i < 64; ++i) {
-            std::uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+            std::uint32_t S1 = Rotr(e, 6) ^ Rotr(e, 11) ^ Rotr(e, 25);
             std::uint32_t ch = (e & f) ^ ((~e) & g);
             std::uint32_t temp1 = h + S1 + ch + K[i] + w[i];
-            std::uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+            std::uint32_t S0 = Rotr(a, 2) ^ Rotr(a, 13) ^ Rotr(a, 22);
             std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
             std::uint32_t temp2 = S0 + maj;
             h = g; g = f; f = e; e = d + temp1;
             d = c; c = b; b = a; a = temp1 + temp2;
         }
-        H[0] += a; H[1] += b; H[2] += c; H[3] += d;
-        H[4] += e; H[5] += f; H[6] += g; H[7] += h;
-    };
-
-    std::array<std::uint8_t, 64> block{};
-    std::size_t block_len = 0;
-    std::uint64_t total_bits = 0;
-    std::array<char, 8192> rbuf{};
-
-    while (ifs.good()) {
-        ifs.read(rbuf.data(), static_cast<std::streamsize>(rbuf.size()));
-        std::streamsize got = ifs.gcount();
-        if (got <= 0) break;
-        total_bits += static_cast<std::uint64_t>(got) * 8ULL;
-        const auto* p = reinterpret_cast<const std::uint8_t*>(rbuf.data());
-        std::size_t rem = static_cast<std::size_t>(got);
-        while (rem > 0) {
-            std::size_t take = std::min<std::size_t>(64 - block_len, rem);
-            std::memcpy(block.data() + block_len, p, take);
-            block_len += take;
-            p += take;
-            rem -= take;
-            if (block_len == 64) {
-                transform(block.data());
-                block_len = 0;
-            }
-        }
+        H_[0] += a; H_[1] += b; H_[2] += c; H_[3] += d;
+        H_[4] += e; H_[5] += f; H_[6] += g; H_[7] += h;
     }
 
-    block[block_len++] = 0x80;
-    if (block_len > 56) {
-        while (block_len < 64) block[block_len++] = 0;
-        transform(block.data());
-        block_len = 0;
-    }
-    while (block_len < 56) block[block_len++] = 0;
-    for (int i = 0; i < 8; ++i) {
-        block[56 + i] = static_cast<std::uint8_t>((total_bits >> ((7 - i) * 8)) & 0xFF);
-    }
-    transform(block.data());
-
-    std::ostringstream oss;
-    oss << std::hex << std::setfill('0');
-    for (std::uint32_t word : H) {
-        oss << std::setw(8) << word;
-    }
-    return oss.str();
-}
+    std::array<std::uint32_t, 8> H_{};
+    std::array<std::uint8_t, 64> block_{};
+    std::size_t block_len_{0};
+    std::uint64_t total_bits_{0};
+};
 
 bool VerifyYtDlpChecksum(
     const std::string& downloaded_path,
@@ -358,6 +356,100 @@ struct JsRuntimeAsset {
 };
 
 constexpr const char* kPinnedQuickJsVersion = "v0.18.0";
+constexpr const char* kPinnedDenoVersion = "v2.9.8";
+
+struct DenoRuntimeAsset {
+    bool supported{false};
+    const char* name{nullptr};
+    const char* url{nullptr};
+    const char* sha256{nullptr};
+};
+
+std::string GetDenoFilename() {
+#ifdef _WIN32
+    return "deno.exe";
+#else
+    return "deno";
+#endif
+}
+
+DenoRuntimeAsset GetDenoRuntimeAsset(int supported_override) {
+    if (supported_override == 0) {
+        return {};
+    }
+    HostArch arch = DetectHostArch();
+#ifdef _WIN32
+    if (arch != HostArch::X64 && supported_override != 1) {
+        return {};
+    }
+    return {
+        true,
+        "deno-x86_64-pc-windows-msvc.zip",
+        "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip",
+        "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf"
+    };
+#else
+    switch (arch) {
+        case HostArch::X64:
+            return {
+                true,
+                "deno-x86_64-unknown-linux-gnu.zip",
+                "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-unknown-linux-gnu.zip",
+                "e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609"
+            };
+        case HostArch::Arm64:
+            return {
+                true,
+                "deno-aarch64-unknown-linux-gnu.zip",
+                "https://github.com/denoland/deno/releases/download/v2.9.8/deno-aarch64-unknown-linux-gnu.zip",
+                "d49596c20b9788cf8f5d8ddf644103d4bde56ed239753f0bdb92ba9361d51905"
+            };
+        default:
+            if (supported_override == 1) {
+                return {
+                    true,
+                    "deno-x86_64-unknown-linux-gnu.zip",
+                    "https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-unknown-linux-gnu.zip",
+                    "e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609"
+                };
+            }
+            return {};
+    }
+#endif
+}
+
+std::string TrimAscii(std::string s) {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+    return s;
+}
+
+std::string StripLeadingV(std::string s) {
+    s = TrimAscii(std::move(s));
+    while (!s.empty() && (s.front() == 'v' || s.front() == 'V')) {
+        s.erase(s.begin());
+    }
+    return s;
+}
+
+std::string ParseDenoVersionOutput(const std::string& raw_out) {
+    std::istringstream iss(raw_out);
+    std::string first_line;
+    if (!std::getline(iss, first_line)) {
+        return "";
+    }
+    std::istringstream ls(first_line);
+    std::string tok1, tok2;
+    ls >> tok1 >> tok2;
+    std::string candidate = StripLeadingV((tok1 == "deno" && !tok2.empty()) ? tok2 : tok1);
+    if (candidate.empty() || !std::isdigit(static_cast<unsigned char>(candidate.front()))) {
+        return "";
+    }
+    if (candidate.size() > 32) {
+        candidate.resize(32);
+    }
+    return candidate;
+}
 
 JsRuntimeAsset GetJsRuntimeAsset() {
     HostArch arch = DetectHostArch();
@@ -405,12 +497,6 @@ JsRuntimeAsset GetJsRuntimeAsset() {
 #endif
 }
 
-std::string TrimAscii(std::string s) {
-    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
-    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
-    return s;
-}
-
 nlohmann::json LoadJsonObjectOrEmpty(const std::filesystem::path& path) {
     if (!std::filesystem::exists(path)) {
         return nlohmann::json::object();
@@ -456,6 +542,26 @@ void SaveJsonObject(const std::filesystem::path& path, const nlohmann::json& j) 
 
 } // namespace
 
+std::string ComputeStringSha256Hex(const std::string& input) {
+    Sha256Hasher hasher;
+    hasher.Update(input.data(), input.size());
+    return hasher.FinalizeHex();
+}
+
+std::string ComputeFileSha256Hex(const std::string& file_path) {
+    std::ifstream ifs(file_path, std::ios::binary);
+    if (!ifs.is_open()) return "";
+    Sha256Hasher hasher;
+    std::array<char, 8192> rbuf{};
+    while (ifs.good()) {
+        ifs.read(rbuf.data(), static_cast<std::streamsize>(rbuf.size()));
+        std::streamsize got = ifs.gcount();
+        if (got <= 0) break;
+        hasher.Update(rbuf.data(), static_cast<std::size_t>(got));
+    }
+    return hasher.FinalizeHex();
+}
+
 YtDlpUpdateAction DecideYtDlpUpdateAction(const YtDlpUpdateDecisionInput& input) {
     if (input.last_check_epoch > 0 && (input.now_epoch - input.last_check_epoch) < 86400) {
         return YtDlpUpdateAction::SkipRecentlyChecked;
@@ -479,12 +585,32 @@ BinaryManager::BinaryManager(const PluginConfig& config)
         ytdlp_path_ = (bin_dir / GetYtDlpFilename()).string();
     }
     js_runtime_path_ = (bin_dir / GetJsRuntimeFilename()).string();
+    deno_path_ = (bin_dir / "deno" / GetDenoFilename()).string();
 }
 
-void BinaryManager::InitializeAsync(ThreadPool& pool) {
+void BinaryManager::InitializeAsync(ThreadPool& pool, std::function<void(bool ready)> on_settled) {
     bool expected = false;
     if (!initializing_.compare_exchange_strong(expected, true)) {
         return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(settle_mutex_);
+        settled_ = false;
+        on_settled_ = std::move(on_settled);
+    }
+    {
+        std::lock_guard<std::mutex> lock(bg_mutex_);
+        bg_done_ = false;
+    }
+    provisioning_failed_.store(false);
+    deno_healthy_.store(false);
+    deno_disabled_for_session_.store(false);
+    consecutive_deno_failures_.store(0);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        deno_version_.clear();
+        deno_unavailable_warned_ = false;
     }
 
     last_periodic_check_ = std::chrono::steady_clock::now();
@@ -492,9 +618,14 @@ void BinaryManager::InitializeAsync(ThreadPool& pool) {
     if (!pool.Post([this]() {
             if (!cancel_flag_.load()) {
                 EnsureBinaries();
+            } else {
+                MarkSettled();
+                MarkBackgroundDone();
             }
             initializing_.store(false);
         })) {
+        MarkSettled();
+        MarkBackgroundDone();
         initializing_.store(false);
     }
 }
@@ -536,6 +667,8 @@ void BinaryManager::MaybePeriodicUpdate(ThreadPool& pool, std::uint32_t active_e
 
 void BinaryManager::Cancel() {
     cancel_flag_.store(true);
+    settled_cv_.notify_all();
+    bg_cv_.notify_all();
 }
 
 bool BinaryManager::IsReady() const {
@@ -544,6 +677,76 @@ bool BinaryManager::IsReady() const {
 
 bool BinaryManager::IsInitializing() const {
     return initializing_.load();
+}
+
+bool BinaryManager::IsSettled() const {
+    std::lock_guard<std::mutex> lock(settle_mutex_);
+    return settled_;
+}
+
+bool BinaryManager::HasProvisioningFailed() const {
+    return provisioning_failed_.load();
+}
+
+bool BinaryManager::NeedsInitialDownload() const {
+    if (!config_.auto_download_extractor) {
+        return false;
+    }
+    std::error_code ec;
+    const std::string ytdlp = GetYtDlpPath();
+    const auto ytdlp_size = std::filesystem::file_size(ytdlp, ec);
+    if (ec || ytdlp_size <= 1024ULL * 100ULL) {
+        return true;
+    }
+    if (config_.enable_js_runtime) {
+        ec.clear();
+        const std::string qjs = GetJsRuntimePath();
+        const auto qjs_size = std::filesystem::file_size(qjs, ec);
+        if (ec || qjs_size <= 1024ULL * 50ULL) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool BinaryManager::WaitUntilSettled(std::chrono::milliseconds timeout) const {
+    std::unique_lock<std::mutex> lock(settle_mutex_);
+    settled_cv_.wait_for(lock, timeout, [this]() {
+        return settled_ || cancel_flag_.load();
+    });
+    return settled_;
+}
+
+void BinaryManager::MarkSettled() {
+    std::function<void(bool)> cb;
+    {
+        std::lock_guard<std::mutex> lock(settle_mutex_);
+        if (settled_) {
+            return;
+        }
+        settled_ = true;
+        cb = on_settled_;
+    }
+    settled_cv_.notify_all();
+    if (cb) {
+        cb(ready_.load());
+    }
+}
+
+void BinaryManager::MarkBackgroundDone() {
+    {
+        std::lock_guard<std::mutex> lock(bg_mutex_);
+        bg_done_ = true;
+    }
+    bg_cv_.notify_all();
+}
+
+bool BinaryManager::WaitForBackgroundProvisioningForTesting(std::chrono::milliseconds timeout) const {
+    std::unique_lock<std::mutex> lock(bg_mutex_);
+    bg_cv_.wait_for(lock, timeout, [this]() {
+        return bg_done_ || cancel_flag_.load();
+    });
+    return bg_done_;
 }
 
 std::string BinaryManager::GetYtDlpPath() const {
@@ -556,13 +759,138 @@ std::string BinaryManager::GetJsRuntimePath() const {
     return js_runtime_path_;
 }
 
+std::string BinaryManager::GetDenoPath() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return deno_path_;
+}
+
+std::string BinaryManager::GetDenoCacheDir() const {
+    return (std::filesystem::path(config_.bin_dir) / "deno-cache").string();
+}
+
+std::string BinaryManager::GetDenoVersion() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return deno_version_;
+}
+
+bool BinaryManager::IsDenoSupported() const {
+    return GetDenoRuntimeAsset(deno_supported_override_.load()).supported;
+}
+
+bool BinaryManager::IsDenoReady() const {
+    return deno_healthy_.load() && !deno_disabled_for_session_.load();
+}
+
+void BinaryManager::SetDenoSupportedOverrideForTesting(int supported_state) {
+    deno_supported_override_.store(supported_state);
+}
+
+void BinaryManager::SetPostDownloadRetryDelayMsForTesting(int delay_ms) {
+    post_download_retry_delay_ms_override_.store(delay_ms);
+}
+
+void BinaryManager::SetDenoDownloadHookForTesting(DenoDownloadTestHook hook) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    deno_download_hook_ = std::move(hook);
+}
+
+void BinaryManager::SetDenoHealthCheckHookForTesting(DenoHealthTestHook hook) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    deno_health_hook_ = std::move(hook);
+}
+
+ActiveJsRuntime BinaryManager::SelectJsRuntime() {
+    ActiveJsRuntime out;
+    if (!config_.enable_js_runtime) {
+        return out;
+    }
+
+    std::string req = config_.js_runtime;
+    for (char& ch : req) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+
+    const std::string deno_p = GetDenoPath();
+    const std::string qjs_p = GetJsRuntimePath();
+    const bool qjs_exists = !qjs_p.empty() && std::filesystem::exists(qjs_p);
+
+    if (req == "quickjs") {
+        if (qjs_exists) {
+            out.kind = JsRuntimeKind::QuickJs;
+            out.path = qjs_p;
+        }
+        return out;
+    }
+
+    if (deno_healthy_.load() && !deno_disabled_for_session_.load() &&
+        !deno_p.empty() && std::filesystem::exists(deno_p)) {
+        out.kind = JsRuntimeKind::Deno;
+        out.path = deno_p;
+        out.version = GetDenoVersion();
+        return out;
+    }
+
+    if (req == "deno") {
+        bool warn_now = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!deno_unavailable_warned_) {
+                deno_unavailable_warned_ = true;
+                warn_now = true;
+            }
+        }
+        if (warn_now) {
+            Logger::Instance().Warn(
+                IsDenoSupported()
+                    ? "Configured extractor.js_runtime='deno' is currently unavailable; using QuickJS fallback."
+                    : "Configured extractor.js_runtime='deno' is not supported on this host architecture; using QuickJS fallback.");
+        }
+    }
+
+    if (qjs_exists) {
+        out.kind = JsRuntimeKind::QuickJs;
+        out.path = qjs_p;
+    }
+    return out;
+}
+
+std::string BinaryManager::GetActiveJsRuntimeLabel() {
+    ActiveJsRuntime rt = SelectJsRuntime();
+    if (rt.kind == JsRuntimeKind::Deno) {
+        return rt.version.empty() ? "deno" : ("deno " + rt.version);
+    }
+    if (rt.kind == JsRuntimeKind::QuickJs) {
+        return "quickjs";
+    }
+    return "none";
+}
+
+void BinaryManager::RecordDenoSuccess() {
+    consecutive_deno_failures_.store(0);
+}
+
+void BinaryManager::RecordDenoRuntimeFailure() {
+    int fails = consecutive_deno_failures_.fetch_add(1) + 1;
+    if (fails >= 3 && !deno_disabled_for_session_.exchange(true)) {
+        Logger::Instance().Warn(
+            "Disabling Deno JS runtime for the remainder of this session after 3 consecutive runtime failures; using QuickJS.");
+    }
+}
+
 void BinaryManager::EnsureBinaries() {
+    struct BgGuard {
+        BinaryManager* self;
+        ~BgGuard() { self->MarkBackgroundDone(); }
+    } bg_guard{this};
+
     std::error_code ec;
     std::filesystem::create_directories(config_.bin_dir, ec);
 
     if (!EnsureYtDlp()) {
         Logger::Instance().Error("Failed to provision yt-dlp extractor binary. Platform stream resolution will be unavailable.");
         ready_.store(false);
+        provisioning_failed_.store(true);
+        MarkSettled();
         return;
     }
 
@@ -570,14 +898,38 @@ void BinaryManager::EnsureBinaries() {
         if (!EnsureJsRuntime()) {
             Logger::Instance().Warn("Failed to provision QuickJS runtime; some YouTube streams may have limited formats.");
         }
+        // If Deno is already installed from a prior run (and didn't fail health check for this pinned version),
+        // run a fast health check before settling so startup logs reflect the active runtime accurately.
+        std::string req = config_.js_runtime;
+        for (char& ch : req) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        const std::string deno_p = GetDenoPath();
+        if (req != "quickjs" && IsDenoSupported() && !deno_p.empty() && std::filesystem::exists(deno_p)) {
+            std::filesystem::path state_file = std::filesystem::path(config_.bin_dir) / "extractor_state.json";
+            nlohmann::json state = LoadJsonObjectOrEmpty(state_file);
+            if (state.value("deno_failed_version", "") != kPinnedDenoVersion) {
+                ProbeDenoHealth(state_file.string(), 3000);
+            }
+        }
     }
 
+    provisioning_failed_.store(false);
     ready_.store(true);
-    if (config_.log_extractor_status) {
-        Logger::Instance().Info("Audio extractor subsystem ready.");
+    bool has_callback = false;
+    {
+        std::lock_guard<std::mutex> lock(settle_mutex_);
+        has_callback = static_cast<bool>(on_settled_);
+    }
+    if (!has_callback && config_.log_extractor_status) {
+        Logger::Instance().Info(
+            "Audio extractor subsystem ready (JS runtime: " + GetActiveJsRuntimeLabel() + ").");
+    }
+    MarkSettled();
+
+    if (config_.enable_js_runtime && !cancel_flag_.load()) {
+        EnsureDenoBackground();
     }
 
-    if (config_.auto_update_extractor) {
+    if (config_.auto_update_extractor && !cancel_flag_.load()) {
         UpdateYtDlpIfDue();
     }
 }
@@ -754,7 +1106,7 @@ bool BinaryManager::EnsureYtDlp() {
     }
 
     if (!config_.auto_download_extractor) {
-        Logger::Instance().Error("yt-dlp binary missing and auto_download is disabled: " + path);
+        Logger::Instance().Error("yt-dlp binary missing and extractor.auto_download is disabled: " + path);
         return false;
     }
 
@@ -837,6 +1189,308 @@ bool BinaryManager::EnsureJsRuntime() {
         Logger::Instance().Info("QuickJS-ng downloaded and SHA-256 verified at " + path);
     }
     return true;
+}
+
+bool BinaryManager::ProbeDenoHealth(const std::string& state_file_path, int timeout_ms, bool* out_timed_out) {
+    if (out_timed_out) {
+        *out_timed_out = false;
+    }
+    const std::string deno_p = GetDenoPath();
+    if (deno_p.empty() || !std::filesystem::exists(deno_p)) {
+        deno_healthy_.store(false);
+        return false;
+    }
+
+    DenoHealthTestHook health_hook;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        health_hook = deno_health_hook_;
+    }
+
+    std::string out_ver;
+    std::string out_err;
+    std::string stdout_s, stderr_s;
+    bool ok = false;
+    if (health_hook) {
+        ok = health_hook(deno_p, out_ver, out_err);
+    } else {
+        if (ExecuteSubprocess(deno_p, {"--version"}, stdout_s, stderr_s, timeout_ms, &cancel_flag_, nullptr)) {
+            out_ver = ParseDenoVersionOutput(stdout_s);
+            ok = !out_ver.empty();
+            if (!ok) {
+                out_err = "Unrecognized deno --version output";
+            }
+        } else {
+            out_err = stderr_s.empty() ? "deno --version exited with error" : TrimAscii(stderr_s.substr(0, 200));
+        }
+    }
+
+    if (cancel_flag_.load()) {
+        return false;
+    }
+
+    std::filesystem::path state_path(state_file_path);
+    nlohmann::json state = LoadJsonObjectOrEmpty(state_path);
+
+    if (ok) {
+        out_ver = StripLeadingV(out_ver);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            deno_version_ = out_ver;
+        }
+        deno_healthy_.store(true);
+        if (state.contains("deno_failed_version") || state.contains("deno_failed_reason")) {
+            state.erase("deno_failed_version");
+            state.erase("deno_failed_reason");
+            SaveJsonObject(state_path, state);
+        }
+        return true;
+    }
+
+    deno_healthy_.store(false);
+    auto contains_ci = [](const std::string& hay, const char* needle) {
+        std::string lower = hay;
+        for (char& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        return lower.find(needle) != std::string::npos;
+    };
+    const bool timed_out =
+        stderr_s == "Extractor timed out" ||
+        contains_ci(out_err, "timed out") ||
+        contains_ci(out_err, "timeout");
+    if (out_timed_out) {
+        *out_timed_out = timed_out;
+    }
+    if (timed_out) {
+        Logger::Instance().Warn(
+            "Deno health check timed out after " + std::to_string(timeout_ms) +
+            " ms; using QuickJS for this session (will retry on next startup).");
+        return false;
+    }
+
+    state["deno_failed_version"] = kPinnedDenoVersion;
+    state["deno_failed_reason"] = out_err;
+    SaveJsonObject(state_path, state);
+    Logger::Instance().Warn(
+        "Deno health check failed (" + (out_err.empty() ? std::string("unknown error") : out_err) +
+        "); using QuickJS fallback.");
+    return false;
+}
+
+bool BinaryManager::ProbeDenoHealthPostDownload(const std::string& state_file_path) {
+    bool timed_out = false;
+    if (ProbeDenoHealth(state_file_path, 20000, &timed_out)) {
+        return true;
+    }
+    if (!timed_out || cancel_flag_.load()) {
+        return false;
+    }
+    if (config_.log_extractor_status) {
+        Logger::Instance().Info(
+            "Deno post-download health check timed out; retrying once in 30 s in background...");
+    }
+    const int override_ms = post_download_retry_delay_ms_override_.load();
+    const int retry_delay_ms = (override_ms >= 0) ? override_ms : 30000;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(retry_delay_ms);
+    while (!cancel_flag_.load()) {
+        auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            break;
+        }
+        auto remain_ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::min<long long>(remain_ms, 50)));
+    }
+    if (cancel_flag_.load()) {
+        return false;
+    }
+    return ProbeDenoHealth(state_file_path, 20000);
+}
+
+void BinaryManager::EnsureDenoBackground() {
+    if (!config_.enable_js_runtime || cancel_flag_.load()) {
+        return;
+    }
+    std::string req = config_.js_runtime;
+    for (char& ch : req) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (req == "quickjs") {
+        return;
+    }
+    if (!IsDenoSupported()) {
+        return;
+    }
+
+    std::filesystem::path state_file = std::filesystem::path(config_.bin_dir) / "extractor_state.json";
+    nlohmann::json state = LoadJsonObjectOrEmpty(state_file);
+    if (state.value("deno_failed_version", "") == kPinnedDenoVersion) {
+        return;
+    }
+
+    const std::string deno_p = GetDenoPath();
+    if (!deno_p.empty() && std::filesystem::exists(deno_p)) {
+        MakeExecutable(deno_p);
+        if (!deno_healthy_.load() || GetDenoVersion().empty()) {
+            if (!ProbeDenoHealth(state_file.string(), 10000)) {
+                return;
+            }
+        }
+        const std::string installed_ver = StripLeadingV(GetDenoVersion());
+        const std::string pinned_ver = StripLeadingV(kPinnedDenoVersion);
+        if (installed_ver == pinned_ver) {
+            return;
+        }
+        if (!config_.auto_download_extractor) {
+            return;
+        }
+        if (config_.log_extractor_status) {
+            Logger::Instance().Info(
+                "Installed Deno (" + (installed_ver.empty() ? std::string("unknown") : installed_ver) +
+                ") differs from pinned " + pinned_ver + "; updating in background while keeping current Deno active.");
+        }
+    }
+
+    if (!config_.auto_download_extractor) {
+        return;
+    }
+
+    DenoDownloadTestHook dl_hook;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        dl_hook = deno_download_hook_;
+    }
+
+    if (dl_hook) {
+        std::string hook_err;
+        if (!dl_hook(deno_p, kPinnedDenoVersion, &cancel_flag_, hook_err)) {
+            if (!cancel_flag_.load()) {
+                Logger::Instance().Warn("Deno background download failed: " + hook_err);
+            }
+            return;
+        }
+        if (cancel_flag_.load()) return;
+        MakeExecutable(deno_p);
+        if (ProbeDenoHealthPostDownload(state_file.string()) && config_.log_extractor_status) {
+            Logger::Instance().Info(
+                "Deno " + GetDenoVersion() + " ready in background at " + deno_p);
+        }
+        return;
+    }
+
+    std::vector<std::string> zip_pfx;
+    bool zip_py = false;
+    if (FindSystemZipExtractor(zip_pfx, zip_py).empty()) {
+        bool warn_zip = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!deno_missing_zip_warned_) {
+                deno_missing_zip_warned_ = true;
+                warn_zip = true;
+            }
+        }
+        if (warn_zip) {
+#ifdef _WIN32
+            Logger::Instance().Warn(
+                "No system zip extractor (tar.exe) found to unpack Deno; continuing with QuickJS runtime.");
+#else
+            Logger::Instance().Warn(
+                "No system zip extractor found to unpack Deno; install unzip (e.g. 'sudo apt install unzip') "
+                "or continuing with QuickJS runtime.");
+#endif
+        }
+        return;
+    }
+
+    DenoRuntimeAsset asset = GetDenoRuntimeAsset(deno_supported_override_.load());
+    if (!asset.supported || !asset.url || !asset.sha256) {
+        return;
+    }
+
+    if (config_.log_extractor_status) {
+        Logger::Instance().Info(
+            std::string("Downloading pinned JS runtime (Deno ") + kPinnedDenoVersion +
+            ") in background from " + asset.url + " ...");
+    }
+
+    std::filesystem::path bin_dir(config_.bin_dir);
+    std::filesystem::path zip_stage = bin_dir / "deno.zip.stage";
+    std::filesystem::path extract_stage = bin_dir / "deno.stage";
+    std::filesystem::path target_dir = bin_dir / "deno";
+    std::filesystem::path bak_dir = bin_dir / "deno.bak";
+
+    std::string err;
+    if (!HttpClient::DownloadToFile(asset.url, zip_stage.string(), err, {}, 300000, &cancel_flag_)) {
+        std::error_code ec;
+        std::filesystem::remove(zip_stage, ec);
+        if (!cancel_flag_.load()) {
+            Logger::Instance().Warn("Deno background download failed: " + err + "; continuing with QuickJS.");
+        }
+        return;
+    }
+
+    const std::string actual_hash = ComputeFileSha256Hex(zip_stage.string());
+    if (actual_hash != asset.sha256) {
+        std::error_code ec;
+        std::filesystem::remove(zip_stage, ec);
+        Logger::Instance().Error(
+            std::string("Deno SHA-256 verification failed for ") + asset.name +
+            " (expected " + asset.sha256 + ", got " + actual_hash + "); refusing to install.");
+        return;
+    }
+
+    std::error_code ec;
+    std::filesystem::remove_all(extract_stage, ec);
+    ec.clear();
+    if (!ExtractZipArchive(zip_stage.string(), extract_stage.string(), &cancel_flag_, err)) {
+        std::filesystem::remove(zip_stage, ec);
+        std::filesystem::remove_all(extract_stage, ec);
+        if (!cancel_flag_.load()) {
+            Logger::Instance().Warn("Failed to extract Deno zip archive: " + err + "; continuing with QuickJS.");
+        }
+        return;
+    }
+    std::filesystem::remove(zip_stage, ec);
+
+    std::filesystem::path staged_bin = extract_stage / GetDenoFilename();
+    ec.clear();
+    if (!std::filesystem::exists(staged_bin, ec) || ec || std::filesystem::file_size(staged_bin, ec) < 1024ULL * 1024ULL) {
+        std::filesystem::remove_all(extract_stage, ec);
+        Logger::Instance().Warn("Extracted Deno archive did not contain expected binary; continuing with QuickJS.");
+        return;
+    }
+
+    std::filesystem::remove_all(bak_dir, ec);
+    ec.clear();
+    bool moved_old = false;
+    if (std::filesystem::exists(target_dir, ec)) {
+        ec.clear();
+        std::filesystem::rename(target_dir, bak_dir, ec);
+        if (ec) {
+            std::filesystem::remove_all(extract_stage, ec);
+            Logger::Instance().Warn(
+                "Failed to replace previous Deno directory (existing Deno may be in use); keeping current Deno until next restart: " +
+                ec.message());
+            return;
+        }
+        moved_old = true;
+    }
+
+    ec.clear();
+    std::filesystem::rename(extract_stage, target_dir, ec);
+    if (ec) {
+        if (moved_old) {
+            std::error_code r_ec;
+            std::filesystem::rename(bak_dir, target_dir, r_ec);
+        }
+        std::filesystem::remove_all(extract_stage, ec);
+        Logger::Instance().Warn("Failed to install Deno directory atomically: " + ec.message());
+        return;
+    }
+    std::filesystem::remove_all(bak_dir, ec);
+
+    MakeExecutable(deno_p);
+    if (config_.log_extractor_status) {
+        Logger::Instance().Info(
+            std::string("Deno ") + kPinnedDenoVersion + " downloaded and SHA-256 verified at " + deno_p);
+    }
+    ProbeDenoHealthPostDownload(state_file.string());
 }
 
 void BinaryManager::UpdateYtDlpIfDue() {

@@ -21,6 +21,7 @@ bool g_samp_instance_acquired = false;
 void CleanupSampRuntime() {
     sampaudiostream::SetActiveAudioEngine(nullptr);
     if (g_samp_engine) {
+        g_samp_engine->NotifyLifecycleStopping();
         g_samp_engine->Shutdown();
         g_samp_engine.reset();
     }
@@ -62,7 +63,7 @@ PLUGIN_EXPORT bool PLUGIN_CALL Load(void** ppData) {
     }
     g_samp_instance_acquired = true;
 
-    const std::string cfg_path = "scriptfiles/samp-audio-stream/config.json";
+    const std::string cfg_path = "scriptfiles/SampAudioStream/config.json";
     sampaudiostream::PluginConfig cfg = sampaudiostream::ConfigManager::LoadOrCreate(cfg_path);
 
     g_samp_host = std::make_unique<sampaudiostream::SampHost>(logprintf);
@@ -83,11 +84,14 @@ PLUGIN_EXPORT bool PLUGIN_CALL Load(void** ppData) {
         return false;
     }
 
-    sampaudiostream::Logger::Instance().Flush();
-    if (logprintf && cfg.log_startup_banner) {
-        logprintf("  SampAudioStream v1.1.0 [SA-MP] loaded (config: %s, HTTP port: %u)",
-                  cfg_path.c_str(), g_samp_engine->GetHttpPort());
-    }
+    g_samp_engine->WaitForStartupReadinessAndLog(
+        [&]() {
+            if (logprintf && cfg.log_startup_banner) {
+                logprintf("[SampAudioStream] SampAudioStream v2.0.0 [SA-MP] loaded (config: %s, HTTP port: %u)",
+                          cfg_path.c_str(), g_samp_engine->GetHttpPort());
+            }
+        },
+        /*flush_before_banner=*/true);
     return true;
 }
 

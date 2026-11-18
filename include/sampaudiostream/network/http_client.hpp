@@ -18,6 +18,24 @@ struct HttpResponse {
     bool Ok() const { return status_code >= 200 && status_code < 300 && error.empty(); }
 };
 
+struct HttpRequestDiagnostics {
+    bool redirected{false};
+    std::string final_host;
+    std::string error_body_snippet;
+    bool connection_reused_known{false};
+    bool connection_reused{false};
+    bool had_cookie_header{false};
+    std::string sent_headers_summary;
+    bool transient_transport_error{false};
+};
+
+struct HttpAbProbeResult {
+    int shared_no_headers_status{0};
+    std::string shared_no_headers_error;
+    int fresh_same_headers_status{0};
+    std::string fresh_same_headers_error;
+};
+
 struct HttpSecurityPolicy {
     bool allow_private_network_urls{false};
     std::string bind_ip{"0.0.0.0"};
@@ -54,11 +72,29 @@ public:
         const std::atomic<bool>& cancel_flag,
         std::string& out_error,
         const HeaderCallback& on_headers = nullptr,
-        int connect_timeout_ms = 15000);
+        int connect_timeout_ms = 15000,
+        HttpRequestDiagnostics* out_diag = nullptr,
+        bool fresh_session = false);
+
+    static HttpAbProbeResult ProbeUrlSharedVsFreshForDebug(
+        const std::string& url,
+        const HeaderMap& headers,
+        const std::atomic<bool>* cancel_flag = nullptr,
+        int timeout_ms = 5000);
 
     static std::string DetectPublicIPv4();
     static bool CheckRuntimeSupport(std::string& out_error);
+    static bool IsTransientCurlError(int code);
+    static bool IsTransientWinHttpError(unsigned long code);
+    static void Initialize();
     static void PollCancellations();
+    static void Shutdown();
+    static void SetWinHttpBetweenCallsHookForTesting(std::function<void()> hook);
+    static std::uint64_t GetWinHttpReadDataCallCountForTesting();
+    static std::uint64_t GetWinHttpCloserThreadCountForTesting();
+    static std::uint64_t GetWinHttpFreshSessionCountForTesting();
+    static void ResetWinHttpSessionCountersForTesting();
+    static void FlushCancellationsForTesting();
     static std::string BuildLibcurlInstallHintFromOsRelease(const std::string& os_release_content, bool dpkg_has_i386 = false);
 };
 

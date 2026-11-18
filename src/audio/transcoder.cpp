@@ -37,7 +37,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -48,6 +51,38 @@
 namespace sampaudiostream {
 
 namespace {
+
+std::string ExtractHostOnly(const std::string& url) {
+    auto scheme_pos = url.find("://");
+    std::size_t host_start = (scheme_pos != std::string::npos) ? (scheme_pos + 3) : 0;
+    std::size_t host_end = url.find_first_of("/?#", host_start);
+    std::string authority = (host_end == std::string::npos)
+                                ? url.substr(host_start)
+                                : url.substr(host_start, host_end - host_start);
+    auto at_pos = authority.rfind('@');
+    if (at_pos != std::string::npos) {
+        authority = authority.substr(at_pos + 1);
+    }
+    if (!authority.empty() && authority.front() == '[') {
+        auto close_bracket = authority.find(']');
+        if (close_bracket != std::string::npos) {
+            return authority.substr(1, close_bracket - 1);
+        }
+    }
+    auto colon_pos = authority.find(':');
+    return (colon_pos != std::string::npos) ? authority.substr(0, colon_pos) : authority;
+}
+
+std::string SanitizePrintablePreview(const std::string& raw, std::size_t max_bytes = 200) {
+    const std::size_t n = std::min(raw.size(), max_bytes);
+    std::string out;
+    out.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const unsigned char c = static_cast<unsigned char>(raw[i]);
+        out.push_back((c >= 0x20 && c < 0x7F) ? static_cast<char>(c) : '.');
+    }
+    return out;
+}
 
 // Bounded contiguous circular pull stream fed by HttpClient::StreamGet
 class PullByteStream {
@@ -228,6 +263,7 @@ public:
           cancel_flag_(cancel_flag),
           pause_flag_(pause_flag),
           volume_percent_(volume_percent),
+          skip_remaining_seconds_(static_cast<double>(cfg_.start_offset_ms) / 1000.0),
           run_start_(run_start),
           start_time_(run_start),
           external_pcm_frames_(external_pcm_frames) {}
@@ -285,6 +321,32 @@ public:
     bool PushPcmInterleaved(const std::int16_t* samples, std::size_t frame_count, int sample_rate, int channels) {
         if (cancel_flag_.load()) return false;
         if (!samples || frame_count == 0 || channels <= 0 || sample_rate <= 0) return true;
+
+        if (skip_remaining_seconds_ > 0.0) {
+            const double chunk_seconds = static_cast<double>(frame_count) / static_cast<double>(sample_rate);
+            if (chunk_seconds <= skip_remaining_seconds_) {
+                skip_remaining_seconds_ -= chunk_seconds;
+                decoded_only_frames_ += frame_count;
+                if (external_pcm_frames_) {
+                    external_pcm_frames_->store(total_pcm_frames_ + decoded_only_frames_, std::memory_order_release);
+                }
+                return true;
+            }
+            std::size_t skip_frames = static_cast<std::size_t>(
+                std::floor(skip_remaining_seconds_ * static_cast<double>(sample_rate)));
+            skip_frames = std::min(skip_frames, frame_count);
+            skip_remaining_seconds_ = 0.0;
+            decoded_only_frames_ += skip_frames;
+            samples += skip_frames * static_cast<std::size_t>(channels);
+            frame_count -= skip_frames;
+            if (frame_count == 0) {
+                if (external_pcm_frames_) {
+                    external_pcm_frames_->store(total_pcm_frames_ + decoded_only_frames_, std::memory_order_release);
+                }
+                return true;
+            }
+        }
+
         if (!Init(sample_rate, channels)) return false;
 
         // Handle pause state
@@ -355,7 +417,7 @@ public:
         if (!EncodeStereo(stereo_scratch_.data(), frame_count)) return false;
         total_pcm_frames_ += frame_count;
         if (external_pcm_frames_) {
-            external_pcm_frames_->store(total_pcm_frames_, std::memory_order_release);
+            external_pcm_frames_->store(total_pcm_frames_ + decoded_only_frames_, std::memory_order_release);
         }
         if (!logged_first_pcm_) {
             logged_first_pcm_ = true;
@@ -370,7 +432,7 @@ public:
         return true;
     }
 
-    std::uint64_t TotalPcmFrames() const { return total_pcm_frames_; }
+    std::uint64_t TotalPcmFrames() const { return total_pcm_frames_ + decoded_only_frames_; }
 
     void FlushAndClose() {
         if (cancel_flag_.load()) {
@@ -465,6 +527,8 @@ private:
     std::vector<std::int16_t> stereo_scratch_;
     std::vector<std::uint8_t> mp3_out_;
     std::uint64_t total_pcm_frames_{0};
+    std::uint64_t decoded_only_frames_{0};
+    double skip_remaining_seconds_{0.0};
     std::uint64_t total_encoded_bytes_{0};
     double elapsed_audio_seconds_{0.0};
     std::chrono::steady_clock::time_point run_start_;
@@ -2382,260 +2446,635 @@ bool AudioTranscoder::Run(
     }
 
     const auto run_start = std::chrono::steady_clock::now();
-    std::atomic<bool> effective_cancel{cancel_flag.load()};
-    std::atomic<bool> timed_out_no_audio{false};
-    std::atomic<bool> watchdog_stop{false};
-    std::atomic<std::uint64_t> decoded_pcm_frames{0};
-
-    PullByteStream pull_stream(512 * 1024, &effective_cancel);
-    std::string dl_error;
-    bool hls = IsHlsUrl(meta);
-    Logger::Instance().Debug(
-        "Transcoder starting (hls=" + std::string(hls ? "true" : "false") +
-        ", live=" + std::string(meta.is_live ? "true" : "false") +
-        ", url=" + StripUrlQueryPathOnly(meta.direct_media_url) + ")");
-
-    ManagedThread watchdog;
-    watchdog.Start([&]() {
-        std::uint64_t unpaused_zero_ms = 0;
-        auto last_check = std::chrono::steady_clock::now();
-        bool prev_ext_cancel = false;
-        while (!watchdog_stop.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(25));
-            if (cancel_flag.load()) {
-                if (!prev_ext_cancel) {
-                    prev_ext_cancel = true;
-                    effective_cancel.store(true);
-                    pull_stream.Close();
-                    HttpClient::PollCancellations();
-                }
-                break;
-            }
-            auto now = std::chrono::steady_clock::now();
-            auto step_ms = static_cast<std::uint64_t>(std::max<long long>(
-                0, std::chrono::duration_cast<std::chrono::milliseconds>(now - last_check).count()));
-            last_check = now;
-
-            if (decoded_pcm_frames.load(std::memory_order_acquire) == 0 && !pause_flag.load()) {
-                unpaused_zero_ms += step_ms;
-                if (cfg.no_audio_timeout_ms > 0 && unpaused_zero_ms >= cfg.no_audio_timeout_ms) {
-                    Logger::Instance().Warn(
-                        "Transcoder produced 0 decoded PCM frames within " +
-                        std::to_string(cfg.no_audio_timeout_ms) + " ms; aborting stream.");
-                    timed_out_no_audio.store(true);
-                    effective_cancel.store(true);
-                    pull_stream.Close();
-                    HttpClient::PollCancellations();
-                    break;
-                }
-            }
-        }
-    }, 256 * 1024);
-
-    ManagedThread downloader;
-    struct PullStreamCloseGuard {
-        PullByteStream& stream;
-        std::atomic<bool>& wd_stop;
-        ManagedThread& wd;
-        ~PullStreamCloseGuard() {
-            stream.Close();
-            wd_stop.store(true);
-            if (wd.Joinable()) wd.Join();
-        }
-    } close_guard{pull_stream, watchdog_stop, watchdog};
-
-    if (!downloader.Start([&]() {
-        if (hls) {
-            RunHlsDownloader(meta, cfg, pull_stream, effective_cancel, dl_error, run_start);
-        } else {
-            constexpr int kMaxRangeRetries = 2;
-            const int max_attempts = meta.is_live ? 1 : (1 + kMaxRangeRetries);
-            std::uint64_t total_rx = 0;
-            std::int64_t expected_len = -1;
-            bool logged_first_http = false;
-
-            for (int attempt = 0; attempt < max_attempts && !effective_cancel.load(); ++attempt) {
-                std::string attempt_err;
-                int resp_status = 0;
-                bool unsupported_resume = false;
-                HttpClient::HeaderMap hdrs = meta.http_headers;
-                if (attempt > 0) {
-                    hdrs["Range"] = "bytes=" + std::to_string(total_rx) + "-";
-                }
-
-                bool dl_ok = HttpClient::StreamGet(
-                    meta.direct_media_url,
-                    hdrs,
-                    [&](const std::uint8_t* data, std::size_t size) {
-                        if (attempt > 0 && resp_status != 206) {
-                            unsupported_resume = true;
-                            return false;
-                        }
-                        total_rx += size;
-                        return pull_stream.Push(data, size, effective_cancel);
-                    },
-                    effective_cancel,
-                    attempt_err,
-                    [&](int st, const std::string&, std::int64_t cl) {
-                        resp_status = st;
-                        if (!logged_first_http) {
-                            logged_first_http = true;
-                            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - run_start).count();
-                            Logger::Instance().Debug(
-                                "First HTTP response HTTP " + std::to_string(st) +
-                                " (Content-Length=" + std::to_string(cl) + ") at +" +
-                                std::to_string(ms) + " ms");
-                        }
-                        if (attempt == 0 && cl > 0) {
-                            expected_len = cl;
-                            if (!meta.is_live) {
-                                std::uint64_t max_pf = static_cast<std::uint64_t>(
-                                    std::clamp<std::uint32_t>(cfg.max_prefetch_mb, 1, 64)) * 1024ULL * 1024ULL;
-                                std::size_t desired_cap = static_cast<std::size_t>(
-                                    std::min<std::uint64_t>(static_cast<std::uint64_t>(cl), max_pf));
-                                pull_stream.EnsureCapacity(desired_cap);
-                            }
-                        }
-                    });
-
-                if (effective_cancel.load() || pull_stream.IsClosed()) {
-                    dl_error.clear();
-                    break;
-                }
-                if (attempt_err == "URL not allowed") {
-                    dl_error = attempt_err;
-                    break;
-                }
-
-                bool incomplete = (expected_len > 0 && total_rx < static_cast<std::uint64_t>(expected_len));
-                if (dl_ok && !incomplete) {
-                    dl_error.clear();
-                    break;
-                }
-
-                if (attempt_err.empty() && incomplete) {
-                    attempt_err = "Network stream ended prematurely";
-                }
-                if (meta.is_live || expected_len <= 0 || total_rx == 0 || unsupported_resume || attempt + 1 >= max_attempts) {
-                    dl_error = attempt_err.empty() ? "Network stream interrupted" : attempt_err;
-                    break;
-                }
-
-                Logger::Instance().Warn(
-                    "Stream interrupted at byte " + std::to_string(total_rx) + "/" +
-                    std::to_string(expected_len) + "; attempting Range resume (" +
-                    std::to_string(attempt + 1) + "/" + std::to_string(kMaxRangeRetries) + ")");
-                for (int w = 0; w < 10 && !effective_cancel.load(); ++w) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
-                }
-            }
-            pull_stream.MarkEof();
-        }
-    }, 256 * 1024)) {
-        out_error = "Failed to spawn downloader thread";
-        if (out_error_code) *out_error_code = ErrorCode::InternalError;
-        if (!cancel_flag.load()) {
-            impl_->output_buffer->MarkEof(cfg.buffer_generation);
-        }
-        return false;
-    }
-
-    Mp3OutputPipeline pipeline(cfg, impl_->output_buffer, effective_cancel, pause_flag, volume_percent, run_start, &decoded_pcm_frames);
-
-    // Sniff magic bytes from stream head
-    std::vector<std::uint8_t> magic;
+    TrackMetadata current_meta = impl_->metadata;
+    bool re_resolved_across_passes = false;
+    std::string final_dl_error;
+    std::uint64_t final_pcm_frames = 0;
+    bool final_timed_out_no_audio = false;
     bool ok = false;
-    try {
-        if (pull_stream.Peek(magic, 16) && !magic.empty()) {
-            if (magic.size() >= 4 && magic[0] == 0x1A && magic[1] == 0x45 && magic[2] == 0xDF && magic[3] == 0xA3) {
-                Logger::Instance().Debug("Detected container: WebM/EBML (Opus/Vorbis)");
-                ok = DecodeWebmStream(pull_stream, pipeline, effective_cancel);
-            } else if (magic.size() >= 4 && std::memcmp(magic.data(), "OggS", 4) == 0) {
-                Logger::Instance().Debug("Detected container: Ogg");
-                ok = DecodeOggStream(pull_stream, pipeline, effective_cancel);
-            } else if (magic.size() >= 8 && std::memcmp(magic.data() + 4, "ftyp", 4) == 0) {
-                Logger::Instance().Debug("Detected container: MP4/fMP4");
-                ok = DecodeMp4Stream(pull_stream, pipeline, effective_cancel);
-            } else if (magic[0] == 0x47 && hls) {
-                Logger::Instance().Debug("Detected container: MPEG-TS");
-                ok = DecodeMpegTsStream(pull_stream, pipeline, effective_cancel);
-            } else if (magic.size() >= 2 && magic[0] == 0xFF && ((magic[1] & 0xF6) == 0xF0)) {
-                Logger::Instance().Debug("Detected container: ADTS AAC");
-                ok = DecodeAdtsStream(pull_stream, pipeline, effective_cancel);
-            } else if (magic.size() >= 10 && magic[0] == 'I' && magic[1] == 'D' && magic[2] == '3') {
-                std::size_t id3_len = ParseId3v2TagSize(magic.data(), magic.size());
-                bool is_id3_adts = false;
-                if (id3_len > 0 && id3_len <= 128 * 1024) {
-                    std::vector<std::uint8_t> ext_peek;
-                    if (pull_stream.Peek(ext_peek, id3_len + 16) && ext_peek.size() >= id3_len + 2) {
-                        if (ext_peek[id3_len] == 0xFF && (ext_peek[id3_len + 1] & 0xF6) == 0xF0) {
-                            is_id3_adts = true;
-                        }
+
+    auto format_http_attempt_error = [](
+        int status,
+        const std::string& fallback_err,
+        int attempt_idx,
+        int max_attempts,
+        std::uint64_t total_rx,
+        std::int64_t expected_len,
+        bool after_re_resolve) {
+        if (status >= 400) {
+            std::ostringstream oss;
+            oss << "HTTP status " << status;
+            if (after_re_resolve) {
+                oss << " after re-resolve";
+            }
+            oss << " (attempt " << (attempt_idx + 1) << "/" << max_attempts << ", ";
+            if (attempt_idx > 0) {
+                oss << "Range resume at byte ";
+            } else {
+                oss << "byte ";
+            }
+            oss << total_rx;
+            if (expected_len > 0) {
+                oss << "/" << expected_len;
+            }
+            oss << ")";
+            return oss.str();
+        }
+        if (after_re_resolve && !fallback_err.empty()) {
+            return fallback_err + " after re-resolve";
+        }
+        return fallback_err;
+    };
+
+    for (int pipeline_pass = 0; pipeline_pass < 2 && !cancel_flag.load(); ++pipeline_pass) {
+        std::atomic<bool> effective_cancel{cancel_flag.load()};
+        std::atomic<bool> timed_out_no_audio{false};
+        std::atomic<bool> watchdog_stop{false};
+        std::atomic<bool> downloader_in_deliberate_wait{false};
+        std::atomic<bool> restart_pipeline{false};
+        std::atomic<std::uint64_t> decoded_pcm_frames{0};
+        std::atomic<std::uint32_t> download_attempt_epoch{0};
+        TrackMetadata restart_meta;
+
+        struct DeliberateWaitGuard {
+            std::atomic<bool>& flag;
+            explicit DeliberateWaitGuard(std::atomic<bool>& f) : flag(f) {
+                flag.store(true, std::memory_order_release);
+            }
+            ~DeliberateWaitGuard() {
+                flag.store(false, std::memory_order_release);
+            }
+            DeliberateWaitGuard(const DeliberateWaitGuard&) = delete;
+            DeliberateWaitGuard& operator=(const DeliberateWaitGuard&) = delete;
+        };
+
+        PullByteStream pull_stream(512 * 1024, &effective_cancel);
+        std::string dl_error;
+        bool hls = IsHlsUrl(current_meta);
+        Logger::Instance().Debug(
+            "Transcoder starting (hls=" + std::string(hls ? "true" : "false") +
+            ", live=" + std::string(current_meta.is_live ? "true" : "false") +
+            ", url=" + StripUrlQueryPathOnly(current_meta.direct_media_url) + ")");
+
+        ManagedThread watchdog;
+        watchdog.Start([&]() {
+            std::uint64_t unpaused_zero_ms = 0;
+            std::uint32_t seen_attempt_epoch = download_attempt_epoch.load(std::memory_order_acquire);
+            auto last_check = std::chrono::steady_clock::now();
+            bool prev_ext_cancel = false;
+            while (!watchdog_stop.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                if (cancel_flag.load()) {
+                    if (!prev_ext_cancel) {
+                        prev_ext_cancel = true;
+                        effective_cancel.store(true);
+                        pull_stream.Close();
+                        HttpClient::PollCancellations();
+                    }
+                    break;
+                }
+                auto now = std::chrono::steady_clock::now();
+                auto step_ms = static_cast<std::uint64_t>(std::max<long long>(
+                    0, std::chrono::duration_cast<std::chrono::milliseconds>(now - last_check).count()));
+                last_check = now;
+
+                const std::uint32_t cur_epoch = download_attempt_epoch.load(std::memory_order_acquire);
+                if (cur_epoch != seen_attempt_epoch) {
+                    seen_attempt_epoch = cur_epoch;
+                    unpaused_zero_ms = 0;
+                }
+
+                if (decoded_pcm_frames.load(std::memory_order_acquire) == 0 &&
+                    !pause_flag.load() &&
+                    !downloader_in_deliberate_wait.load(std::memory_order_acquire)) {
+                    unpaused_zero_ms += step_ms;
+                    if (cfg.no_audio_timeout_ms > 0 && unpaused_zero_ms >= cfg.no_audio_timeout_ms) {
+                        Logger::Instance().Warn(
+                            "Transcoder produced 0 decoded PCM frames within " +
+                            std::to_string(cfg.no_audio_timeout_ms) + " ms; aborting stream.");
+                        timed_out_no_audio.store(true);
+                        effective_cancel.store(true);
+                        pull_stream.Close();
+                        HttpClient::PollCancellations();
+                        break;
                     }
                 }
-                if (is_id3_adts) {
-                    Logger::Instance().Debug("Detected container: ID3v2-wrapped ADTS AAC (HLS packed audio)");
+            }
+        }, 256 * 1024);
+
+        ManagedThread downloader;
+        struct PullStreamCloseGuard {
+            PullByteStream& stream;
+            std::atomic<bool>& wd_stop;
+            ManagedThread& wd;
+            ~PullStreamCloseGuard() {
+                stream.Close();
+                wd_stop.store(true);
+                if (wd.Joinable()) wd.Join();
+            }
+        } close_guard{pull_stream, watchdog_stop, watchdog};
+
+        if (!downloader.Start([&]() {
+            if (hls) {
+                RunHlsDownloader(current_meta, cfg, pull_stream, effective_cancel, dl_error, run_start);
+            } else {
+                constexpr int kMaxRangeRetries = 2;
+                constexpr int kMaxTransientRetries = 2;
+                TrackMetadata active_meta = current_meta;
+                bool already_re_resolved = re_resolved_across_passes;
+                bool early_403_same_url_retried = false;
+                std::string last_ab_probe_url;
+                std::uint64_t total_rx = 0;
+                std::int64_t expected_len = -1;
+                std::int64_t prev_expected_len = -1;
+                bool logged_first_http = false;
+                bool attempt_is_range = false;
+                bool check_reresolved_length = false;
+                int attempt = 0;
+                int transient_retries = 0;
+
+                auto wait_cancelable_ms = [&](std::int64_t wait_ms) -> bool {
+                    if (wait_ms <= 0) return true;
+                    DeliberateWaitGuard wait_guard(downloader_in_deliberate_wait);
+                    const auto dl = std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
+                    while (!effective_cancel.load() && !pull_stream.IsClosed()) {
+                        auto now_tp = std::chrono::steady_clock::now();
+                        if (now_tp >= dl) return true;
+                        auto rem = std::chrono::duration_cast<std::chrono::milliseconds>(dl - now_tp).count();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(std::min<long long>(rem, 50)));
+                    }
+                    return false;
+                };
+
+                while (!effective_cancel.load()) {
+                    const int max_attempts = active_meta.is_live ? 1 : (1 + kMaxRangeRetries);
+                    std::string attempt_err;
+                    int resp_status = 0;
+                    bool unsupported_resume = false;
+                    bool reresolved_len_mismatch = false;
+                    HttpClient::HeaderMap hdrs = active_meta.http_headers;
+                    if (attempt_is_range) {
+                        hdrs["Range"] = "bytes=" + std::to_string(total_rx) + "-";
+                    }
+                    HttpRequestDiagnostics http_diag;
+
+                    const bool use_fresh_session = already_re_resolved || (transient_retries > 0);
+                    const int connect_timeout = static_cast<int>(
+                        cfg.stream_connect_timeout_ms > 0 ? cfg.stream_connect_timeout_ms : 15000);
+                    bool dl_ok = HttpClient::StreamGet(
+                        active_meta.direct_media_url,
+                        hdrs,
+                        [&](const std::uint8_t* data, std::size_t size) {
+                            if (unsupported_resume || reresolved_len_mismatch) {
+                                return false;
+                            }
+                            if (attempt_is_range && resp_status != 206) {
+                                unsupported_resume = true;
+                                return false;
+                            }
+                            total_rx += size;
+                            return pull_stream.Push(data, size, effective_cancel);
+                        },
+                        effective_cancel,
+                        attempt_err,
+                        [&](int st, const std::string&, std::int64_t cl) {
+                            resp_status = st;
+                            if (!logged_first_http) {
+                                logged_first_http = true;
+                                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - run_start).count();
+                                Logger::Instance().Debug(
+                                    "First HTTP response HTTP " + std::to_string(st) +
+                                    " (Content-Length=" + std::to_string(cl) + ") at +" +
+                                    std::to_string(ms) + " ms");
+                            }
+                            if (attempt_is_range && st >= 200 && st < 300) {
+                                if (st != 206) {
+                                    unsupported_resume = true;
+                                } else if (check_reresolved_length && prev_expected_len > 0 && cl > 0 &&
+                                           total_rx + static_cast<std::uint64_t>(cl) != static_cast<std::uint64_t>(prev_expected_len)) {
+                                    reresolved_len_mismatch = true;
+                                }
+                            } else if (!attempt_is_range && st >= 200 && st < 300 && cl > 0) {
+                                expected_len = cl;
+                                if (!active_meta.is_live) {
+                                    std::uint64_t max_pf = static_cast<std::uint64_t>(
+                                        std::clamp<std::uint32_t>(cfg.max_prefetch_mb, 1, 64)) * 1024ULL * 1024ULL;
+                                    std::size_t desired_cap = static_cast<std::size_t>(
+                                        std::min<std::uint64_t>(static_cast<std::uint64_t>(cl), max_pf));
+                                    pull_stream.EnsureCapacity(desired_cap);
+                                }
+                            }
+                        },
+                        connect_timeout,
+                        &http_diag,
+                        use_fresh_session);
+
+                    if (resp_status >= 400 && Logger::Instance().IsDebugEnabled()) {
+                        const auto ref_tp = (active_meta.resolved_at != std::chrono::steady_clock::time_point{})
+                                                ? active_meta.resolved_at
+                                                : run_start;
+                        const auto since_resolve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - ref_tp).count();
+                        const std::string req_host = ExtractHostOnly(active_meta.direct_media_url);
+                        const std::string redir_info = http_diag.redirected
+                            ? ("true (redirect_host=" + (http_diag.final_host.empty() ? std::string("unknown") : http_diag.final_host) + ")")
+                            : std::string("false");
+                        const std::string reused_str = http_diag.connection_reused_known
+                            ? (http_diag.connection_reused ? "true" : "false")
+                            : "unknown";
+                        Logger::Instance().Debug(
+                            "HTTP error details: status=" + std::to_string(resp_status) +
+                            ", attempt=" + std::to_string(attempt + 1) + "/" + std::to_string(max_attempts) +
+                            ", host=" + req_host +
+                            ", since_resolve_ms=" + std::to_string(since_resolve_ms) +
+                            ", redirected=" + redir_info +
+                            ", reused_conn=" + reused_str +
+                            ", had_cookie=" + std::string(http_diag.had_cookie_header ? "true" : "false") +
+                            ", body_preview=\"" + SanitizePrintablePreview(http_diag.error_body_snippet, 200) + "\"");
+                        if (!http_diag.sent_headers_summary.empty()) {
+                            Logger::Instance().Debug(
+                                "HTTP request headers sent: " + http_diag.sent_headers_summary);
+                        }
+                        if (active_meta.source_type == SourceType::ExtractorStream) {
+                            const std::filesystem::path base_p(
+                                cfg.base_dir.empty() ? std::string("scriptfiles/SampAudioStream") : cfg.base_dir);
+                            const std::filesystem::path dump_path = base_p / "debug" / "last_rejected_media_request.txt";
+                            std::error_code ec;
+                            std::filesystem::create_directories(dump_path.parent_path(), ec);
+                            std::ofstream ofs(dump_path, std::ios::trunc);
+                            if (ofs.is_open()) {
+                                const std::time_t now_t = std::time(nullptr);
+                                std::tm tm_local{};
+#ifdef _WIN32
+                                localtime_s(&tm_local, &now_t);
+#else
+                                localtime_r(&now_t, &tm_local);
+#endif
+                                char time_buf[32]{};
+                                std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &tm_local);
+                                ofs << "timestamp: " << time_buf << "\n"
+                                    << "status: " << resp_status << "\n"
+                                    << "format_id: " << (active_meta.format_id.empty() ? "none" : active_meta.format_id) << "\n"
+                                    << "js_runtime: " << (active_meta.js_runtime_used.empty() ? "unknown" : active_meta.js_runtime_used) << "\n"
+                                    << "url: " << active_meta.direct_media_url << "\n"
+                                    << "headers:\n";
+                                for (const auto& [hk, hv] : hdrs) {
+                                    std::string kl = hk;
+                                    for (char& ch : kl) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                                    if (kl == "cookie" || kl == "authorization") continue;
+                                    ofs << "  " << hk << ": " << hv << "\n";
+                                }
+                                ofs.close();
+                                Logger::Instance().Debug(
+                                    "Saved rejected media request details to " + dump_path.string() +
+                                    " (contains signed IP-bound URL; do not share publicly).");
+                            }
+                        }
+                        // Defer A/B probe when we are about to wait 5 s and retry the exact same URL once on early 403.
+                        const bool defer_ab_for_early_403 =
+                            (resp_status == 403) &&
+                            active_meta.source_type == SourceType::ExtractorStream &&
+                            active_meta.available_at_epoch_ms <= 0 &&
+                            !early_403_same_url_retried &&
+                            attempt == 0 &&
+                            total_rx == 0 &&
+                            since_resolve_ms < 10000;
+                        if (active_meta.source_type == SourceType::ExtractorStream &&
+                            !already_re_resolved &&
+                            !defer_ab_for_early_403 &&
+                            last_ab_probe_url != active_meta.direct_media_url &&
+                            !effective_cancel.load() &&
+                            !pull_stream.IsClosed()) {
+                            last_ab_probe_url = active_meta.direct_media_url;
+                            HttpAbProbeResult ab = HttpClient::ProbeUrlSharedVsFreshForDebug(
+                                active_meta.direct_media_url,
+                                active_meta.http_headers,
+                                &effective_cancel,
+                                5000);
+                            auto fmt_ab = [](int st, const std::string& e) -> std::string {
+                                if (st > 0) return std::to_string(st);
+                                return e.empty() ? std::string("0") : ("err(" + SanitizePrintablePreview(e, 60) + ")");
+                            };
+                            Logger::Instance().Debug(
+                                "HTTP " + std::to_string(resp_status) +
+                                " A/B: shared_session_no_headers=" +
+                                fmt_ab(ab.shared_no_headers_status, ab.shared_no_headers_error) +
+                                ", fresh_session_same_headers=" +
+                                fmt_ab(ab.fresh_same_headers_status, ab.fresh_same_headers_error));
+                        }
+                    }
+
+                    if (effective_cancel.load() || pull_stream.IsClosed()) {
+                        dl_error.clear();
+                        break;
+                    }
+                    if (attempt_err == "URL not allowed") {
+                        dl_error = attempt_err;
+                        break;
+                    }
+
+                    if (reresolved_len_mismatch || unsupported_resume) {
+                        if (reresolved_len_mismatch && decoded_pcm_frames.load(std::memory_order_acquire) == 0) {
+                            restart_meta = active_meta;
+                            restart_pipeline.store(true);
+                            pull_stream.Close();
+                            break;
+                        }
+                        if (reresolved_len_mismatch) {
+                            dl_error = "Media size mismatch after HTTP re-resolve";
+                            break;
+                        }
+                    }
+
+                    bool incomplete = (expected_len > 0 && total_rx < static_cast<std::uint64_t>(expected_len));
+                    if (dl_ok && !incomplete) {
+                        dl_error.clear();
+                        break;
+                    }
+
+                    const auto ref_tp = (active_meta.resolved_at != std::chrono::steady_clock::time_point{})
+                                            ? active_meta.resolved_at
+                                            : run_start;
+                    const auto since_resolve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - ref_tp).count();
+                    const bool can_early_403_same_url_retry =
+                        (resp_status == 403) &&
+                        active_meta.source_type == SourceType::ExtractorStream &&
+                        active_meta.available_at_epoch_ms <= 0 &&
+                        !early_403_same_url_retried &&
+                        attempt == 0 &&
+                        total_rx == 0 &&
+                        since_resolve_ms < 10000;
+                    if (can_early_403_same_url_retry) {
+                        early_403_same_url_retried = true;
+                        Logger::Instance().Warn(
+                            "Early HTTP 403 without available_at (" + std::to_string(since_resolve_ms) +
+                            " ms since resolve); waiting 5 s and retrying the same URL once");
+                        if (!wait_cancelable_ms(5000)) {
+                            dl_error.clear();
+                            break;
+                        }
+                        continue;
+                    }
+
+                    const bool can_re_resolve =
+                        (resp_status == 403 || resp_status == 410) &&
+                        active_meta.source_type == SourceType::ExtractorStream &&
+                        !already_re_resolved &&
+                        static_cast<bool>(cfg.re_resolve_callback);
+                    if (can_re_resolve) {
+                        already_re_resolved = true;
+                        re_resolved_across_passes = true;
+                        const std::string log_id = active_meta.id.empty() ? active_meta.original_url : active_meta.id;
+                        Logger::Instance().Warn(
+                            "Media URL rejected with HTTP " + std::to_string(resp_status) +
+                            "; re-resolving " + log_id + " once");
+                        TrackMetadata new_meta;
+                        std::string rr_err;
+                        bool rr_ok = false;
+                        {
+                            DeliberateWaitGuard wait_guard(downloader_in_deliberate_wait);
+                            rr_ok = cfg.re_resolve_callback(active_meta, effective_cancel, new_meta, rr_err);
+                        }
+                        if (!rr_ok) {
+                            if (effective_cancel.load() || pull_stream.IsClosed()) {
+                                dl_error.clear();
+                            } else {
+                                dl_error = format_http_attempt_error(
+                                    resp_status,
+                                    attempt_err,
+                                    attempt,
+                                    max_attempts,
+                                    total_rx,
+                                    expected_len,
+                                    true);
+                                if (!rr_err.empty()) {
+                                    dl_error += " (" + rr_err + ")";
+                                }
+                            }
+                            break;
+                        }
+                        if (new_meta.available_at_epoch_ms > 0) {
+                            const auto now_epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch()).count();
+                            const std::int64_t delta_ms = new_meta.available_at_epoch_ms - now_epoch_ms;
+                            if (delta_ms > 60000) {
+                                Logger::Instance().Warn(
+                                    "Extractor reported implausible available_at (" + std::to_string(delta_ms) +
+                                    " ms in future) after re-resolve; ignoring wait");
+                            } else {
+                                const std::int64_t wait_ms = (new_meta.available_at_epoch_ms + 300) - now_epoch_ms;
+                                if (wait_ms > 0) {
+                                    Logger::Instance().Debug(
+                                        "Waiting " + std::to_string(wait_ms) +
+                                        " ms until re-resolved URL available_at + 300 ms");
+                                    if (!wait_cancelable_ms(wait_ms)) {
+                                        dl_error.clear();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        early_403_same_url_retried = false;
+                        if (total_rx == 0) {
+                            active_meta = std::move(new_meta);
+                            expected_len = -1;
+                            prev_expected_len = -1;
+                            attempt = 0;
+                            transient_retries = 0;
+                            attempt_is_range = false;
+                            check_reresolved_length = false;
+                            download_attempt_epoch.fetch_add(1, std::memory_order_release);
+                            continue;
+                        }
+                        const bool same_format = (active_meta.format_id == new_meta.format_id);
+                        if (same_format && !new_meta.is_live) {
+                            prev_expected_len = expected_len;
+                            active_meta = std::move(new_meta);
+                            attempt = 1;
+                            attempt_is_range = true;
+                            check_reresolved_length = true;
+                            continue;
+                        }
+                        if (decoded_pcm_frames.load(std::memory_order_acquire) == 0) {
+                            restart_meta = std::move(new_meta);
+                            restart_pipeline.store(true);
+                            pull_stream.Close();
+                            break;
+                        }
+                        dl_error = "Media format changed after HTTP " + std::to_string(resp_status) + " re-resolve";
+                        break;
+                    }
+
+                    if (attempt_err.empty() && incomplete) {
+                        attempt_err = "Network stream ended prematurely";
+                    }
+                    if (total_rx == 0 &&
+                        http_diag.transient_transport_error &&
+                        resp_status < 400 &&
+                        transient_retries < kMaxTransientRetries) {
+                        ++transient_retries;
+                        download_attempt_epoch.fetch_add(1, std::memory_order_release);
+                        const std::string reason = attempt_err.empty() ? std::string("transient transport error") : attempt_err;
+                        Logger::Instance().Debug(
+                            "Media download attempt failed before first byte (" + reason +
+                            "); retrying same URL (" + std::to_string(transient_retries) + "/" +
+                            std::to_string(kMaxTransientRetries) + ")");
+                        const std::int64_t backoff_ms = static_cast<std::int64_t>(
+                            (transient_retries == 1) ? cfg.retry_backoff_first_ms : cfg.retry_backoff_second_ms);
+                        if (!wait_cancelable_ms(backoff_ms)) {
+                            dl_error.clear();
+                            break;
+                        }
+                        download_attempt_epoch.fetch_add(1, std::memory_order_release);
+                        continue;
+                    }
+                    if (resp_status >= 400 || active_meta.is_live || expected_len <= 0 || total_rx == 0 || unsupported_resume || attempt + 1 >= max_attempts) {
+                        dl_error = format_http_attempt_error(
+                            resp_status,
+                            attempt_err.empty() ? "Network stream interrupted" : attempt_err,
+                            attempt,
+                            max_attempts,
+                            total_rx,
+                            expected_len,
+                            already_re_resolved);
+                        if (transient_retries > 0 && resp_status < 400) {
+                            dl_error += " (after " + std::to_string(transient_retries + 1) + " attempts)";
+                        }
+                        break;
+                    }
+
+                    Logger::Instance().Warn(
+                        "Stream interrupted at byte " + std::to_string(total_rx) + "/" +
+                        std::to_string(expected_len) + "; attempting Range resume (" +
+                        std::to_string(attempt + 1) + "/" + std::to_string(kMaxRangeRetries) + ")");
+                    for (int w = 0; w < 10 && !effective_cancel.load(); ++w) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                    }
+                    ++attempt;
+                    attempt_is_range = true;
+                    check_reresolved_length = false;
+                }
+                pull_stream.MarkEof();
+            }
+        }, 256 * 1024)) {
+            out_error = "Failed to spawn downloader thread";
+            if (out_error_code) *out_error_code = ErrorCode::InternalError;
+            if (!cancel_flag.load()) {
+                impl_->output_buffer->MarkEof(cfg.buffer_generation);
+            }
+            return false;
+        }
+
+        Mp3OutputPipeline pipeline(cfg, impl_->output_buffer, effective_cancel, pause_flag, volume_percent, run_start, &decoded_pcm_frames);
+
+        // Sniff magic bytes from stream head
+        std::vector<std::uint8_t> magic;
+        ok = false;
+        try {
+            if (pull_stream.Peek(magic, 16) && !magic.empty()) {
+                if (magic.size() >= 4 && magic[0] == 0x1A && magic[1] == 0x45 && magic[2] == 0xDF && magic[3] == 0xA3) {
+                    Logger::Instance().Debug("Detected container: WebM/EBML (Opus/Vorbis)");
+                    ok = DecodeWebmStream(pull_stream, pipeline, effective_cancel);
+                } else if (magic.size() >= 4 && std::memcmp(magic.data(), "OggS", 4) == 0) {
+                    Logger::Instance().Debug("Detected container: Ogg");
+                    ok = DecodeOggStream(pull_stream, pipeline, effective_cancel);
+                } else if (magic.size() >= 8 && std::memcmp(magic.data() + 4, "ftyp", 4) == 0) {
+                    Logger::Instance().Debug("Detected container: MP4/fMP4");
+                    ok = DecodeMp4Stream(pull_stream, pipeline, effective_cancel);
+                } else if (magic[0] == 0x47 && hls) {
+                    Logger::Instance().Debug("Detected container: MPEG-TS");
+                    ok = DecodeMpegTsStream(pull_stream, pipeline, effective_cancel);
+                } else if (magic.size() >= 2 && magic[0] == 0xFF && ((magic[1] & 0xF6) == 0xF0)) {
+                    Logger::Instance().Debug("Detected container: ADTS AAC");
                     ok = DecodeAdtsStream(pull_stream, pipeline, effective_cancel);
+                } else if (magic.size() >= 10 && magic[0] == 'I' && magic[1] == 'D' && magic[2] == '3') {
+                    std::size_t id3_len = ParseId3v2TagSize(magic.data(), magic.size());
+                    bool is_id3_adts = false;
+                    if (id3_len > 0 && id3_len <= 128 * 1024) {
+                        std::vector<std::uint8_t> ext_peek;
+                        if (pull_stream.Peek(ext_peek, id3_len + 16) && ext_peek.size() >= id3_len + 2) {
+                            if (ext_peek[id3_len] == 0xFF && (ext_peek[id3_len + 1] & 0xF6) == 0xF0) {
+                                is_id3_adts = true;
+                            }
+                        }
+                    }
+                    if (is_id3_adts) {
+                        Logger::Instance().Debug("Detected container: ID3v2-wrapped ADTS AAC (HLS packed audio)");
+                        ok = DecodeAdtsStream(pull_stream, pipeline, effective_cancel);
+                    } else {
+                        Logger::Instance().Debug("Detected container: MP3 (with ID3v2)");
+                        ok = DecodeMp3Stream(pull_stream, pipeline, effective_cancel);
+                    }
+                } else if (magic.size() >= 4 && std::memcmp(magic.data(), "RIFF", 4) == 0) {
+                    Logger::Instance().Debug("Detected container: WAV/RIFF");
+                    ok = DecodeWavStream(pull_stream, pipeline, effective_cancel);
+                } else if (magic.size() >= 4 && std::memcmp(magic.data(), "fLaC", 4) == 0) {
+                    Logger::Instance().Debug("Detected container: FLAC");
+                    ok = DecodeFlacStream(pull_stream, pipeline, effective_cancel);
                 } else {
-                    Logger::Instance().Debug("Detected container: MP3 (with ID3v2)");
+                    Logger::Instance().Debug("Detected container: MP3 (raw frames / fallback)");
                     ok = DecodeMp3Stream(pull_stream, pipeline, effective_cancel);
                 }
-            } else if (magic.size() >= 4 && std::memcmp(magic.data(), "RIFF", 4) == 0) {
-                Logger::Instance().Debug("Detected container: WAV/RIFF");
-                ok = DecodeWavStream(pull_stream, pipeline, effective_cancel);
-            } else if (magic.size() >= 4 && std::memcmp(magic.data(), "fLaC", 4) == 0) {
-                Logger::Instance().Debug("Detected container: FLAC");
-                ok = DecodeFlacStream(pull_stream, pipeline, effective_cancel);
             } else {
-                Logger::Instance().Debug("Detected container: MP3 (raw frames / fallback)");
-                ok = DecodeMp3Stream(pull_stream, pipeline, effective_cancel);
+                out_error = dl_error.empty() ? "Empty or unreachable media stream" : dl_error;
             }
-        } else {
-            out_error = dl_error.empty() ? "Empty or unreachable media stream" : dl_error;
+        } catch (const std::exception& ex) {
+            ok = false;
+            out_error = std::string("Decoder exception: ") + ex.what();
+            Logger::Instance().Error("AudioTranscoder decoder exception: " + out_error);
+        } catch (...) {
+            ok = false;
+            out_error = "Unknown decoder exception";
+            Logger::Instance().Error("AudioTranscoder unknown decoder exception.");
         }
-    } catch (const std::exception& ex) {
-        ok = false;
-        out_error = std::string("Decoder exception: ") + ex.what();
-        Logger::Instance().Error("AudioTranscoder decoder exception: " + out_error);
-    } catch (...) {
-        ok = false;
-        out_error = "Unknown decoder exception";
-        Logger::Instance().Error("AudioTranscoder unknown decoder exception.");
+
+        watchdog_stop.store(true);
+        pull_stream.Close();
+        if (downloader.Joinable()) {
+            downloader.Join();
+        }
+        if (watchdog.Joinable()) {
+            watchdog.Join();
+        }
+
+        if (restart_pipeline.load() && !cancel_flag.load() && pipeline.TotalPcmFrames() == 0 && pipeline_pass == 0) {
+            pipeline.CloseWithoutFlush();
+            current_meta = std::move(restart_meta);
+            re_resolved_across_passes = true;
+            out_error.clear();
+            continue;
+        }
+
+        if (cancel_flag.load()) {
+            pipeline.CloseWithoutFlush();
+        } else {
+            pipeline.FlushAndClose();
+            impl_->output_buffer->MarkEof(cfg.buffer_generation);
+        }
+        final_dl_error = dl_error;
+        final_pcm_frames = pipeline.TotalPcmFrames();
+        final_timed_out_no_audio = timed_out_no_audio.load();
+        break;
     }
 
-    watchdog_stop.store(true);
-    pull_stream.Close();
-    if (downloader.Joinable()) {
-        downloader.Join();
-    }
-    if (watchdog.Joinable()) {
-        watchdog.Join();
-    }
-
-    if (cancel_flag.load()) {
-        pipeline.CloseWithoutFlush();
-    } else {
-        pipeline.FlushAndClose();
-        impl_->output_buffer->MarkEof(cfg.buffer_generation);
-    }
-
-    if (!cancel_flag.load() && (timed_out_no_audio.load() || !dl_error.empty() || !ok || pipeline.TotalPcmFrames() == 0)) {
+    if (!cancel_flag.load() && (final_timed_out_no_audio || !final_dl_error.empty() || !ok || final_pcm_frames == 0)) {
         ok = false;
-        if (timed_out_no_audio.load()) {
+        if (final_timed_out_no_audio) {
             out_error = "No decodable audio frames received within " +
                         std::to_string(std::max<std::uint32_t>(1, cfg.no_audio_timeout_ms / 1000)) + "s";
             if (out_error_code) *out_error_code = ErrorCode::TranscodeError;
-        } else if (!dl_error.empty()) {
+        } else if (!final_dl_error.empty()) {
             // Surface transport interruption so truncated tracks do not silently fire OnAudioStreamFinished
-            out_error = dl_error;
+            out_error = final_dl_error;
             if (out_error_code) {
                 *out_error_code = (out_error == "URL not allowed") ? ErrorCode::InvalidUrl : ErrorCode::NetworkError;
             }
         } else {
             if (out_error.empty()) {
                 out_error = "Unsupported codec or zero decoded audio samples (frames=" +
-                            std::to_string(pipeline.TotalPcmFrames()) + ")";
+                            std::to_string(final_pcm_frames) + ")";
             }
             if (out_error_code) {
                 *out_error_code = (out_error == "URL not allowed") ? ErrorCode::InvalidUrl : ErrorCode::TranscodeError;

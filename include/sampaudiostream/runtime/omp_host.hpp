@@ -20,6 +20,7 @@ class OmpHost final : public IComponent,
                       public CoreEventHandler,
                       public PawnEventHandler,
                       public PlayerConnectEventHandler,
+                      public PlayerChangeEventHandler,
                       public IPlatformHost {
 public:
     PROVIDE_UID(0x53415F415544494FULL);
@@ -29,7 +30,7 @@ public:
 
     // IComponent
     StringView componentName() const override { return "SampAudioStream"; }
-    SemanticVersion componentVersion() const override { return SemanticVersion(1, 1, 0, 0); }
+    SemanticVersion componentVersion() const override { return SemanticVersion(2, 0, 0, 0); }
     void onLoad(ICore* c) override;
     void onInit(IComponentList* components) override;
     void onReady() override;
@@ -46,7 +47,11 @@ public:
     void onAmxUnload(IPawnScript& script) override;
 
     // PlayerConnectEventHandler
+    void onPlayerConnect(IPlayer& player) override;
     void onPlayerDisconnect(IPlayer& player, PeerDisconnectReason reason) override;
+
+    // PlayerChangeEventHandler
+    void onPlayerNameChange(IPlayer& player, StringView oldName) override;
 
     // IPlatformHost
     void Log(LogSeverity severity, const std::string& message) override;
@@ -54,6 +59,8 @@ public:
     std::string GetServerBindIp() const override;
 
     bool TracksDisconnectEvents() const override { return true; }
+    bool UsesComponentLifecycleEvents() const override { return true; }
+    bool TracksGameModeLifecycle() const override { return true; }
     bool IsPlayerConnected(PlayerId player_id) const override;
     std::vector<PlayerId> GetConnectedPlayers() const override;
     std::vector<PlayerSnapshot> GetConnectedPlayerSnapshots() const override;
@@ -63,6 +70,7 @@ public:
     std::int32_t GetPlayerVehicleId(PlayerId player_id) const override;
     bool GetVehiclePos(std::int32_t vehicle_id, sampaudiostream::Vector3& out_pos) const override;
     std::string GetPlayerIp(PlayerId player_id) const override;
+    std::string GetPlayerName(PlayerId player_id) const override;
 
     void SendPlayAudioStream(PlayerId player_id, const std::string& url, const sampaudiostream::Vector3& pos, float distance, bool use_pos) override;
     void SendStopAudioStream(PlayerId player_id) override;
@@ -91,6 +99,8 @@ private:
     AMX_NATIVE orig_stop_audio_{nullptr};
     bool hook_native_audio_{true};
     bool instance_acquired_{false};
+    IPawnScript* main_script_{nullptr};
+    bool gamemode_loaded_pending_tick_{false};
 };
 
 } // namespace sampaudiostream

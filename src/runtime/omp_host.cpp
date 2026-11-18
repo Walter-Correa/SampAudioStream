@@ -21,6 +21,7 @@ void OmpHost::onLoad(ICore* c) {
     if (core_) {
         core_->getEventDispatcher().addEventHandler(this);
         core_->getPlayers().getPlayerConnectDispatcher().addEventHandler(this);
+        core_->getPlayers().getPlayerChangeDispatcher().addEventHandler(this);
     }
 }
 
@@ -45,67 +46,38 @@ void OmpHost::onInit(IComponentList* components) {
     }
 
     PluginConfig cfg;
-    PluginConfig def;
     Logger::Instance().SetSink([this](LogSeverity sev, const std::string& msg) {
         this->Log(sev, msg);
     });
     if (core_) {
         IConfig& omp_cfg = core_->getConfig();
-        auto read_str = [&omp_cfg](const char* key, std::string& dst) {
+        OmpConfigReader reader;
+        reader.get_string = [&omp_cfg](const char* key, std::string& out) -> bool {
             StringView sv = omp_cfg.getString(key);
-            if (!sv.empty()) dst.assign(sv.data(), sv.size());
-        };
-        auto read_uint = [&omp_cfg](const char* key, std::uint32_t& dst, std::int64_t min_v, std::int64_t max_v, std::uint32_t def_v, bool nearest_clamp = false) {
-            if (auto* v = omp_cfg.getInt(key)) {
-                if (nearest_clamp && *v >= 0) {
-                    dst = static_cast<std::uint32_t>(*v);
-                } else {
-                    ConfigManager::ParseValidatedInt(key, static_cast<std::int64_t>(*v), min_v, max_v, def_v, dst);
-                }
+            if (sv.empty()) {
+                return false;
             }
+            out.assign(sv.data(), sv.size());
+            return true;
         };
-        auto read_bool = [&omp_cfg](const char* key, bool& dst) {
-            if (auto* v = omp_cfg.getBool(key)) dst = *v;
+        reader.get_int = [&omp_cfg](const char* key, std::int64_t& out) -> bool {
+            if (auto* v = omp_cfg.getInt(key)) {
+                out = static_cast<std::int64_t>(*v);
+                return true;
+            }
+            return false;
         };
-
-        read_str("sampaudiostream.bind_ip", cfg.bind_ip);
-        read_str("sampaudiostream.public_ip", cfg.public_ip);
-        if (auto* p = omp_cfg.getInt("sampaudiostream.http_port")) {
-            std::uint32_t port_val = def.http_port;
-            ConfigManager::ParseValidatedInt("sampaudiostream.http_port", static_cast<std::int64_t>(*p), 0, 65535, def.http_port, port_val);
-            cfg.http_port = static_cast<std::uint16_t>(port_val);
-        }
-        read_bool("sampaudiostream.allow_private_network_urls", cfg.allow_private_network_urls);
-        read_bool("sampaudiostream.lan_aware_urls", cfg.lan_aware_urls);
-        read_uint("sampaudiostream.max_concurrent_streams", cfg.max_concurrent_streams, 1, 256, def.max_concurrent_streams);
-        read_uint("sampaudiostream.mp3_bitrate_kbps", cfg.mp3_bitrate_kbps, 0, 320, def.mp3_bitrate_kbps, true);
-        read_uint("sampaudiostream.mp3_sample_rate", cfg.mp3_sample_rate, 0, 48000, def.mp3_sample_rate, true);
-        read_uint("sampaudiostream.transcoder_burst_ms", cfg.transcoder_burst_ms, 2000, 15000, def.transcoder_burst_ms);
-        read_uint("sampaudiostream.max_prefetch_mb", cfg.max_prefetch_mb, 1, 64, def.max_prefetch_mb);
-        read_uint("sampaudiostream.spatial_update_interval_ms", cfg.spatial_update_interval_ms, 50, 5000, def.spatial_update_interval_ms);
-        read_str("sampaudiostream.player_priority_order", cfg.player_priority_order);
-        read_str("sampaudiostream.bin_dir", cfg.bin_dir);
-        read_str("sampaudiostream.cookies_file", cfg.cookies_file);
-        read_bool("sampaudiostream.auto_download", cfg.auto_download_extractor);
-        read_bool("sampaudiostream.auto_download_extractor", cfg.auto_download_extractor);
-        read_bool("sampaudiostream.auto_update", cfg.auto_update_extractor);
-        read_bool("sampaudiostream.auto_update_extractor", cfg.auto_update_extractor);
-        read_bool("sampaudiostream.enable_js_runtime", cfg.enable_js_runtime);
-        read_uint("sampaudiostream.worker_threads", cfg.worker_threads, 1, 16, def.worker_threads);
-        read_uint("sampaudiostream.max_concurrent_transcoders", cfg.max_concurrent_transcoders, 1, 128, def.max_concurrent_transcoders);
-        read_uint("sampaudiostream.cache_max_entries", cfg.cache_max_entries, 16, 4096, def.cache_max_entries);
-        read_uint("sampaudiostream.cache_ttl_seconds", cfg.cache_ttl_seconds, 60, 86400, def.cache_ttl_seconds);
-        read_uint("sampaudiostream.max_search_results", cfg.max_search_results, 1, 50, def.max_search_results);
-        read_bool("sampaudiostream.hook_native_audio", cfg.hook_native_audio);
-        read_bool("sampaudiostream.debug_logging", cfg.debug_logging);
-        read_bool("sampaudiostream.debug", cfg.debug_logging);
-        read_bool("sampaudiostream.log_startup_banner", cfg.log_startup_banner);
-        read_bool("sampaudiostream.log_http_listen", cfg.log_http_listen);
-        read_bool("sampaudiostream.log_public_ip_detected", cfg.log_public_ip_detected);
-        read_bool("sampaudiostream.log_extractor_status", cfg.log_extractor_status);
-        read_str("sampaudiostream.pawn_text_encoding", cfg.pawn_text_encoding);
+        reader.get_bool = [&omp_cfg](const char* key, bool& out) -> bool {
+            if (auto* v = omp_cfg.getBool(key)) {
+                out = *v;
+                return true;
+            }
+            return false;
+        };
+        cfg = ConfigManager::LoadFromOmp(reader);
+    } else {
+        ConfigManager::Sanitize(cfg);
     }
-    ConfigManager::Sanitize(cfg);
 
     hook_native_audio_ = cfg.hook_native_audio;
 
@@ -113,15 +85,17 @@ void OmpHost::onInit(IComponentList* components) {
     SetActiveAudioEngine(engine_.get());
 
     if (engine_->Initialize()) {
-        if (cfg.log_startup_banner) {
-            Logger::Instance().Info(
-                "SampAudioStream v1.1.0 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: " +
-                std::to_string(engine_->GetHttpPort()) + ")");
-        }
+        engine_->WaitForStartupReadinessAndLog([this, &cfg]() {
+            if (cfg.log_startup_banner) {
+                Logger::Instance().Info(
+                    "SampAudioStream v2.0.0 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: " +
+                    std::to_string(engine_->GetHttpPort()) + ")");
+            }
+        });
     } else {
         Logger::Instance().Error("Failed to initialize AudioEngine on open.mp.");
+        Logger::Instance().Flush();
     }
-    Logger::Instance().Flush();
 }
 
 void OmpHost::onReady() {
@@ -151,36 +125,17 @@ void OmpHost::onFree(IComponent* component) {
 
 void OmpHost::provideConfiguration(ILogger&, IEarlyConfig& config, bool defaults) {
     if (defaults) {
-        PluginConfig def;
-        config.setString("sampaudiostream.bind_ip", def.bind_ip);
-        config.setString("sampaudiostream.public_ip", def.public_ip);
-        config.setInt("sampaudiostream.http_port", def.http_port);
-        config.setBool("sampaudiostream.allow_private_network_urls", def.allow_private_network_urls);
-        config.setBool("sampaudiostream.lan_aware_urls", def.lan_aware_urls);
-        config.setInt("sampaudiostream.max_concurrent_streams", static_cast<int>(def.max_concurrent_streams));
-        config.setInt("sampaudiostream.mp3_bitrate_kbps", static_cast<int>(def.mp3_bitrate_kbps));
-        config.setInt("sampaudiostream.mp3_sample_rate", static_cast<int>(def.mp3_sample_rate));
-        config.setInt("sampaudiostream.transcoder_burst_ms", static_cast<int>(def.transcoder_burst_ms));
-        config.setInt("sampaudiostream.max_prefetch_mb", static_cast<int>(def.max_prefetch_mb));
-        config.setInt("sampaudiostream.spatial_update_interval_ms", static_cast<int>(def.spatial_update_interval_ms));
-        config.setString("sampaudiostream.player_priority_order", def.player_priority_order);
-        config.setString("sampaudiostream.bin_dir", def.bin_dir);
-        config.setString("sampaudiostream.cookies_file", def.cookies_file);
-        config.setBool("sampaudiostream.auto_download_extractor", def.auto_download_extractor);
-        config.setBool("sampaudiostream.auto_update_extractor", def.auto_update_extractor);
-        config.setBool("sampaudiostream.enable_js_runtime", def.enable_js_runtime);
-        config.setInt("sampaudiostream.worker_threads", static_cast<int>(def.worker_threads));
-        config.setInt("sampaudiostream.max_concurrent_transcoders", static_cast<int>(def.max_concurrent_transcoders));
-        config.setInt("sampaudiostream.cache_max_entries", static_cast<int>(def.cache_max_entries));
-        config.setInt("sampaudiostream.cache_ttl_seconds", static_cast<int>(def.cache_ttl_seconds));
-        config.setInt("sampaudiostream.max_search_results", static_cast<int>(def.max_search_results));
-        config.setBool("sampaudiostream.hook_native_audio", def.hook_native_audio);
-        config.setBool("sampaudiostream.debug", def.debug_logging);
-        config.setBool("sampaudiostream.log_startup_banner", def.log_startup_banner);
-        config.setBool("sampaudiostream.log_http_listen", def.log_http_listen);
-        config.setBool("sampaudiostream.log_public_ip_detected", def.log_public_ip_detected);
-        config.setBool("sampaudiostream.log_extractor_status", def.log_extractor_status);
-        config.setString("sampaudiostream.pawn_text_encoding", def.pawn_text_encoding);
+        OmpConfigWriter writer;
+        writer.set_string = [&config](const char* key, const std::string& val) {
+            config.setString(key, val);
+        };
+        writer.set_int = [&config](const char* key, std::int32_t val) {
+            config.setInt(key, static_cast<int>(val));
+        };
+        writer.set_bool = [&config](const char* key, bool val) {
+            config.setBool(key, val);
+        };
+        ConfigManager::ProvideOmpDefaults(writer);
     }
 }
 
@@ -188,6 +143,7 @@ void OmpHost::free() {
     if (core_) {
         core_->getEventDispatcher().removeEventHandler(this);
         core_->getPlayers().getPlayerConnectDispatcher().removeEventHandler(this);
+        core_->getPlayers().getPlayerChangeDispatcher().removeEventHandler(this);
     }
     if (pawn_) {
         pawn_->getEventDispatcher().removeEventHandler(this);
@@ -196,6 +152,7 @@ void OmpHost::free() {
         SetActiveAudioEngine(nullptr);
     }
     if (engine_) {
+        engine_->NotifyLifecycleStopping();
         engine_->Shutdown();
         engine_.reset();
     }
@@ -204,6 +161,8 @@ void OmpHost::free() {
         scripts_.clear();
         pending_patch_scripts_.clear();
         has_pending_patches_.store(false, std::memory_order_release);
+        main_script_ = nullptr;
+        gamemode_loaded_pending_tick_ = false;
     }
     if (instance_acquired_) {
         Logger::Instance().Flush();
@@ -215,7 +174,12 @@ void OmpHost::free() {
 }
 
 void OmpHost::reset() {
+    {
+        std::lock_guard<std::mutex> lock(scripts_mutex_);
+        gamemode_loaded_pending_tick_ = false;
+    }
     if (engine_) {
+        engine_->NotifyLifecycleStopping();
         engine_->Reset();
     }
 }
@@ -224,6 +188,17 @@ void OmpHost::onTick(Microseconds, TimePoint) {
     // Scripts loaded/reloaded dynamically (loadfs/reloadfs/gmx) receive open.mp
     // natives after onAmxLoad() returns; apply deferred hook patches on the next tick.
     PatchPendingScripts();
+    bool notify_gm_loaded = false;
+    {
+        std::lock_guard<std::mutex> lock(scripts_mutex_);
+        if (gamemode_loaded_pending_tick_ && main_script_ && main_script_->IsLoaded()) {
+            gamemode_loaded_pending_tick_ = false;
+            notify_gm_loaded = true;
+        }
+    }
+    if (notify_gm_loaded && engine_) {
+        engine_->OnGameModeLoaded();
+    }
     if (engine_) {
         engine_->Tick();
     }
@@ -261,17 +236,29 @@ void OmpHost::PatchPendingScripts() {
 }
 
 void OmpHost::onAmxLoad(IPawnScript& script) {
+    int gm_idx = -1;
+    const bool is_main = (pawn_ && pawn_->mainScript() == &script) ||
+                         (script.FindPublic("OnGameModeInit", &gm_idx) == AMX_ERR_NONE) ||
+                         (script.FindPublic("OnGameModeExit", &gm_idx) == AMX_ERR_NONE);
     {
         std::lock_guard<std::mutex> lock(scripts_mutex_);
         if (std::find(scripts_.begin(), scripts_.end(), &script) != scripts_.end()) {
+            if (is_main) {
+                main_script_ = &script;
+                gamemode_loaded_pending_tick_ = true;
+            }
             return;
         }
         scripts_.push_back(&script);
+        if (is_main) {
+            main_script_ = &script;
+            gamemode_loaded_pending_tick_ = true;
+        }
         if (hook_native_audio_) {
             // Defer patching PlayAudioStreamForPlayer/StopAudioStreamForPlayer until after
             // open.mp's pawn_natives::AmxLoad() populates the AMX native table slots.
-            // Calls made without sampaudiostream.inc before the first tick hit the original
-            // open.mp native; scripts including sampaudiostream.inc use ALS (SA_Hook_*).
+            // Calls made without SampAudioStream.inc before the first tick hit the original
+            // open.mp native; scripts including SampAudioStream.inc use ALS (SA_Hook_*).
             pending_patch_scripts_.push_back(&script);
             has_pending_patches_.store(true, std::memory_order_release);
         }
@@ -284,17 +271,43 @@ void OmpHost::onAmxLoad(IPawnScript& script) {
 }
 
 void OmpHost::onAmxUnload(IPawnScript& script) {
-    std::lock_guard<std::mutex> lock(scripts_mutex_);
-    scripts_.erase(std::remove(scripts_.begin(), scripts_.end(), &script), scripts_.end());
-    pending_patch_scripts_.erase(
-        std::remove(pending_patch_scripts_.begin(), pending_patch_scripts_.end(), &script),
-        pending_patch_scripts_.end());
-    has_pending_patches_.store(!pending_patch_scripts_.empty(), std::memory_order_release);
+    bool main_unloading = false;
+    {
+        std::lock_guard<std::mutex> lock(scripts_mutex_);
+        scripts_.erase(std::remove(scripts_.begin(), scripts_.end(), &script), scripts_.end());
+        pending_patch_scripts_.erase(
+            std::remove(pending_patch_scripts_.begin(), pending_patch_scripts_.end(), &script),
+            pending_patch_scripts_.end());
+        has_pending_patches_.store(!pending_patch_scripts_.empty(), std::memory_order_release);
+        if (&script == main_script_ || (pawn_ && pawn_->mainScript() == &script) || scripts_.empty()) {
+            main_script_ = nullptr;
+            gamemode_loaded_pending_tick_ = false;
+            main_unloading = true;
+        }
+    }
+    if (main_unloading && engine_) {
+        engine_->NotifyLifecycleStopping();
+    }
+}
+
+void OmpHost::onPlayerConnect(IPlayer& player) {
+    if (engine_) {
+        engine_->OnPlayerConnect(static_cast<PlayerId>(player.getID()));
+    }
 }
 
 void OmpHost::onPlayerDisconnect(IPlayer& player, PeerDisconnectReason) {
     if (engine_) {
         engine_->OnPlayerDisconnect(static_cast<PlayerId>(player.getID()));
+    }
+}
+
+void OmpHost::onPlayerNameChange(IPlayer& player, StringView) {
+    if (engine_) {
+        StringView sv = player.getName();
+        engine_->OnPlayerNameChanged(
+            static_cast<PlayerId>(player.getID()),
+            std::string(sv.data(), sv.length()));
     }
 }
 
@@ -418,6 +431,14 @@ std::string OmpHost::GetPlayerIp(PlayerId player_id) const {
     return "";
 }
 
+std::string OmpHost::GetPlayerName(PlayerId player_id) const {
+    if (!core_) return "";
+    IPlayer* player = core_->getPlayers().get(player_id);
+    if (!player) return "";
+    StringView sv = player->getName();
+    return std::string(sv.data(), sv.length());
+}
+
 void OmpHost::SendPlayAudioStream(PlayerId player_id, const std::string& url, const sampaudiostream::Vector3& pos, float distance, bool use_pos) {
     if (!core_) return;
     IPlayer* player = core_->getPlayers().get(player_id);
@@ -440,7 +461,7 @@ void OmpHost::DispatchPawnCallback(const std::string& name, const std::vector<Ca
     }
 
     for (IPawnScript* script : snapshot) {
-        if (!script) continue;
+        if (!script || !script->IsLoaded()) continue;
         int idx = -1;
         if (script->FindPublic(name.c_str(), &idx) != AMX_ERR_NONE || idx < 0) {
             continue;

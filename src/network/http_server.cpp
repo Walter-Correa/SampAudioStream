@@ -20,6 +20,9 @@
 #include <sstream>
 #include <unordered_map>
 #include <vector>
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 
 namespace sampaudiostream {
 
@@ -69,6 +72,57 @@ bool ExtractResumeOffset(const std::string& target, std::uint64_t& out_offset) {
     if (endptr == start) return false;
     out_offset = static_cast<std::uint64_t>(val);
     return true;
+}
+
+std::size_t ParseMp3FrameLength(const std::uint8_t* h) {
+    if (h[0] != 0xFF || (h[1] & 0xE0u) != 0xE0u) return 0;
+    unsigned int version = (h[1] >> 3) & 0x03u; // 0=2.5, 1=reserved, 2=2, 3=1
+    unsigned int layer = (h[1] >> 1) & 0x03u;   // 1=Layer III
+    unsigned int br_idx = (h[2] >> 4) & 0x0Fu;
+    unsigned int sr_idx = (h[2] >> 2) & 0x03u;
+    unsigned int pad = (h[2] >> 1) & 0x01u;
+    if (version == 1 || layer != 1 || br_idx == 0 || br_idx == 15 || sr_idx == 3) {
+        return 0;
+    }
+
+    static constexpr int kBitratesV1L3[16] = {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0};
+    static constexpr int kBitratesV2L3[16] = {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0};
+    static constexpr int kSampleRates[4][3] = {
+        {11025, 12000, 8000},  // MPEG 2.5 (version 0)
+        {0, 0, 0},
+        {22050, 24000, 16000}, // MPEG 2 (version 2)
+        {44100, 48000, 32000}  // MPEG 1 (version 3)
+    };
+    int bitrate = (version == 3 ? kBitratesV1L3[br_idx] : kBitratesV2L3[br_idx]) * 1000;
+    int srate = kSampleRates[version][sr_idx];
+    if (bitrate <= 0 || srate <= 0) return 0;
+
+    int coef = (version == 3) ? 144 : 72;
+    return static_cast<std::size_t>((coef * bitrate) / srate + static_cast<int>(pad));
+}
+
+void AlignOffsetToMp3Frame(const AudioStreamBuffer& buf, std::uint64_t& in_out_offset) {
+    std::array<std::uint8_t, 4096> peek{};
+    std::size_t n = buf.PeekAt(in_out_offset, peek.data(), peek.size());
+    if (n < 4) return;
+
+    std::size_t first_single_hit = std::string::npos;
+    for (std::size_t i = 0; i + 4 <= n; ++i) {
+        std::size_t flen = ParseMp3FrameLength(peek.data() + i);
+        if (flen >= 24 && flen <= 2880) {
+            if (i + flen + 4 <= n) {
+                if (ParseMp3FrameLength(peek.data() + i + flen) > 0) {
+                    in_out_offset += i;
+                    return;
+                }
+            } else if (first_single_hit == std::string::npos) {
+                first_single_hit = i;
+            }
+        }
+    }
+    if (first_single_hit != std::string::npos) {
+        in_out_offset += first_single_hit;
+    }
 }
 
 class ClientConnection : public std::enable_shared_from_this<ClientConnection> {
@@ -203,12 +257,21 @@ private:
             } else {
                 read_offset_ = floor_off;
             }
+            if (read_offset_ > gen_start) {
+                AlignOffsetToMp3Frame(*endpoint_.buffer, read_offset_);
+            }
         } else {
+            std::uint64_t earliest = endpoint_.buffer->EarliestAvailableOffset();
+            std::uint64_t written = endpoint_.buffer->TotalWritten();
             std::uint64_t resume_off = 0;
             if (ExtractResumeOffset(target, resume_off)) {
-                std::uint64_t earliest = endpoint_.buffer->EarliestAvailableOffset();
-                std::uint64_t written = endpoint_.buffer->TotalWritten();
                 read_offset_ = std::clamp(resume_off, earliest, written);
+                if (read_offset_ > 0) {
+                    AlignOffsetToMp3Frame(*endpoint_.buffer, read_offset_);
+                }
+            } else if (earliest > 0) {
+                read_offset_ = earliest;
+                AlignOffsetToMp3Frame(*endpoint_.buffer, read_offset_);
             } else {
                 read_offset_ = 0;
             }
@@ -223,8 +286,9 @@ private:
             << "Connection: close\r\n"
             << "icy-br: " << endpoint_.bitrate_kbps << "\r\n";
 
-        if (!endpoint_.title.empty()) {
-            std::string icy_name = ConvertTextForPawn(endpoint_.title, "cp1252");
+        const std::string& header_name = !endpoint_.station_name.empty() ? endpoint_.station_name : endpoint_.title;
+        if (!header_name.empty()) {
+            std::string icy_name = ConvertTextForPawn(header_name, "cp1252");
             oss << "icy-name: " << SanitizeHeaderValue(icy_name) << "\r\n";
         }
         if (icy_metadata_requested_) {
@@ -518,21 +582,59 @@ struct HttpStreamingServer::Impl {
     std::unordered_map<std::string, std::uint64_t> last_served_offsets;
     std::unordered_map<std::string, EndpointPlaybackStats> playback_stats;
 
-    static constexpr std::size_t kMaxTotalConnections = 512;
-    static constexpr std::size_t kMaxConnectionsPerIp = 32;
+    std::size_t max_total_connections{1024};
+    std::size_t max_connections_per_ip{64};
     mutable std::mutex connections_mutex;
     std::condition_variable connections_cv;
+    bool warned_total_limit{false};
+    std::chrono::steady_clock::time_point last_total_limit_warn{};
+    bool warned_per_ip_limit{false};
+    std::chrono::steady_clock::time_point last_per_ip_limit_warn{};
     std::size_t total_connections{0};
     std::unordered_map<std::string, std::size_t> ip_connections;
     std::unordered_map<std::string, std::size_t> endpoint_connections;
+    std::unordered_map<std::string, std::uint64_t> endpoint_total_connections;
     std::unordered_map<ClientConnection*, std::shared_ptr<ClientConnection>> live_connections;
 
-    bool TryAcquireConnectionSlot(const std::string& ip) {
+    enum class RejectReason {
+        None,
+        TotalLimit,
+        PerIpLimit
+    };
+
+    struct RejectWarnInfo {
+        RejectReason reason{RejectReason::None};
+        std::size_t current{0};
+        std::size_t limit{0};
+    };
+
+    bool TryAcquireConnectionSlot(const std::string& ip, RejectWarnInfo& out_warn) {
+        out_warn = RejectWarnInfo{};
+        const auto now = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(connections_mutex);
-        if (total_connections >= kMaxTotalConnections) return false;
-        std::size_t& count = ip_connections[ip];
-        if (count >= kMaxConnectionsPerIp) return false;
-        ++count;
+        if (total_connections >= max_total_connections) {
+            if (!warned_total_limit || (now - last_total_limit_warn) >= std::chrono::minutes(1)) {
+                warned_total_limit = true;
+                last_total_limit_warn = now;
+                out_warn.reason = RejectReason::TotalLimit;
+                out_warn.current = total_connections;
+                out_warn.limit = max_total_connections;
+            }
+            return false;
+        }
+        auto it = ip_connections.find(ip);
+        const std::size_t curr_ip = (it != ip_connections.end()) ? it->second : 0;
+        if (curr_ip >= max_connections_per_ip) {
+            if (!warned_per_ip_limit || (now - last_per_ip_limit_warn) >= std::chrono::minutes(1)) {
+                warned_per_ip_limit = true;
+                last_per_ip_limit_warn = now;
+                out_warn.reason = RejectReason::PerIpLimit;
+                out_warn.current = curr_ip;
+                out_warn.limit = max_connections_per_ip;
+            }
+            return false;
+        }
+        ++ip_connections[ip];
         ++total_connections;
         return true;
     }
@@ -547,6 +649,7 @@ struct HttpStreamingServer::Impl {
         if (token.empty()) return;
         std::lock_guard<std::mutex> lock(connections_mutex);
         ++endpoint_connections[token];
+        ++endpoint_total_connections[token];
     }
 
     void OnConnectionClosed(ClientConnection* raw, const std::string& ip, const std::string& token) {
@@ -613,9 +716,25 @@ struct HttpStreamingServer::Impl {
                 auto remote_ep = socket.remote_endpoint(ep_ec);
                 std::string remote_ip = ep_ec ? "unknown" : remote_ep.address().to_string();
 
-                if (!TryAcquireConnectionSlot(remote_ip)) {
+                Impl::RejectWarnInfo reject_warn;
+                if (!TryAcquireConnectionSlot(remote_ip, reject_warn)) {
                     std::error_code close_ec;
                     socket.close(close_ec);
+                    if (reject_warn.reason == Impl::RejectReason::PerIpLimit) {
+                        Logger::Instance().Warn(
+                            "HTTP audio connection from " + remote_ip +
+                            " rejected: per-IP limit reached (" +
+                            std::to_string(reject_warn.current) + "/" +
+                            std::to_string(reject_warn.limit) +
+                            "). Players sharing this IP (mobile carrier CGNAT, LAN house) beyond this limit hear nothing; "
+                            "raise 'network.max_connections_per_ip' if needed.");
+                    } else if (reject_warn.reason == Impl::RejectReason::TotalLimit) {
+                        Logger::Instance().Warn(
+                            "HTTP audio connection rejected: total connection limit reached (" +
+                            std::to_string(reject_warn.current) + "/" +
+                            std::to_string(reject_warn.limit) +
+                            "); raise 'network.max_http_connections' if more simultaneous listeners are expected.");
+                    }
                 } else {
                     std::error_code opt_ec;
                     socket.set_option(asio::ip::tcp::no_delay(true), opt_ec);
@@ -657,10 +776,47 @@ HttpStreamingServer::~HttpStreamingServer() {
     Stop();
 }
 
+void HttpStreamingServer::SetConnectionLimits(
+    std::size_t max_total_connections,
+    std::size_t max_connections_per_ip) {
+    std::lock_guard<std::mutex> lock(impl_->connections_mutex);
+    impl_->max_total_connections = std::max<std::size_t>(1, max_total_connections);
+    impl_->max_connections_per_ip = std::max<std::size_t>(1, max_connections_per_ip);
+}
+
 bool HttpStreamingServer::Start(const std::string& bind_ip, std::uint16_t port, std::string& out_error, bool log_listen) {
     if (impl_->running.load()) {
         return true;
     }
+
+    std::size_t configured_max_total = 1024;
+    {
+        std::lock_guard<std::mutex> lock(impl_->connections_mutex);
+        impl_->warned_total_limit = false;
+        impl_->warned_per_ip_limit = false;
+        configured_max_total = impl_->max_total_connections;
+    }
+
+#ifndef _WIN32
+    {
+        struct rlimit rl{};
+        if (::getrlimit(RLIMIT_NOFILE, &rl) == 0 &&
+            rl.rlim_cur != RLIM_INFINITY &&
+            rl.rlim_cur < static_cast<rlim_t>(configured_max_total + 256)) {
+            Logger::Instance().Warn(
+                "Process open file descriptor limit (RLIMIT_NOFILE=" +
+                std::to_string(static_cast<unsigned long long>(rl.rlim_cur)) +
+                ") is lower than recommended (" +
+                std::to_string(configured_max_total + 256) +
+                " for network.max_http_connections=" +
+                std::to_string(configured_max_total) +
+                "): Linux may reject HTTP audio connections before reaching the configured limit. "
+                "Raise it with 'ulimit -n <N>', 'LimitNOFILE=' in systemd, or /etc/security/limits.conf.");
+        }
+    }
+#else
+    (void)configured_max_total;
+#endif
 
     try {
         impl_->io_ctx = std::make_unique<asio::io_context>();
@@ -772,6 +928,7 @@ void HttpStreamingServer::Stop() {
         }
         impl_->live_connections.clear();
         impl_->endpoint_connections.clear();
+        impl_->endpoint_total_connections.clear();
         impl_->ip_connections.clear();
         impl_->total_connections = 0;
     }
@@ -794,17 +951,25 @@ std::uint16_t HttpStreamingServer::BoundPort() const {
 }
 
 void HttpStreamingServer::RegisterEndpoint(const StreamEndpointInfo& info) {
-    std::lock_guard<std::mutex> lock(impl_->endpoints_mutex);
-    impl_->endpoints[info.token] = info;
-    impl_->last_served_offsets[info.token] = 0;
-    impl_->playback_stats.erase(info.token);
+    {
+        std::lock_guard<std::mutex> lock(impl_->endpoints_mutex);
+        impl_->endpoints[info.token] = info;
+        impl_->last_served_offsets[info.token] = 0;
+        impl_->playback_stats.erase(info.token);
+    }
+    std::lock_guard<std::mutex> conn_lock(impl_->connections_mutex);
+    impl_->endpoint_total_connections[info.token] = 0;
 }
 
 void HttpStreamingServer::UnregisterEndpoint(const std::string& token) {
-    std::lock_guard<std::mutex> lock(impl_->endpoints_mutex);
-    impl_->endpoints.erase(token);
-    impl_->last_served_offsets.erase(token);
-    impl_->playback_stats.erase(token);
+    {
+        std::lock_guard<std::mutex> lock(impl_->endpoints_mutex);
+        impl_->endpoints.erase(token);
+        impl_->last_served_offsets.erase(token);
+        impl_->playback_stats.erase(token);
+    }
+    std::lock_guard<std::mutex> conn_lock(impl_->connections_mutex);
+    impl_->endpoint_total_connections.erase(token);
 }
 
 void HttpStreamingServer::UpdateEndpointMetadata(
@@ -820,6 +985,14 @@ void HttpStreamingServer::UpdateEndpointMetadata(
         if (new_buffer) {
             it->second.buffer = std::move(new_buffer);
         }
+    }
+}
+
+void HttpStreamingServer::UpdateEndpointStationName(const std::string& token, const std::string& station_name) {
+    std::lock_guard<std::mutex> lock(impl_->endpoints_mutex);
+    auto it = impl_->endpoints.find(token);
+    if (it != impl_->endpoints.end()) {
+        it->second.station_name = station_name;
     }
 }
 
@@ -854,6 +1027,12 @@ std::size_t HttpStreamingServer::GetActiveConnectionCount(const std::string& tok
     std::lock_guard<std::mutex> lock(impl_->connections_mutex);
     auto it = impl_->endpoint_connections.find(token);
     return it != impl_->endpoint_connections.end() ? it->second : 0;
+}
+
+std::uint64_t HttpStreamingServer::GetEndpointTotalConnectionCount(const std::string& token) const {
+    std::lock_guard<std::mutex> lock(impl_->connections_mutex);
+    auto it = impl_->endpoint_total_connections.find(token);
+    return it != impl_->endpoint_total_connections.end() ? it->second : 0;
 }
 
 } // namespace sampaudiostream

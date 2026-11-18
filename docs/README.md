@@ -12,9 +12,11 @@ Welcome to the technical documentation for **SampAudioStream** (SA-MP & open.mp)
 | :--- | :--- |
 | **[📖 Getting Started](getting-started.md)** | Requirements, installation for SA-MP & open.mp (Windows & Linux), `config.json` reference, port forwarding, cookies setup, and drop-in migration from `PlayAudioStreamForPlayer`. |
 | **[🔊 Playback, Hooking & Spatial Audio](playback-and-spatial.md)** | Individual vs. global playback (`SA_PlayAudioStreamForPlayer` vs. `SA_PlayAudioStream`), radius time-synchronization for finite tracks, live stream pass-through, `worldid`/`interiorid` filtering, volume control, and 3D entity attachment. |
-| **[🔎 Music Search & Synced Channels](search-and-channels.md)** | Asynchronous track search (`SA_SearchAudioStream`) for interactive in-game dialogs, plus synchronized multi-player radio channels with playback queues (`SA_CreateChannel`, `SA_QueueChannel`). |
+| **[🔎 Music Search & Synced Channels](search-and-channels.md)** | Asynchronous track search (`SA_SearchAudioStream`) for interactive in-game dialogs, plus synchronized multi-player radio channels with playback queues, passwords, creator tracking, and auto-destroy policies (`SA_CreateAudioStreamChannel`, `SA_QueueChannelAudioStream`). |
 | **[⚙️ Architecture, Transcoding & Caching](architecture-and-caching.md)** | Dual-runtime C++20 design, self-managed extractor provisioning (`yt-dlp` + `quickjs-ng`), static in-memory MP3 transcoding codecs, HLS/MPEG-TS live handling, LRU RAM metadata cache, and ~30s ring buffers (~480 KB at 128 kbps). |
-| **[📚 Complete API Reference](api-reference.md)** | Exhaustive technical dictionary covering all 27 `SA_*` natives, hooked standard natives, 6 callbacks, enumerations, and constants. |
+| **[📚 Complete API Reference](api-reference.md)** | Exhaustive technical dictionary covering all 66 `SA_*` natives, hooked standard natives, 16 callbacks, enumerations, and constants. |
+| **[🍪 YouTube Anti-Bot & Cookies Guide](youtube-cookies.md)** | Automatic `cookies.txt` / browser cookie fallback (`extractor.cookies_from_browser`), Firefox setup, headless VPS `cookies.txt` export, and troubleshooting `SA_ERR_AUTH_REQUIRED`. |
+| **[⚠️ Important Notes](../README.md#important-notes)** | Extractor (`yt-dlp`) dependency disclaimer, server owner content responsibility, and non-affiliation notice. |
 
 ---
 
@@ -24,10 +26,10 @@ Find immediate guidance based on your goal:
 
 * **I want to install SampAudioStream on my SA-MP or open.mp server:**
   * Read [Getting Started](getting-started.md#2-installation).
-  * Place `sampaudiostream.dll`/`.so` in `plugins/` (SA-MP) or `components/` (open.mp), and copy `include/sampaudiostream.inc`.
+  * Place `SampAudioStream.dll`/`.so` in `plugins/` (SA-MP) or `components/` (open.mp), and copy `include/SampAudioStream.inc`.
 * **I already use `PlayAudioStreamForPlayer` in my gamemode and want YouTube/web links to work immediately:**
   * Read [Include Order & Drop-In Hooking](getting-started.md#include-order--drop-in-hooking).
-  * Just include `#include <sampaudiostream>` (or enable `hook_native_audio: true` in `config.json`) — existing scripts gain YouTube/platform support plus optional `worldid`, `interiorid`, and `volume` parameters.
+  * Just include `#include <SampAudioStream>` (or enable `scripting.hook_native_audio: true` in `config.json`) — existing scripts gain YouTube/platform support plus optional `worldid`, `interiorid`, and `volume` parameters.
 * **I want everyone entering a club or 3D zone to hear the current timestamp of a song:**
   * Read [Global Streams & Radius Synchronization](playback-and-spatial.md#2-global-spatial-streams--time-synchronization).
   * Use `SA_PlayAudioStream` with `usepos = true` and `distance > 0.0`.
@@ -36,7 +38,7 @@ Find immediate guidance based on your goal:
   * Call `SA_SearchAudioStream(playerid, query, max_results)` and populate a dialog inside `OnAudioStreamSearchResultItem` / `OnAudioStreamSearchResults`.
 * **I want persistent server radio stations with shared queues:**
   * Read [Synchronized Radio Channels](search-and-channels.md#2-synchronized-radio-channels).
-  * Use `SA_CreateChannel`, `SA_PlayChannel`, `SA_QueueChannel`, and `SA_JoinChannel`.
+  * Use `SA_CreateAudioStreamChannel`, `SA_PlayChannelAudioStream`, `SA_QueueChannelAudioStream`, and `SA_JoinAudioStreamChannel`.
 * **I want to understand memory usage, caching TTL, and network ports:**
   * Read [Architecture, Transcoding & Caching](architecture-and-caching.md#4-caching--memory-management).
 

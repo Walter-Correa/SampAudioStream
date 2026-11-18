@@ -29,6 +29,8 @@ public:
     virtual std::string GetServerBindIp() const = 0;
 
     virtual bool TracksDisconnectEvents() const { return false; }
+    virtual bool UsesComponentLifecycleEvents() const { return false; }
+    virtual bool TracksGameModeLifecycle() const { return false; }
     virtual void OnDisconnectHookObserved() {}
 
     virtual bool IsPlayerConnected(PlayerId player_id) const = 0;
@@ -54,6 +56,7 @@ public:
     virtual std::int32_t GetPlayerVehicleId(PlayerId player_id) const = 0;
     virtual bool GetVehiclePos(std::int32_t vehicle_id, Vector3& out_pos) const = 0;
     virtual std::string GetPlayerIp(PlayerId player_id) const = 0;
+    virtual std::string GetPlayerName(PlayerId player_id) const { (void)player_id; return ""; }
 
     virtual void SendPlayAudioStream(PlayerId player_id, const std::string& url, const Vector3& pos, float distance, bool use_pos) = 0;
     virtual void SendStopAudioStream(PlayerId player_id) = 0;

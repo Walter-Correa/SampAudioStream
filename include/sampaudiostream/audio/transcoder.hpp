@@ -5,12 +5,19 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
 namespace sampaudiostream {
 
 struct TranscoderConfig {
+    using ReResolveCallback = std::function<bool(
+        const TrackMetadata& failed_meta,
+        const std::atomic<bool>& cancel_flag,
+        TrackMetadata& out_meta,
+        std::string& out_error)>;
+
     std::uint32_t target_sample_rate{48000};
     std::uint32_t target_bitrate_kbps{128};
     std::uint32_t initial_burst_ms{6000}; // Initial pre-buffer lead (~5-10s)
@@ -21,6 +28,12 @@ struct TranscoderConfig {
     std::uint32_t hls_live_stall_timeout_ms{30000};
     std::uint32_t max_prefetch_mb{16};
     std::uint32_t no_audio_timeout_ms{20000};
+    std::uint32_t stream_connect_timeout_ms{15000};
+    std::uint32_t retry_backoff_first_ms{500};
+    std::uint32_t retry_backoff_second_ms{1500};
+    std::uint64_t start_offset_ms{0};
+    std::string base_dir;
+    ReResolveCallback re_resolve_callback;
 };
 
 class AudioTranscoder {

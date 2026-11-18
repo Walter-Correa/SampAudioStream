@@ -39,6 +39,7 @@ public:
     std::string GetServerBindIp() const override;
 
     bool TracksDisconnectEvents() const override { return disconnect_event_seen_.load(); }
+    bool TracksGameModeLifecycle() const override { return true; }
     void OnDisconnectHookObserved() override { disconnect_event_seen_.store(true); }
 
     bool IsPlayerConnected(PlayerId player_id) const override;
@@ -50,11 +51,13 @@ public:
     std::int32_t GetPlayerVehicleId(PlayerId player_id) const override;
     bool GetVehiclePos(std::int32_t vehicle_id, Vector3& out_pos) const override;
     std::string GetPlayerIp(PlayerId player_id) const override;
+    std::string GetPlayerName(PlayerId player_id) const override;
 
     void DispatchPawnCallback(const std::string& name, const std::vector<CallbackArg>& args) override;
 
     AMX_NATIVE GetOriginalPlayAudioNative() const { return orig_play_audio_; }
     AMX_NATIVE GetOriginalStopAudioNative() const { return orig_stop_audio_; }
+    AMX_NATIVE GetOriginalSetPlayerNameNative() const { return orig_set_player_name_; }
     AudioEngine* GetEngine() const { return engine_; }
 
 private:
@@ -66,6 +69,7 @@ private:
     LogPrintfFn logprintf_{nullptr};
     AudioEngine* engine_{nullptr};
     bool hook_native_audio_{true};
+    bool gamemode_loaded_pending_tick_{false};
     std::atomic<bool> disconnect_event_seen_{false};
 
     mutable std::mutex amx_mutex_;
@@ -76,6 +80,7 @@ private:
     // Captured original SA-MP server native function pointers
     AMX_NATIVE orig_play_audio_{nullptr};
     AMX_NATIVE orig_stop_audio_{nullptr};
+    AMX_NATIVE orig_set_player_name_{nullptr};
     AMX_NATIVE fn_is_player_connected_{nullptr};
     AMX_NATIVE fn_get_player_pos_{nullptr};
     AMX_NATIVE fn_get_player_vw_{nullptr};
@@ -83,6 +88,7 @@ private:
     AMX_NATIVE fn_get_player_vehicle_{nullptr};
     AMX_NATIVE fn_get_vehicle_pos_{nullptr};
     AMX_NATIVE fn_get_player_ip_{nullptr};
+    AMX_NATIVE fn_get_player_name_{nullptr};
     AMX_NATIVE fn_get_server_var_int_{nullptr};
     AMX_NATIVE fn_get_server_var_str_{nullptr};
     AMX_NATIVE fn_get_player_pool_size_{nullptr};

@@ -1,43 +1,25 @@
-# Compiled Pawn bytecode & assembly
+# Compiled Pawn bytecode (keep official demo AMX tracked)
 *.amx
-*.lst
-*.asm
+!FS_SampAudioStream_Demo.amx
 
-# Sampctl / Pawn vendor dependencies
-dependencies/
-pawn.lock
+# External C++ SDKs (cloned into deps/)
+deps/
 
-# Local server files & logs
-server.cfg
-logs/
-server_log.txt
-crashinfo.txt
-samp.ban
-scriptfiles/
-
-# Build & staging artifacts
+# CMake & MSVC/Linux build directories
 build/
 build-*/
+
+# Packaging output & staging folders (build_msvc.bat & CI)
 package/
 package-*/
 dist/
-release-*/
-deps/
-Debug/
-Release/
-x64/
-.vs/
-*.o
-*.obj
-*.lib
-*.exp
-*.pdb
-*.ilk
+
+# Runtime/test generated files
+scriptfiles/
+build_test_*
+
+# Standalone compiled binaries & release archives
 *.dll
 *.so
-*.dylib
 *.exe
 *.zip
-*.tar.gz
-*.sublime-workspace
-*.sublime-project

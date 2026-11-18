@@ -21,6 +21,11 @@ void MetadataCache::PutTrack(const std::string& key, const TrackMetadata& metada
     track_cache_.Put(key, metadata);
 }
 
+void MetadataCache::InvalidateTrack(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    track_cache_.Invalidate(key);
+}
+
 std::optional<std::vector<SearchResultItem>> MetadataCache::GetSearch(const std::string& query_key) {
     std::lock_guard<std::mutex> lock(mutex_);
     return search_cache_.Get(query_key);

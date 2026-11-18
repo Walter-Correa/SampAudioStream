@@ -147,6 +147,23 @@ void AudioStreamBuffer::Close() {
     }
 }
 
+std::size_t AudioStreamBuffer::CopyRangeLocked(std::uint64_t offset, std::uint8_t* out_data, std::size_t max_bytes) const {
+    if (offset >= total_written_ || max_bytes == 0 || !out_data) {
+        return 0;
+    }
+    std::uint64_t available = total_written_ - offset;
+    std::size_t to_read = static_cast<std::size_t>(std::min<std::uint64_t>(available, max_bytes));
+
+    std::size_t read_pos = static_cast<std::size_t>(offset % capacity_);
+    std::size_t first_chunk = std::min(to_read, capacity_ - read_pos);
+    std::memcpy(out_data, buffer_.data() + read_pos, first_chunk);
+
+    if (to_read > first_chunk) {
+        std::memcpy(out_data + first_chunk, buffer_.data(), to_read - first_chunk);
+    }
+    return to_read;
+}
+
 std::size_t AudioStreamBuffer::Read(std::uint64_t& stream_offset, std::uint8_t* out_data, std::size_t max_bytes, int timeout_ms) {
     if (!out_data || max_bytes == 0) return 0;
 
@@ -168,23 +185,19 @@ std::size_t AudioStreamBuffer::Read(std::uint64_t& stream_offset, std::uint8_t* 
         stream_offset = earliest;
     }
 
-    if (stream_offset >= total_written_) {
-        return 0;
-    }
-
-    std::uint64_t available = total_written_ - stream_offset;
-    std::size_t to_read = static_cast<std::size_t>(std::min<std::uint64_t>(available, max_bytes));
-
-    std::size_t read_pos = static_cast<std::size_t>(stream_offset % capacity_);
-    std::size_t first_chunk = std::min(to_read, capacity_ - read_pos);
-    std::memcpy(out_data, buffer_.data() + read_pos, first_chunk);
-
-    if (to_read > first_chunk) {
-        std::memcpy(out_data + first_chunk, buffer_.data(), to_read - first_chunk);
-    }
-
+    std::size_t to_read = CopyRangeLocked(stream_offset, out_data, max_bytes);
     stream_offset += to_read;
     return to_read;
+}
+
+std::size_t AudioStreamBuffer::PeekAt(std::uint64_t stream_offset, std::uint8_t* out_data, std::size_t max_bytes) const {
+    if (!out_data || max_bytes == 0) return 0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::uint64_t earliest = (total_written_ > capacity_) ? (total_written_ - capacity_) : 0;
+    if (stream_offset < earliest || stream_offset >= total_written_) {
+        return 0;
+    }
+    return CopyRangeLocked(stream_offset, out_data, max_bytes);
 }
 
 std::uint64_t AudioStreamBuffer::TotalWritten() const {

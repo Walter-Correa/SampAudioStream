@@ -10,7 +10,7 @@ Calling `SA_SearchAudioStream(playerid, query, max_results = 5)` dispatches a ba
 
 ### Callback Sequence
 1. `OnAudioStreamSearchResultItem(playerid, search_id, item_index, const title[], const artist[], duration, const video_id[])` is fired once for each result (`item_index` from `0` to `total_found - 1`).
-2. `OnAudioStreamSearchResults(playerid, search_id, total_found)` is fired right after all items have been delivered (`total_found == 0` if no matches were found or if the search failed).
+2. `OnAudioStreamSearchResults(playerid, search_id, total_found, E_SA_ERROR_CODE:error_code, const error_message[])` is fired right after all items have been delivered (`error_code == SA_ERR_NONE` on success, or non-zero with `total_found == 0` on error).
 
 ### Complete Interactive Dialog Example
 
@@ -59,9 +59,15 @@ public OnAudioStreamSearchResultItem(playerid, search_id, item_index, const titl
     return 1;
 }
 
-public OnAudioStreamSearchResults(playerid, search_id, total_found)
+public OnAudioStreamSearchResults(playerid, search_id, total_found, E_SA_ERROR_CODE:error_code, const error_message[])
 {
     if (search_id != g_ActiveSearchID[playerid]) return 1;
+    if (error_code != SA_ERR_NONE)
+    {
+        new err[144];
+        format(err, sizeof(err), "[Music] Search failed (%d): %s", _:error_code, error_message);
+        return SendClientMessage(playerid, 0xE74C3CAA, err);
+    }
     if (total_found <= 0) return SendClientMessage(playerid, 0xE74C3CAA, "[Music] No results found.");
 
     new body[1536], row[220];
@@ -109,30 +115,50 @@ new g_RadioChannel = INVALID_AUDIO_CHANNEL_ID;
 
 public OnGameModeInit()
 {
-    g_RadioChannel = SA_CreateChannel("Server FM");
-    SA_PlayChannel(g_RadioChannel, "https://www.youtube.com/watch?v=jfKfPfyJRdk");
-    SA_QueueChannel(g_RadioChannel, "https://soundcloud.com/artist/track");
+    g_RadioChannel = SA_CreateAudioStreamChannel("Server FM");
+    SA_PlayChannelAudioStream(g_RadioChannel, "https://www.youtube.com/watch?v=jfKfPfyJRdk");
+    SA_QueueChannelAudioStream(g_RadioChannel, "https://soundcloud.com/artist/track");
     return 1;
 }
 
 CMD:radio(playerid, params[])
 {
-    if (SA_IsPlayerInChannel(playerid, g_RadioChannel))
+    if (SA_IsPlayerInAudioStreamChannel(playerid, g_RadioChannel))
     {
-        SA_LeaveChannel(playerid);
+        SA_LeaveAudioStreamChannel(playerid);
         SendClientMessage(playerid, -1, "[Radio] Left Server FM.");
     }
     else
     {
-        SA_JoinChannel(playerid, g_RadioChannel);
+        SA_JoinAudioStreamChannel(playerid, g_RadioChannel);
         SendClientMessage(playerid, -1, "[Radio] Tuned into Server FM.");
     }
     return 1;
 }
 ```
 
-### Channel Behavior
-* `SA_PlayChannel`: Clears/replaces current playback on the channel and immediately starts the given URL or search query.
-* `SA_QueueChannel`: Appends a track to the channel's queue. When the active track finishes draining its lead buffer, listeners cleanly transition to the next track (with a brief audible gap while clients reconnect to the new track).
-* `SA_SkipChannel`: Aborts the active track and advances immediately to the next queued track.
-* `SA_JoinChannel` / `SA_LeaveChannel`: Joining a channel stops the player's individual stream or previous channel automatically. Calling `StopAudioStreamForPlayer` / `SA_StopAudioStreamForPlayer` also leaves any active channel.
+### Channel Lifecycle, Passwords & Queue Behavior
+* `SA_PlayChannelAudioStream`: Clears/replaces current playback on the channel and immediately starts the given URL or search query.
+* `SA_QueueChannelAudioStream`: Appends a track to the channel's queue. When the active track finishes draining its lead buffer, listeners cleanly transition to the next track (with a brief audible gap while clients reconnect to the new track).
+* `SA_SkipChannelAudioStream`: Aborts the active track and advances immediately to the next queued track.
+* `SA_JoinAudioStreamChannel` / `SA_LeaveAudioStreamChannel`: Joining a channel stops the player's individual stream or previous channel automatically; if the channel has a password set (`SA_SetAudioStreamChannelPass`), the matching password must be supplied or join fails. Calling `StopAudioStreamForPlayer` / `SA_StopAudioStreamForPlayer` also leaves any active channel.
+* **Creator Tracking & Auto-Destruction:** Pass `creator_playerid`, optional `password`, `E_SA_CHANNEL_DESTROY_MODE` (`SA_CHANNEL_DESTROY_MANUAL`, `SA_CHANNEL_DESTROY_ON_DISCONNECT`, or `SA_CHANNEL_DESTROY_ON_TIMEOUT`), and `destroy_timeout_sec` to `SA_CreateAudioStreamChannel` (or update later via `SA_SetAudioStreamChannelDestroy` / `SA_SetAudioStreamChannelCreator`).
+  * Automatic destruction modes (`OnDisconnect` / `Timeout`) require a connected creator (server-owned channels without a creator remain `Manual`).
+  * Online creators keep ownership across `SetPlayerName` changes (updating the stored creator name), and disconnect snapshots the final name as a safety net. When an offline creator reconnects (`OnPlayerConnect`) or completes login/tag rename (`SetPlayerName`) matching their stored name (case-insensitive), `Timeout` resets to full `destroy_timeout_sec` and pauses again. Servers with account systems should call `SA_SetAudioStreamChannelCreator` after account login if another player could adopt an offline creator's name.
+  * When `Timeout` expires offline or creator disconnects in `OnDisconnect` mode, `OnAudioStreamChannelDestroyed` arrives on the next server tick.
+* **Dynamic Channel Menus:** Enumerate all active channels with `SA_GetAudioStreamChannelCount`, `SA_GetAudioStreamChannelID`, `SA_GetAudioStreamChannelInfo`, `SA_GetAudioStreamChannelTrack`, `SA_GetAudioStreamChannelElapsed`, `SA_GetAudioStreamChannelListener`, `SA_GetAudioStreamChannelQueue`, and `SA_GetAudioStreamChannelDestroy`.
+* **Spatial Channels & Mobile Sound Cars:** Call `SA_SetAudioStreamChannelPos(channelid, x, y, z, distance, worldid, interiorid, auto_listen)` for fixed-position clubs/bars/venues (with client-side 3D attenuation), or attach dynamically with `SA_AttachAudioStreamChannelToVehicle` / `SA_AttachAudioStreamChannelToPlayer` (which play at full 2D volume inside server range and silence outside range because SA-MP clients cannot move active 3D sound origins; reset via `SA_ClearAudioStreamChannelPos`). Use `auto_listen = false` for private/password-restricted areas so only subscribed players inside the zone hear audio.
+* **Queue Manipulation & Loop Modes:** Insert at any position (`SA_InsertAudioStreamChannelQueue`), remove by index (`SA_RemoveAudioStreamChannelQueue`), import extractor playlists (`SA_QueueChannelAudioStreamPlaylist`), seek tracks (`SA_SeekChannelAudioStream`), configure `SA_SetAudioStreamChannelLoop` (`OFF`, `TRACK`, `QUEUE`), and handle `OnAudioStreamChannelTrackStart`, `OnAudioStreamChannelQueueEnd`, `OnAudioStreamChannelError`, `OnAudioStreamChannelPlaylistQueued`, and `OnAudioStreamChannelRestored`.
+
+---
+
+## 3. Channel Persistence
+
+When `channels.persist_channels` is `true` (default), synchronized channels survive server restarts and GMX mode reloads with their original `channelid`:
+
+* **Where & Format:** Each channel is saved atomically (`.tmp` write + replace) as `scriptfiles/SampAudioStream/channels/channel_<id>.json`, debounced at most once per second per channel on an async worker thread (flushed synchronously during `Shutdown()`).
+* **What is Saved:** Channel `id`, UTF-8 `name`, salted SHA-256 `password_hash`/`password_salt` (no plaintext password in memory or on disk), creator metadata (`has_creator`, `creator_name_hex`), destruction policy/timeout, volume, pause state, `loop_mode`, `current_input` (`utf8_url` + `pawn_url_hex`), `was_playing`, `queue`, and fixed spatial configuration (`pos`, `distance`, `world_id`, `interior_id`, `auto_listen`). Player and vehicle attachments are **not** persisted across restarts or GMX because player/vehicle IDs are reassigned; only the last known position is preserved as a fixed 3D position.
+* **Deleted When Genuinely Destroyed:** Channel JSON files are deleted **only** on real channel destruction (`SA_DestroyAudioStreamChannel`, genuine `OnDisconnect`, or expired `Timeout` / restore grace). Server shutdown disconnects and `OnGameModeExit` / GMX do **not** delete channels.
+* **Boot Restoration & Extractor Readiness:** On startup (`Initialize()`), valid files are loaded smallest-ID-first up to `channels.max_channels` (excess files are skipped with a warning and kept untouched on disk), `OnAudioStreamChannelRestored` fires after the gamemode finishes loading (`OnGameModeInit`), `Timeout` countdowns restart cleanly in full, and `OnDisconnect` channels wait for `channels.channel_restore_grace_seconds` (`300s` default; `0` = delete on boot) before expiring. Channels with `was_playing = true` remain `Idle` with their queue intact until `yt-dlp` becomes ready (or report `SA_ERR_EXTRACTOR_NOT_READY` once via `OnAudioStreamChannelError` without dropping the queue if extractor provisioning fails).
+* **GMX Behavior:** With `channels.persist_channels = true`, GMX stops personal/global streams and detaches any channel player/vehicle attachments (keeping the last known coordinates as a fixed 3D position) while keeping live channels, listeners, and active channel playback uninterrupted, then dispatches `OnAudioStreamChannelRestored` once the new gamemode initializes so scripts can rebind handles or re-attach entities without losing listeners. With `channels.persist_channels = false`, no channel files are read/written and GMX destroys all channels cleanly.
+* **Script Best Practices:** When `channels.persist_channels` is `true`, do **not** call `SA_DestroyAudioStreamChannel` inside `OnFilterScriptExit` or `OnGameModeExit` (otherwise server shutdown or `/rcon reloadfs` deletes saved channel files from disk). Before creating fixed server-owned channels in `OnFilterScriptInit` / `OnGameModeInit`, scan existing channels (`SA_GetAudioStreamChannelCount` / `SA_GetAudioStreamChannelID` / `SA_GetAudioStreamChannelInfo`) and reuse a matching channel instead of creating duplicates (see `FS_SampAudioStream_Demo.pwn`).

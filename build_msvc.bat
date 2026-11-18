@@ -62,18 +62,20 @@ if not exist "dist" mkdir "dist"
 mkdir "%STAGE_DIR%\plugins"
 mkdir "%STAGE_DIR%\components"
 mkdir "%STAGE_DIR%\include"
+mkdir "%STAGE_DIR%\filterscripts"
 
-set "DLL_PATH=build-win32\Release\sampaudiostream.dll"
+set "DLL_PATH=build-win32\Release\SampAudioStream.dll"
 if not exist "%DLL_PATH%" (
     echo [ERROR] Expected binary "%DLL_PATH%" not found!
     exit /b 1
 )
 
-copy /Y "%DLL_PATH%" "%STAGE_DIR%\plugins\sampaudiostream.dll" >nul
-copy /Y "%DLL_PATH%" "%STAGE_DIR%\components\sampaudiostream.dll" >nul
+copy /Y "%DLL_PATH%" "%STAGE_DIR%\plugins\SampAudioStream.dll" >nul
+copy /Y "%DLL_PATH%" "%STAGE_DIR%\components\SampAudioStream.dll" >nul
 
-if exist "sampaudiostream.inc" copy /Y "sampaudiostream.inc" "%STAGE_DIR%\include\sampaudiostream.inc" >nul
-if exist "Example.pwn" copy /Y "Example.pwn" "%STAGE_DIR%\Example.pwn" >nul
+if exist "SampAudioStream.inc" copy /Y "SampAudioStream.inc" "%STAGE_DIR%\include\SampAudioStream.inc" >nul
+if exist "FS_SampAudioStream_Demo.pwn" copy /Y "FS_SampAudioStream_Demo.pwn" "%STAGE_DIR%\filterscripts\FS_SampAudioStream_Demo.pwn" >nul
+if exist "FS_SampAudioStream_Demo.amx" copy /Y "FS_SampAudioStream_Demo.amx" "%STAGE_DIR%\filterscripts\FS_SampAudioStream_Demo.amx" >nul
 if exist "LICENSE" copy /Y "LICENSE" "%STAGE_DIR%\LICENSE" >nul
 
 if exist "dist\SampAudioStream-Windows.zip" del /f /q "dist\SampAudioStream-Windows.zip"
@@ -96,10 +98,10 @@ if not "%TARGET_DIR%"=="" (
     if exist "%TARGET_DIR%" (
         echo.
         echo Deploying to target directory: %TARGET_DIR%
-        if exist "%TARGET_DIR%\components" copy /Y "%DLL_PATH%" "%TARGET_DIR%\components\sampaudiostream.dll" >nul
-        if exist "%TARGET_DIR%\plugins" copy /Y "%DLL_PATH%" "%TARGET_DIR%\plugins\sampaudiostream.dll" >nul
-        if exist "%TARGET_DIR%\pawno\include" copy /Y "sampaudiostream.inc" "%TARGET_DIR%\pawno\include\sampaudiostream.inc" >nul
-        if exist "%TARGET_DIR%\qawno\include" copy /Y "sampaudiostream.inc" "%TARGET_DIR%\qawno\include\sampaudiostream.inc" >nul
+        if exist "%TARGET_DIR%\components" copy /Y "%DLL_PATH%" "%TARGET_DIR%\components\SampAudioStream.dll" >nul
+        if exist "%TARGET_DIR%\plugins" copy /Y "%DLL_PATH%" "%TARGET_DIR%\plugins\SampAudioStream.dll" >nul
+        if exist "%TARGET_DIR%\pawno\include" copy /Y "SampAudioStream.inc" "%TARGET_DIR%\pawno\include\SampAudioStream.inc" >nul
+        if exist "%TARGET_DIR%\qawno\include" copy /Y "SampAudioStream.inc" "%TARGET_DIR%\qawno\include\SampAudioStream.inc" >nul
         echo Deployment complete.
     )
 )

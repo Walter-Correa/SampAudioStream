@@ -16,11 +16,11 @@ This document explains how **SampAudioStream** achieves high performance, minima
        │        ├── Track cache (default: 256 entries, 3600s TTL)
        │        └── Search cache (default: 256 entries, max(60, TTL/4) = 900s)
        │
-       ├──► DirectAudio & volume == 100% & (!is_global || is_live)
+       ├──► DirectAudio (HTTP/HTTPS, non-.m3u8) & volume == 100% & (!is_global || is_live) & !(process_direct_audio_files && !is_live && file_ext)
        │        └── Fast Pass-Through -> Client receives original URL directly (+ async ICY title probe)
        │
        └──► Proxy / Extractor Path (Worker Pool + Dedicated Transcoder Thread)
-                ├── StreamResolver: direct http:// probe shortcut OR yt-dlp (--cache-dir + quickjs-ng)
+                ├── StreamResolver: direct http:// probe shortcut OR yt-dlp (--cache-dir + deno / quickjs-ng)
                 ├── AudioTranscoder: HLS (TS / ID3-ADTS / fMP4) / WebM / Ogg / MP4 / WAV / FLAC / ADTS / MP3
                 │                    -> LibMP3Lame (constant MP3 stream)
                 ├── AudioStreamBuffer (~30s circular ring buffer in RAM; ~480 KB at 128 kbps, min 256 KB)
@@ -32,15 +32,15 @@ This document explains how **SampAudioStream** achieves high performance, minima
 
 ## 2. Minimal Host Dependencies & Self-Managed Extractor
 
-Instead of requiring manual installation of `ffmpeg`, `python3`, `yt-dlp`, or `deno`/`node` on your server OS (only 32-bit `libcurl.so.4` is required on Linux hosts; Windows requires nothing):
+Instead of requiring manual installation of `ffmpeg`, `python3`, `yt-dlp`, or `deno`/`node` on your server OS (only 32-bit `libcurl.so.4` is required on Linux hosts; Windows requires nothing), **SampAudioStream** automatically downloads and SHA-256-verifies its own pinned `deno` runtime in the background when supported by the host platform while using `quickjs-ng` immediately on startup and as fallback:
 
 * **Zero external C/C++ runtime or `ffmpeg` binary required**:
-  * All audio decoders and encoders (`opus`, `ogg`, `fdk-aac`, `mp3lame_static`, `dr_mp3`, `dr_wav`, `dr_flac`, `stb_vorbis`) are **statically compiled into `sampaudiostream.dll` / `sampaudiostream.so`**.
+  * All audio decoders and encoders (`opus`, `ogg`, `fdk-aac`, `mp3lame_static`, `dr_mp3`, `dr_wav`, `dr_flac`, `stb_vorbis`) are **statically compiled into `SampAudioStream.dll` / `SampAudioStream.so`**.
   * On Windows, the plugin uses static MSVC CRT (`/MT`), depending only on OS system DLLs (`WS2_32.dll`, `WINHTTP.dll`, `KERNEL32.dll`, `IPHLPAPI.dll`).
-* **Self-managed `yt-dlp` (*onedir*) + `quickjs-ng` (`qjs`)**:
-  * To handle ever-changing platform signatures and throttling across YouTube and hundreds of other sites, [`BinaryManager`](../src/extractor/binary_manager.cpp) automatically downloads and unpacks `yt-dlp` (preferring official *onedir* `.zip` archives into `yt-dlp-onedir/` for ~1s faster cold-starts, falling back to single-file binaries if needed) and `quickjs-ng` (`qjs`) into `scriptfiles/samp-audio-stream/bin/`, alongside a persistent `--cache-dir` in `yt-dlp-cache/`.
-  * **Synchronous `http://` shortcut:** Plain `http://` URLs—even extensionless Shoutcast/Icecast endpoints like `http://live.hunter.fm/pop_stream`—at `100.0%` volume bypass `yt-dlp` via an inline HTTP/ICY/PLS/M3U probe + asynchronous `StreamTitle` enrichment so personal streams start without waiting for an external extractor subprocess.
-  * When `auto_update` is enabled in `config.json`, extractor updates happen cleanly in the background.
+* **Self-managed `yt-dlp` (*onedir*) + `deno` (`v2.9.8`) + `quickjs-ng` (`qjs`)**:
+  * To handle ever-changing platform signatures and throttling across YouTube and hundreds of other sites, [`BinaryManager`](../src/extractor/binary_manager.cpp) automatically downloads and SHA-256 verifies `yt-dlp` (preferring official *onedir* `.zip` archives into `yt-dlp-onedir/` for ~1s faster cold-starts, falling back to single-file binaries if needed) and `quickjs-ng` (`qjs`) first into `scriptfiles/SampAudioStream/bin/`, then asynchronously downloads and health-checks pinned **Deno `v2.9.8`** into `deno/` (`deno-cache/`) on supported 64-bit hosts when `extractor.js_runtime` is `"auto"` or `"deno"`. Persistent `--cache-dir` state lives in `yt-dlp-cache/` (the verified `youtube-sigfuncs/` subdirectory is automatically pruned by file age via `extractor.yt_dlp_cache_max_age_days` — `7` days default, `0` to disable — with an internal `64 MB` size cap protecting files newer than `1 hour`, executed once at startup and asynchronously during maintenance ticks when no `yt-dlp` subprocess is active; `deno/`, `deno-cache/`, and `challenge-solver/` JS scripts remain untouched).
+  * **Automatic direct HTTP/HTTPS passthrough & probe:** Direct `http://` URLs and native-extension `https://` URLs (`.mp3`/`.ogg`/`.wav`/`.flac`/`.aac`/`.pls`/`.m3u`, excluding `.m3u8` and platform hosts) at `100.0%` volume start in passthrough without launching `yt-dlp`. Extensionless `https://` URLs run a lightweight HTTP/ICY/HLS probe (`ProbeDirectHttpAudio`): if an `audio/*` radio is detected, it routes directly in passthrough and caches that classification; HTML pages and `.m3u8` proceed to `yt-dlp` / HLS transcoding. Passing `.process_direct_audio_files = true` on `SA_PlayAudioStreamForPlayer` / `SA_PlayAudioStream` intentionally bypasses passthrough for direct music files so the transcoder manages playback, pause/resume, volume, distance updates, and `OnAudioStreamFinished`.
+  * When `extractor.auto_update` is enabled in `config.json`, extractor updates happen cleanly in the background.
 
 ---
 

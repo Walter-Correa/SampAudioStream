@@ -46,6 +46,7 @@ void SampHost::CaptureServerNatives(AMX* amx) {
     if (!fn_get_player_vehicle_) fn_get_player_vehicle_ = FindNativeFunc(amx, "GetPlayerVehicleID");
     if (!fn_get_vehicle_pos_) fn_get_vehicle_pos_ = FindNativeFunc(amx, "GetVehiclePos");
     if (!fn_get_player_ip_) fn_get_player_ip_ = FindNativeFunc(amx, "GetPlayerIp");
+    if (!fn_get_player_name_) fn_get_player_name_ = FindNativeFunc(amx, "GetPlayerName");
     if (!fn_get_server_var_int_) {
         fn_get_server_var_int_ = FindNativeFunc(amx, "GetServerVarAsInt");
         if (!fn_get_server_var_int_) fn_get_server_var_int_ = FindNativeFunc(amx, "GetConsoleVarAsInt");
@@ -63,6 +64,10 @@ void SampHost::CaptureServerNatives(AMX* amx) {
     if (!orig_stop_audio_) {
         AMX_NATIVE s = FindNativeFunc(amx, "StopAudioStreamForPlayer");
         if (s && s != Hooked_StopAudioStreamForPlayer) orig_stop_audio_ = s;
+    }
+    if (!orig_set_player_name_) {
+        AMX_NATIVE sn = FindNativeFunc(amx, "SetPlayerName");
+        if (sn && sn != Hooked_SetPlayerName) orig_set_player_name_ = sn;
     }
 }
 
@@ -83,10 +88,15 @@ void SampHost::OnAmxLoad(AMX* amx) {
 
     CaptureServerNatives(amx);
     SetOriginalAudioNatives(orig_play_audio_, orig_stop_audio_);
+    SetOriginalSetPlayerNameNative(orig_set_player_name_);
 
     // Register SA_* natives
     const auto& natives = GetPluginNatives();
     amx_Register(amx, const_cast<AMX_NATIVE_INFO*>(natives.data()), -1);
+
+    // Track SetPlayerName across all scripts (for channel creator rename/reconnection tracking)
+    PatchNative(amx, "SetPlayerName", Hooked_SetPlayerName, &orig_set_player_name_);
+    SetOriginalSetPlayerNameNative(orig_set_player_name_);
 
     // Hook standard PlayAudioStreamForPlayer / StopAudioStreamForPlayer
     if (hook_native_audio_) {
@@ -96,12 +106,16 @@ void SampHost::OnAmxLoad(AMX* amx) {
     }
 
     if (is_gamemode) {
+        {
+            std::lock_guard<std::mutex> lock(amx_mutex_);
+            gamemode_loaded_pending_tick_ = true;
+        }
         auto log_missing_native = [this](AMX_NATIVE fn, const char* name) {
             if (!fn) {
                 Log(LogSeverity::Error,
                     std::string("Required SA-MP native '") + name +
                     "' was not found in the gamemode AMX native table. "
-                    "Please recompile your gamemode with the updated sampaudiostream.inc included after <a_samp>.");
+                    "Please recompile your gamemode with the updated SampAudioStream.inc included after <a_samp>.");
             }
         };
         log_missing_native(orig_play_audio_, "PlayAudioStreamForPlayer");
@@ -129,13 +143,29 @@ void SampHost::OnAmxUnload(AMX* amx) {
 
     if (reset_engine) {
         disconnect_event_seen_.store(false);
+        {
+            std::lock_guard<std::mutex> lock(amx_mutex_);
+            gamemode_loaded_pending_tick_ = false;
+        }
         if (engine_) {
+            engine_->NotifyLifecycleStopping();
             engine_->Reset();
         }
     }
 }
 
 void SampHost::OnProcessTick() {
+    bool notify_gm_loaded = false;
+    {
+        std::lock_guard<std::mutex> lock(amx_mutex_);
+        if (gamemode_loaded_pending_tick_ && gamemode_amx_) {
+            gamemode_loaded_pending_tick_ = false;
+            notify_gm_loaded = true;
+        }
+    }
+    if (notify_gm_loaded && engine_) {
+        engine_->OnGameModeLoaded();
+    }
     if (engine_) {
         engine_->Tick();
     }
@@ -143,10 +173,14 @@ void SampHost::OnProcessTick() {
 
 void SampHost::Log(LogSeverity severity, const std::string& message) {
     if (!logprintf_) return;
+    if (severity == LogSeverity::Info) {
+        logprintf_("[SampAudioStream] %s", message.c_str());
+        return;
+    }
     const char* tag = "INFO";
     switch (severity) {
         case LogSeverity::Debug: tag = "DEBUG"; break;
-        case LogSeverity::Info: tag = "INFO"; break;
+        case LogSeverity::Info: break;
         case LogSeverity::Warning: tag = "WARN"; break;
         case LogSeverity::Error: tag = "ERROR"; break;
     }
@@ -352,6 +386,22 @@ std::string SampHost::GetPlayerIp(PlayerId player_id) const {
 
     cell params[4] = {3 * sizeof(cell), static_cast<cell>(player_id), amx_addr, 32};
     fn_get_player_ip_(amx, params);
+    char buf[32]{};
+    amx_GetString(buf, phys, 0, sizeof(buf));
+    amx_Release(amx, amx_addr);
+    return std::string(buf);
+}
+
+std::string SampHost::GetPlayerName(PlayerId player_id) const {
+    AMX* amx = GetPrimaryAmx();
+    if (!amx || !fn_get_player_name_) return "";
+
+    cell amx_addr = 0;
+    cell* phys = nullptr;
+    if (amx_Allot(amx, 32, &amx_addr, &phys) != AMX_ERR_NONE) return "";
+
+    cell params[4] = {3 * sizeof(cell), static_cast<cell>(player_id), amx_addr, 32};
+    fn_get_player_name_(amx, params);
     char buf[32]{};
     amx_GetString(buf, phys, 0, sizeof(buf));
     amx_Release(amx, amx_addr);

@@ -7,15 +7,19 @@
 #include <asio.hpp>
 #include <atomic>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <thread>
 #include <unordered_set>
 
 #ifdef _WIN32
@@ -35,6 +39,11 @@
 #endif
 
 namespace sampaudiostream {
+
+bool ValidateRemoteUrlWithClass(
+    const std::string& url,
+    std::string& out_error,
+    bool* out_is_private_or_loopback);
 
 namespace {
 
@@ -322,20 +331,48 @@ struct WinHttpHandle {
 struct CancelableWinHttpRequest {
     std::mutex mtx;
     HINTERNET h{nullptr};
+    bool closed{false};
+    bool in_call{false};
+    std::atomic<bool> saw_connect_to_server{false};
+
     explicit CancelableWinHttpRequest(HINTERNET handle) : h(handle) {}
     ~CancelableWinHttpRequest() { Close(); }
+
+    HINTERNET BeginCall() {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (closed || !h) {
+            return nullptr;
+        }
+        in_call = true;
+        return h;
+    }
+
+    bool EndCall() {
+        std::lock_guard<std::mutex> lock(mtx);
+        in_call = false;
+        return !closed && h != nullptr;
+    }
+
+    bool IsClosed() {
+        std::lock_guard<std::mutex> lock(mtx);
+        return closed || h == nullptr;
+    }
+
     void Close() {
         HINTERNET tmp = nullptr;
         {
             std::lock_guard<std::mutex> lock(mtx);
+            if (closed) {
+                return;
+            }
+            closed = true;
             tmp = h;
             h = nullptr;
         }
-        if (tmp) WinHttpCloseHandle(tmp);
-    }
-    HINTERNET Raw() {
-        std::lock_guard<std::mutex> lock(mtx);
-        return h;
+        if (tmp) {
+            WinHttpSetStatusCallback(tmp, nullptr, 0, 0);
+            WinHttpCloseHandle(tmp);
+        }
     }
 };
 
@@ -346,6 +383,178 @@ struct ActiveWinHttpEntry {
 
 std::mutex g_active_winhttp_mtx;
 std::vector<ActiveWinHttpEntry> g_active_winhttp;
+
+std::mutex g_winhttp_hook_mtx;
+std::function<void()> g_winhttp_between_calls_hook;
+std::atomic<std::uint64_t> g_winhttp_read_data_calls{0};
+std::atomic<std::uint64_t> g_winhttp_fresh_session_count{0};
+
+struct WinHttpCloserState {
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::condition_variable done_cv;
+    std::vector<std::shared_ptr<CancelableWinHttpRequest>> queue;
+    std::thread worker;
+    bool stopping{false};
+    bool running{false};
+    bool shut_down{false};
+    std::size_t closing_in_flight{0};
+    std::atomic<std::uint64_t> threads_created{0};
+
+    ~WinHttpCloserState() {
+        // Static teardown may run under the Windows DLL loader lock (DLL_PROCESS_DETACH).
+        // Never join() here; detach any lingering worker so teardown cannot deadlock.
+        std::lock_guard<std::mutex> lock(mtx);
+        shut_down = true;
+        stopping = true;
+        cv.notify_all();
+        if (worker.joinable()) {
+            worker.detach();
+        }
+        running = false;
+    }
+
+    void Reenable() {
+        std::lock_guard<std::mutex> lock(mtx);
+        shut_down = false;
+    }
+
+    void EnsureStartedLocked() {
+        if (worker.joinable()) {
+            if (!running) {
+                worker.join();
+            } else {
+                return;
+            }
+        }
+        stopping = false;
+        running = true;
+        threads_created.fetch_add(1, std::memory_order_relaxed);
+        worker = std::thread([this]() { Run(); });
+    }
+
+    void Enqueue(std::vector<std::shared_ptr<CancelableWinHttpRequest>>& items) {
+        if (items.empty()) {
+            return;
+        }
+        std::vector<std::shared_ptr<CancelableWinHttpRequest>> inline_close;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            if (shut_down) {
+                inline_close.swap(items);
+            } else {
+                EnsureStartedLocked();
+                for (auto& item : items) {
+                    queue.push_back(std::move(item));
+                }
+                cv.notify_one();
+                return;
+            }
+        }
+        for (auto& req : inline_close) {
+            if (req) {
+                req->Close();
+            }
+        }
+    }
+
+    void Run() {
+        while (true) {
+            std::vector<std::shared_ptr<CancelableWinHttpRequest>> batch;
+            {
+                std::unique_lock<std::mutex> lock(mtx);
+                cv.wait(lock, [&]() { return stopping || !queue.empty(); });
+                if (queue.empty() && stopping) {
+                    running = false;
+                    done_cv.notify_all();
+                    return;
+                }
+                batch.swap(queue);
+                closing_in_flight = batch.size();
+            }
+            for (auto& req : batch) {
+                if (req) {
+                    req->Close();
+                }
+            }
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                closing_in_flight = 0;
+                done_cv.notify_all();
+            }
+        }
+    }
+
+    bool WaitUntilIdle(int timeout_ms) {
+        std::unique_lock<std::mutex> lock(mtx);
+        return done_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&]() {
+            return queue.empty() && closing_in_flight == 0;
+        });
+    }
+
+    void Shutdown(int deadline_ms = 3000) {
+        std::thread to_join;
+        {
+            std::unique_lock<std::mutex> lock(mtx);
+            shut_down = true;
+            if (!worker.joinable()) {
+                stopping = false;
+                running = false;
+                return;
+            }
+            stopping = true;
+            cv.notify_all();
+            bool finished = done_cv.wait_for(lock, std::chrono::milliseconds(deadline_ms), [&]() {
+                return !running;
+            });
+            if (finished) {
+                to_join = std::move(worker);
+            } else {
+                worker.detach();
+                running = false;
+                stopping = false;
+                return;
+            }
+        }
+        if (to_join.joinable()) {
+            to_join.join();
+        }
+    }
+};
+
+WinHttpCloserState& GetWinHttpCloserState() {
+    static WinHttpCloserState state;
+    return state;
+}
+
+template <typename Fn>
+bool RunWinHttpCall(
+    const std::shared_ptr<CancelableWinHttpRequest>& guard,
+    const std::atomic<bool>* cancel_flag,
+    DWORD& out_err,
+    bool& out_cancelled,
+    Fn&& fn) {
+    out_err = 0;
+    out_cancelled = false;
+    if (cancel_flag && cancel_flag->load()) {
+        out_cancelled = true;
+        return false;
+    }
+    HINTERNET req = guard->BeginCall();
+    if (!req) {
+        out_cancelled = true;
+        return false;
+    }
+    BOOL ok = fn(req);
+    DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+    bool still_open = guard->EndCall();
+    if (!still_open || (cancel_flag && cancel_flag->load())) {
+        out_cancelled = true;
+        return false;
+    }
+    out_err = err;
+    return ok != FALSE;
+}
 
 void RegisterCancelableWinHttpRequest(const std::shared_ptr<CancelableWinHttpRequest>& req, const std::atomic<bool>* cancel_flag) {
     if (!req || !cancel_flag) return;
@@ -358,19 +567,40 @@ void RegisterCancelableWinHttpRequest(const std::shared_ptr<CancelableWinHttpReq
     g_active_winhttp.push_back({req, cancel_flag});
 }
 
-HINTERNET GetSharedWinHttpSession() {
-    static std::mutex session_mtx;
-    static HINTERNET shared_session = nullptr;
-    std::lock_guard<std::mutex> lock(session_mtx);
-    if (!shared_session) {
-        shared_session = WinHttpOpen(
+void CALLBACK OnWinHttpDiagCallback(
+    HINTERNET,
+    DWORD_PTR dwContext,
+    DWORD dwInternetStatus,
+    LPVOID,
+    DWORD) {
+    if (dwContext == 0) {
+        return;
+    }
+    if (dwInternetStatus == WINHTTP_CALLBACK_STATUS_CONNECTING_TO_SERVER ||
+        dwInternetStatus == WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER) {
+        auto* req = reinterpret_cast<CancelableWinHttpRequest*>(dwContext);
+        req->saw_connect_to_server.store(true, std::memory_order_relaxed);
+    }
+}
+
+HINTERNET CreateWinHttpSession(bool bypass_proxy) {
+    HINTERNET session = nullptr;
+    if (bypass_proxy) {
+        session = WinHttpOpen(
+            L"SampAudioStream/1.0",
+            WINHTTP_ACCESS_TYPE_NO_PROXY,
+            WINHTTP_NO_PROXY_NAME,
+            WINHTTP_NO_PROXY_BYPASS,
+            0);
+    } else {
+        session = WinHttpOpen(
             L"SampAudioStream/1.0",
             WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
             WINHTTP_NO_PROXY_NAME,
             WINHTTP_NO_PROXY_BYPASS,
             0);
-        if (!shared_session) {
-            shared_session = WinHttpOpen(
+        if (!session) {
+            session = WinHttpOpen(
                 L"SampAudioStream/1.0",
                 WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                 WINHTTP_NO_PROXY_NAME,
@@ -378,7 +608,24 @@ HINTERNET GetSharedWinHttpSession() {
                 0);
         }
     }
-    return shared_session;
+    return session;
+}
+
+HINTERNET GetSharedWinHttpSession(bool bypass_proxy) {
+    static std::mutex session_mtx;
+    static HINTERNET proxy_session = nullptr;
+    static HINTERNET no_proxy_session = nullptr;
+    std::lock_guard<std::mutex> lock(session_mtx);
+    if (bypass_proxy) {
+        if (!no_proxy_session) {
+            no_proxy_session = CreateWinHttpSession(true);
+        }
+        return no_proxy_session;
+    }
+    if (!proxy_session) {
+        proxy_session = CreateWinHttpSession(false);
+    }
+    return proxy_session;
 }
 
 std::wstring Utf8ToWide(const std::string& str) {
@@ -397,6 +644,91 @@ std::string WideToUtf8(const std::wstring& wstr) {
     std::string res(needed, '\0');
     WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.size()), res.data(), needed, nullptr, nullptr);
     return res;
+}
+
+std::string QuerySentWinHttpHeadersSummary(HINTERNET req, bool& out_had_cookie) {
+    out_had_cookie = false;
+    DWORD needed_bytes = 0;
+    WinHttpQueryHeaders(
+        req,
+        WINHTTP_QUERY_RAW_HEADERS_CRLF | WINHTTP_QUERY_FLAG_REQUEST_HEADERS,
+        WINHTTP_HEADER_NAME_BY_INDEX,
+        nullptr,
+        &needed_bytes,
+        WINHTTP_NO_HEADER_INDEX);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || needed_bytes == 0 || needed_bytes > 16384) {
+        return "";
+    }
+    std::wstring raw_buf(needed_bytes / sizeof(wchar_t), L'\0');
+    if (!WinHttpQueryHeaders(
+            req,
+            WINHTTP_QUERY_RAW_HEADERS_CRLF | WINHTTP_QUERY_FLAG_REQUEST_HEADERS,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            raw_buf.data(),
+            &needed_bytes,
+            WINHTTP_NO_HEADER_INDEX)) {
+        return "";
+    }
+    raw_buf.resize(needed_bytes / sizeof(wchar_t));
+    while (!raw_buf.empty() && raw_buf.back() == L'\0') {
+        raw_buf.pop_back();
+    }
+
+    const std::string raw_utf8 = WideToUtf8(raw_buf);
+    std::istringstream iss(raw_utf8);
+    std::string line;
+    std::string summary;
+    bool skipped_request_line = false;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        line = Trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        if (!skipped_request_line) {
+            skipped_request_line = true;
+            if (line.find(':') == std::string::npos || line.rfind("HTTP/", 0) != std::string::npos ||
+                line.find(" HTTP/") != std::string::npos) {
+                continue;
+            }
+        }
+        const auto colon = line.find(':');
+        if (colon == std::string::npos) {
+            continue;
+        }
+        std::string name = Trim(line.substr(0, colon));
+        std::string val = Trim(line.substr(colon + 1));
+        if (name.empty()) {
+            continue;
+        }
+        std::string entry;
+        const std::string lower = ToLowerCopy(name);
+        if (lower == "user-agent") {
+            std::string clean_val;
+            clean_val.reserve(std::min<std::size_t>(val.size(), 120));
+            for (unsigned char ch : val) {
+                clean_val.push_back((ch < 0x20 || ch == 0x7f) ? ' ' : static_cast<char>(ch));
+                if (clean_val.size() >= 120) break;
+            }
+            entry = name + "=\"" + clean_val + "\"";
+        } else if (lower == "cookie") {
+            out_had_cookie = true;
+            entry = name + "=<present>";
+        } else {
+            entry = name;
+        }
+        if (!summary.empty()) {
+            summary += ", ";
+        }
+        if (summary.size() + entry.size() > 512) {
+            summary += "...";
+            break;
+        }
+        summary += entry;
+    }
+    return summary;
 }
 
 std::string FormatWinError(DWORD err) {
@@ -597,9 +929,14 @@ bool PerformWinHttpRequest(
     std::int64_t& out_content_length,
     const HttpClient::ChunkCallback& on_chunk,
     const std::atomic<bool>* cancel_flag,
-    std::string& out_error) {
+    std::string& out_error,
+    HttpRequestDiagnostics* out_diag = nullptr,
+    bool fresh_session = false) {
     out_status = 0;
     out_content_length = -1;
+    if (out_diag) {
+        *out_diag = {};
+    }
 
     constexpr int kMaxRedirects = 5;
     std::string current_url = url;
@@ -611,13 +948,33 @@ bool PerformWinHttpRequest(
     }
 
     for (int redir = 0; redir <= kMaxRedirects; ++redir) {
-        if (!HttpClient::ValidateRemoteUrl(current_url, out_error)) {
+        bool is_private_or_loopback = false;
+        if (!ValidateRemoteUrlWithClass(current_url, out_error, &is_private_or_loopback)) {
             return false;
         }
 
         std::string cur_scheme, cur_host, cur_path;
         std::uint16_t cur_port = 0;
         ParseHttpUrlComponents(current_url, cur_scheme, cur_host, cur_port, cur_path);
+        const auto req_start = std::chrono::steady_clock::now();
+        auto fail_winhttp = [&](const char* stage, DWORD err_code, bool allow_transient) -> bool {
+            const std::string formatted = FormatWinError(err_code);
+            if (out_diag && allow_transient &&
+                HttpClient::IsTransientWinHttpError(static_cast<unsigned long>(err_code))) {
+                out_diag->transient_transport_error = true;
+            }
+            if (Logger::Instance().IsDebugEnabled()) {
+                const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - req_start).count();
+                Logger::Instance().Debug(
+                    "HTTP transport failed (winhttp): error=" + std::to_string(err_code) +
+                    " (" + formatted + "), stage=" + stage +
+                    ", elapsed_ms=" + std::to_string(elapsed_ms) +
+                    ", host=" + cur_host);
+            }
+            out_error = formatted;
+            return false;
+        };
         HttpClient::HeaderMap effective_headers = headers;
         if (!initial_host.empty() && cur_host != initial_host) {
             for (auto hit = effective_headers.begin(); hit != effective_headers.end();) {
@@ -646,16 +1003,18 @@ bool PerformWinHttpRequest(
             return false;
         }
 
-        HINTERNET session = GetSharedWinHttpSession();
+        WinHttpHandle fresh_session_guard(fresh_session ? CreateWinHttpSession(is_private_or_loopback) : nullptr);
+        if (fresh_session && redir == 0 && fresh_session_guard.valid()) {
+            g_winhttp_fresh_session_count.fetch_add(1, std::memory_order_relaxed);
+        }
+        HINTERNET session = fresh_session ? static_cast<HINTERNET>(fresh_session_guard) : GetSharedWinHttpSession(is_private_or_loopback);
         if (!session) {
-            out_error = FormatWinError(GetLastError());
-            return false;
+            return fail_winhttp("open", GetLastError(), false);
         }
 
         WinHttpHandle connect(WinHttpConnect(session, uc.lpszHostName, uc.nPort, 0));
         if (!connect.valid()) {
-            out_error = FormatWinError(GetLastError());
-            return false;
+            return fail_winhttp("connect", GetLastError(), true);
         }
 
         std::wstring wmethod = Utf8ToWide(method);
@@ -669,10 +1028,8 @@ bool PerformWinHttpRequest(
             WINHTTP_NO_REFERER,
             WINHTTP_DEFAULT_ACCEPT_TYPES,
             flags));
-        HINTERNET request = request_guard->Raw();
-        if (!request) {
-            out_error = FormatWinError(GetLastError());
-            return false;
+        if (request_guard->IsClosed()) {
+            return fail_winhttp("open_request", GetLastError(), false);
         }
         if (cancel_flag && cancel_flag->load()) {
             request_guard->Close();
@@ -681,47 +1038,134 @@ bool PerformWinHttpRequest(
         }
         RegisterCancelableWinHttpRequest(request_guard, cancel_flag);
 
-        WinHttpSetTimeouts(request, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
+        DWORD err = 0;
+        bool cancelled = false;
+
+        RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+            return WinHttpSetTimeouts(req, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
+        });
+        if (cancelled) {
+            out_error = "Cancelled";
+            return false;
+        }
 
         // Disable automatic redirects so every hop is re-validated against SSRF rules.
         DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
-        WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &redirect_policy, sizeof(redirect_policy));
+        RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+            return WinHttpSetOption(req, WINHTTP_OPTION_REDIRECT_POLICY, &redirect_policy, sizeof(redirect_policy));
+        });
+        if (cancelled) {
+            out_error = "Cancelled";
+            return false;
+        }
+
+        // Disable WinHTTP's automatic cookie engine on the request handle (explicit Cookie headers still pass through).
+        DWORD disable_cookies = WINHTTP_DISABLE_COOKIES;
+        RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+            return WinHttpSetOption(req, WINHTTP_OPTION_DISABLE_FEATURE, &disable_cookies, sizeof(disable_cookies));
+        });
+        if (cancelled) {
+            out_error = "Cancelled";
+            return false;
+        }
 
         std::wstring header_str;
         for (const auto& [k, v] : effective_headers) {
             header_str += Utf8ToWide(k) + L": " + Utf8ToWide(v) + L"\r\n";
         }
         if (!header_str.empty()) {
-            WinHttpAddRequestHeaders(request, header_str.c_str(), static_cast<DWORD>(header_str.size()), WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+            RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+                return WinHttpAddRequestHeaders(req, header_str.c_str(), static_cast<DWORD>(header_str.size()), WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+            });
+            if (cancelled) {
+                out_error = "Cancelled";
+                return false;
+            }
         }
 
-        if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
-            DWORD err = GetLastError();
+        bool diag_cb_installed = false;
+        if (out_diag && Logger::Instance().IsDebugEnabled()) {
+            DWORD cb_err = 0;
+            bool cb_cancelled = false;
+            diag_cb_installed = RunWinHttpCall(request_guard, cancel_flag, cb_err, cb_cancelled, [&](HINTERNET req) -> BOOL {
+                DWORD_PTR ctx_ptr = reinterpret_cast<DWORD_PTR>(request_guard.get());
+                WinHttpSetOption(req, WINHTTP_OPTION_CONTEXT_VALUE, &ctx_ptr, sizeof(ctx_ptr));
+                WINHTTP_STATUS_CALLBACK prev = WinHttpSetStatusCallback(
+                    req,
+                    OnWinHttpDiagCallback,
+                    WINHTTP_CALLBACK_FLAG_CONNECT_TO_SERVER,
+                    0);
+                return prev != WINHTTP_INVALID_STATUS_CALLBACK;
+            });
+            if (cb_cancelled) {
+                out_error = "Cancelled";
+                return false;
+            }
+        }
+
+        if (!RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+                return WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+            })) {
+            if (cancelled) {
+                out_error = "Cancelled";
+                return false;
+            }
             if (err == ERROR_WINHTTP_INVALID_SERVER_RESPONSE && uc.nScheme == INTERNET_SCHEME_HTTP) {
                 return PerformRawHttpIcyRequest(method, current_url, effective_headers, timeout_ms, out_status, out_content_type, out_content_length, on_chunk, cancel_flag, out_error, redir);
             }
-            out_error = (cancel_flag && cancel_flag->load()) ? "Cancelled" : FormatWinError(err);
-            return false;
+            return fail_winhttp("send", err, true);
         }
 
-        if (!WinHttpReceiveResponse(request, nullptr)) {
-            DWORD err = GetLastError();
+        if (!RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+                return WinHttpReceiveResponse(req, nullptr);
+            })) {
+            if (cancelled) {
+                out_error = "Cancelled";
+                return false;
+            }
             if (err == ERROR_WINHTTP_INVALID_SERVER_RESPONSE && uc.nScheme == INTERNET_SCHEME_HTTP) {
                 return PerformRawHttpIcyRequest(method, current_url, effective_headers, timeout_ms, out_status, out_content_type, out_content_length, on_chunk, cancel_flag, out_error, redir);
             }
-            out_error = (cancel_flag && cancel_flag->load()) ? "Cancelled" : FormatWinError(err);
-            return false;
+            return fail_winhttp("receive", err, true);
+        }
+
+        if (out_diag && diag_cb_installed) {
+            DWORD clr_err = 0;
+            bool clr_cancelled = false;
+            RunWinHttpCall(request_guard, cancel_flag, clr_err, clr_cancelled, [&](HINTERNET req) -> BOOL {
+                WinHttpSetStatusCallback(req, nullptr, 0, 0);
+                return TRUE;
+            });
+            if (clr_cancelled) {
+                out_error = "Cancelled";
+                return false;
+            }
+            out_diag->connection_reused_known = true;
+            out_diag->connection_reused = !request_guard->saw_connect_to_server.load(std::memory_order_relaxed);
         }
 
         DWORD status_code = 0;
         DWORD status_size = sizeof(status_code);
-        WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status_code, &status_size, WINHTTP_NO_HEADER_INDEX);
+        RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+            return WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status_code, &status_size, WINHTTP_NO_HEADER_INDEX);
+        });
+        if (cancelled) {
+            out_error = "Cancelled";
+            return false;
+        }
         out_status = static_cast<int>(status_code);
 
         if (out_status == 301 || out_status == 302 || out_status == 303 || out_status == 307 || out_status == 308) {
             wchar_t loc_buf[4096]{};
             DWORD loc_size = sizeof(loc_buf);
-            if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, loc_buf, &loc_size, WINHTTP_NO_HEADER_INDEX)) {
+            bool has_loc = RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+                return WinHttpQueryHeaders(req, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, loc_buf, &loc_size, WINHTTP_NO_HEADER_INDEX);
+            });
+            if (cancelled) {
+                out_error = "Cancelled";
+                return false;
+            }
+            if (!has_loc) {
                 out_error = "Redirect without Location header";
                 return false;
             }
@@ -739,39 +1183,121 @@ bool PerformWinHttpRequest(
             continue;
         }
 
-        if (fail_on_http_error && out_status >= 400) {
-            out_error = "HTTP status " + std::to_string(out_status);
-            return false;
+        if (out_diag) {
+            out_diag->redirected = (redir > 0);
+            out_diag->final_host = cur_host;
         }
 
         wchar_t ct_buf[256]{};
         DWORD ct_size = sizeof(ct_buf);
-        if (WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_TYPE, WINHTTP_HEADER_NAME_BY_INDEX, ct_buf, &ct_size, WINHTTP_NO_HEADER_INDEX)) {
+        bool has_ct = RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+            return WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_TYPE, WINHTTP_HEADER_NAME_BY_INDEX, ct_buf, &ct_size, WINHTTP_NO_HEADER_INDEX);
+        });
+        if (cancelled) {
+            out_error = "Cancelled";
+            return false;
+        }
+        if (has_ct) {
             out_content_type = WideToUtf8(std::wstring(ct_buf, ct_size / sizeof(wchar_t)));
         }
 
         wchar_t cl_buf[64]{};
         DWORD cl_size = sizeof(cl_buf);
-        if (WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, cl_buf, &cl_size, WINHTTP_NO_HEADER_INDEX)) {
+        bool has_cl = RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+            return WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, cl_buf, &cl_size, WINHTTP_NO_HEADER_INDEX);
+        });
+        if (cancelled) {
+            out_error = "Cancelled";
+            return false;
+        }
+        if (has_cl) {
             try {
                 out_content_length = std::stoll(WideToUtf8(cl_buf));
             } catch (...) {}
+        }
+
+        if (fail_on_http_error && out_status >= 400) {
+            if (out_diag && Logger::Instance().IsDebugEnabled()) {
+                DWORD qerr = 0;
+                bool qcancelled = false;
+                RunWinHttpCall(request_guard, cancel_flag, qerr, qcancelled, [&](HINTERNET req) -> BOOL {
+                    out_diag->sent_headers_summary =
+                        QuerySentWinHttpHeadersSummary(req, out_diag->had_cookie_header);
+                    return TRUE;
+                });
+                if (qcancelled) {
+                    out_error = "Cancelled";
+                    return false;
+                }
+            }
+            if (out_diag && method != "HEAD" && out_content_length != 0) {
+                std::string snippet;
+                std::array<std::uint8_t, 200> ebuf{};
+                while (snippet.size() < 200) {
+                    DWORD bytes_avail = 0;
+                    if (!RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+                            return WinHttpQueryDataAvailable(req, &bytes_avail);
+                        }) || bytes_avail == 0) {
+                        break;
+                    }
+                    DWORD want = (std::min)(
+                        static_cast<DWORD>(200 - snippet.size()),
+                        bytes_avail);
+                    DWORD got = 0;
+                    if (!RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+                            return WinHttpReadData(req, ebuf.data(), want, &got);
+                        }) || got == 0) {
+                        break;
+                    }
+                    snippet.append(reinterpret_cast<const char*>(ebuf.data()), static_cast<std::size_t>(got));
+                }
+                out_diag->error_body_snippet = std::move(snippet);
+            }
+            out_error = "HTTP status " + std::to_string(out_status);
+            return false;
         }
 
         if (method == "HEAD" || !on_chunk) {
             return true;
         }
 
-        std::array<std::uint8_t, 32768> buffer{};
-        DWORD bytes_read = 0;
-        while (true) {
-            if (cancel_flag && cancel_flag->load()) {
-                out_error = "Cancelled";
-                return false;
+        {
+            std::function<void()> hook;
+            {
+                std::lock_guard<std::mutex> hook_lock(g_winhttp_hook_mtx);
+                hook = g_winhttp_between_calls_hook;
             }
-            if (!WinHttpReadData(request, buffer.data(), static_cast<DWORD>(buffer.size()), &bytes_read)) {
-                out_error = (cancel_flag && cancel_flag->load()) ? "Cancelled" : FormatWinError(GetLastError());
-                return false;
+            if (hook) {
+                hook();
+            }
+        }
+
+        std::array<std::uint8_t, 32768> buffer{};
+        while (true) {
+            DWORD bytes_avail = 0;
+            if (!RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+                    return WinHttpQueryDataAvailable(req, &bytes_avail);
+                })) {
+                if (cancelled) {
+                    out_error = "Cancelled";
+                    return false;
+                }
+                return fail_winhttp("read", err, out_status < 400);
+            }
+            if (bytes_avail == 0) {
+                break;
+            }
+            DWORD to_read = (std::min)(bytes_avail, static_cast<DWORD>(buffer.size()));
+            DWORD bytes_read = 0;
+            if (!RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+                    g_winhttp_read_data_calls.fetch_add(1, std::memory_order_relaxed);
+                    return WinHttpReadData(req, buffer.data(), to_read, &bytes_read);
+                })) {
+                if (cancelled) {
+                    out_error = "Cancelled";
+                    return false;
+                }
+                return fail_winhttp("read", err, out_status < 400);
             }
             if (bytes_read == 0) {
                 break;
@@ -867,6 +1393,20 @@ struct CurlApi {
     static constexpr int INFO_RESPONSE_CODE = 0x200002;
     static constexpr int INFO_CONTENT_TYPE = 0x100012;
     static constexpr int INFO_REDIRECT_URL = 0x10001F;
+    static constexpr int INFO_PRIMARY_IP = 0x100020;
+    static constexpr int INFO_TOTAL_TIME_T = 0x600032;
+    static constexpr int INFO_NAMELOOKUP_TIME_T = 0x600033;
+    static constexpr int INFO_CONNECT_TIME_T = 0x600034;
+    static constexpr int INFO_STARTTRANSFER_TIME_T = 0x600036;
+    static constexpr int INFO_APPCONNECT_TIME_T = 0x600038;
+
+    static constexpr int ERR_COULDNT_RESOLVE_HOST = 6;
+    static constexpr int ERR_COULDNT_CONNECT = 7;
+    static constexpr int ERR_OPERATION_TIMEDOUT = 28;
+    static constexpr int ERR_SSL_CONNECT_ERROR = 35;
+    static constexpr int ERR_GOT_NOTHING = 52;
+    static constexpr int ERR_SEND_ERROR = 55;
+    static constexpr int ERR_RECV_ERROR = 56;
 
     bool Load() {
         std::lock_guard<std::mutex> lock(load_mtx);
@@ -947,6 +1487,7 @@ struct LinuxWriteCtx {
     HttpSecurityPolicy policy;
     bool ssrf_blocked{false};
     bool headers_published{false};
+    HttpRequestDiagnostics* diag{nullptr};
 };
 
 int CurlOpenSocketCb(void* clientp, int /*purpose*/, CurlSockAddr* address) {
@@ -1005,6 +1546,16 @@ size_t CurlWriteCb(char* ptr, size_t size, size_t nmemb, void* userdata) {
             *ctx->out_content_length = ctx->content_length;
         }
     }
+    if (http_code >= 400 && ctx->diag) {
+        if (ctx->diag->error_body_snippet.size() < 200) {
+            const size_t take = std::min<size_t>(total, 200 - ctx->diag->error_body_snippet.size());
+            ctx->diag->error_body_snippet.append(ptr, take);
+        }
+        if (ctx->diag->error_body_snippet.size() >= 200) {
+            return 0;
+        }
+        return total;
+    }
     if (ctx->on_chunk && *ctx->on_chunk) {
         if (!(*ctx->on_chunk)(reinterpret_cast<const std::uint8_t*>(ptr), total)) {
             return 0;
@@ -1044,7 +1595,11 @@ bool PerformLinuxCurlRequest(
     std::int64_t& out_content_length,
     const HttpClient::ChunkCallback& on_chunk,
     const std::atomic<bool>* cancel_flag,
-    std::string& out_error) {
+    std::string& out_error,
+    HttpRequestDiagnostics* out_diag = nullptr) {
+    if (out_diag) {
+        *out_diag = {};
+    }
     auto& curl = CurlApi::Instance();
     if (!curl.handle) {
         out_error = "libcurl not found on host system (install libcurl4:i386)";
@@ -1090,6 +1645,11 @@ bool PerformLinuxCurlRequest(
         ctx.raw_host = cur_host;
         ctx.port = cur_port;
         ctx.policy = HttpClient::GetSecurityPolicy();
+        ctx.diag = out_diag;
+        if (out_diag) {
+            out_diag->redirected = (redir > 0);
+            out_diag->final_host = cur_host;
+        }
 
         CurlApi::curl_slist* header_list = nullptr;
         for (const auto& [k, v] : headers) {
@@ -1113,7 +1673,7 @@ bool PerformLinuxCurlRequest(
         curl.easy_setopt(c, CurlApi::OPT_OPENSOCKETFUNCTION, CurlOpenSocketCb);
         curl.easy_setopt(c, CurlApi::OPT_OPENSOCKETDATA, &ctx);
 
-        if (fail_on_error) {
+        if (fail_on_error && !out_diag) {
             curl.easy_setopt(c, CurlApi::OPT_FAILONERROR, 1L);
         }
         curl.easy_setopt(c, CurlApi::OPT_NOSIGNAL, 1L);
@@ -1143,9 +1703,33 @@ bool PerformLinuxCurlRequest(
         long http_code = 0;
         const char* ct_ptr = nullptr;
         const char* redir_ptr = nullptr;
-        curl.easy_getinfo(c, CurlApi::INFO_RESPONSE_CODE, &http_code);
-        curl.easy_getinfo(c, CurlApi::INFO_CONTENT_TYPE, &ct_ptr);
-        curl.easy_getinfo(c, CurlApi::INFO_REDIRECT_URL, &redir_ptr);
+        std::string primary_ip;
+        std::int64_t dns_us = -1;
+        std::int64_t connect_us = -1;
+        std::int64_t tls_us = -1;
+        std::int64_t fb_us = -1;
+        std::int64_t total_us = -1;
+        if (curl.easy_getinfo) {
+            curl.easy_getinfo(c, CurlApi::INFO_RESPONSE_CODE, &http_code);
+            curl.easy_getinfo(c, CurlApi::INFO_CONTENT_TYPE, &ct_ptr);
+            curl.easy_getinfo(c, CurlApi::INFO_REDIRECT_URL, &redir_ptr);
+            if (res != 0 && !ctx.ssrf_blocked) {
+                const char* ip_ptr = nullptr;
+                if (curl.easy_getinfo(c, CurlApi::INFO_PRIMARY_IP, &ip_ptr) == 0 && ip_ptr && *ip_ptr) {
+                    primary_ip = ip_ptr;
+                }
+                std::int64_t t_val = -1;
+                if (curl.easy_getinfo(c, CurlApi::INFO_NAMELOOKUP_TIME_T, &t_val) == 0) dns_us = t_val;
+                t_val = -1;
+                if (curl.easy_getinfo(c, CurlApi::INFO_CONNECT_TIME_T, &t_val) == 0) connect_us = t_val;
+                t_val = -1;
+                if (curl.easy_getinfo(c, CurlApi::INFO_APPCONNECT_TIME_T, &t_val) == 0) tls_us = t_val;
+                t_val = -1;
+                if (curl.easy_getinfo(c, CurlApi::INFO_STARTTRANSFER_TIME_T, &t_val) == 0) fb_us = t_val;
+                t_val = -1;
+                if (curl.easy_getinfo(c, CurlApi::INFO_TOTAL_TIME_T, &t_val) == 0) total_us = t_val;
+            }
+        }
 
         out_status = static_cast<int>(http_code);
         out_content_type = ct_ptr ? std::string(ct_ptr) : std::string();
@@ -1178,8 +1762,41 @@ bool PerformLinuxCurlRequest(
             continue;
         }
 
+        if (fail_on_error && out_status >= 400) {
+            if (out_error.empty() || (cancel_flag && !cancel_flag->load())) {
+                out_error = "HTTP status " + std::to_string(out_status);
+            }
+            return false;
+        }
+
         if (res != 0) {
-            out_error = curl.easy_strerror ? curl.easy_strerror(res) : ("curl error " + std::to_string(res));
+            const std::string err_text = curl.easy_strerror ? std::string(curl.easy_strerror(res)) : ("curl error " + std::to_string(res));
+            const bool cancelled = (cancel_flag && cancel_flag->load());
+            const bool is_transient =
+                !cancelled &&
+                out_status < 400 &&
+                HttpClient::IsTransientCurlError(res);
+            if (out_diag && is_transient) {
+                out_diag->transient_transport_error = true;
+            }
+            if (!cancelled && Logger::Instance().IsDebugEnabled()) {
+                auto fmt_ms = [](std::int64_t us) -> std::string {
+                    return (us >= 0) ? (std::to_string(us / 1000) + "ms") : std::string("n/a");
+                };
+                const char* ip_family = primary_ip.empty()
+                    ? "unknown"
+                    : (primary_ip.find(':') != std::string::npos ? "ipv6" : "ipv4");
+                Logger::Instance().Debug(
+                    "HTTP transport failed: curl error " + std::to_string(res) +
+                    " (" + err_text + "), dns=" + fmt_ms(dns_us) +
+                    ", connect=" + fmt_ms(connect_us) +
+                    ", tls=" + fmt_ms(tls_us) +
+                    ", first_byte=" + fmt_ms(fb_us) +
+                    ", total=" + fmt_ms(total_us) +
+                    ", ip=" + (primary_ip.empty() ? std::string("none") : primary_ip) +
+                    " (" + ip_family + "), host=" + cur_host);
+            }
+            out_error = err_text;
             return false;
         }
         return true;
@@ -1251,7 +1868,13 @@ bool HttpClient::ValidateUrlSyntaxAndLiteralPolicy(const std::string& url, std::
     return ValidateUrlPolicyInternal(url, host, port, policy, is_literal, out_error);
 }
 
-bool HttpClient::ValidateRemoteUrl(const std::string& url, std::string& out_error) {
+bool ValidateRemoteUrlWithClass(
+    const std::string& url,
+    std::string& out_error,
+    bool* out_is_private_or_loopback) {
+    if (out_is_private_or_loopback) {
+        *out_is_private_or_loopback = false;
+    }
     std::string host;
     std::uint16_t port = 0;
     HttpSecurityPolicy policy;
@@ -1259,7 +1882,19 @@ bool HttpClient::ValidateRemoteUrl(const std::string& url, std::string& out_erro
     if (!ValidateUrlPolicyInternal(url, host, port, policy, is_literal, out_error)) {
         return false;
     }
+    if (out_is_private_or_loopback &&
+        (host == "localhost" ||
+         (host.size() > 10 && host.compare(host.size() - 10, 10, ".localhost") == 0))) {
+        *out_is_private_or_loopback = true;
+    }
     if (is_literal) {
+        if (out_is_private_or_loopback) {
+            std::error_code ec;
+            auto literal_addr = asio::ip::make_address(host, ec);
+            if (!ec && (literal_addr.is_loopback() || IsRestrictedIpAddress(literal_addr))) {
+                *out_is_private_or_loopback = true;
+            }
+        }
         return true;
     }
 
@@ -1272,6 +1907,7 @@ bool HttpClient::ValidateRemoteUrl(const std::string& url, std::string& out_erro
             out_error = "DNS resolution failed for " + host;
             return false;
         }
+        bool any_private_or_loopback = false;
         for (const auto& entry : results) {
             auto addr = entry.endpoint().address();
             if (!IsAddressAllowed(addr, host, port, policy)) {
@@ -1282,6 +1918,12 @@ bool HttpClient::ValidateRemoteUrl(const std::string& url, std::string& out_erro
                 out_error = "URL not allowed";
                 return false;
             }
+            if (addr.is_loopback() || IsRestrictedIpAddress(addr)) {
+                any_private_or_loopback = true;
+            }
+        }
+        if (out_is_private_or_loopback && any_private_or_loopback) {
+            *out_is_private_or_loopback = true;
         }
         return true;
     } catch (const std::exception& ex) {
@@ -1291,6 +1933,10 @@ bool HttpClient::ValidateRemoteUrl(const std::string& url, std::string& out_erro
         out_error = "DNS resolution failed for " + host;
         return false;
     }
+}
+
+bool HttpClient::ValidateRemoteUrl(const std::string& url, std::string& out_error) {
+    return ValidateRemoteUrlWithClass(url, out_error, nullptr);
 }
 
 HttpResponse HttpClient::Get(const std::string& url, const HeaderMap& headers, int timeout_ms, const std::atomic<bool>* cancel_flag) {
@@ -1388,10 +2034,15 @@ bool HttpClient::StreamGet(
     const std::atomic<bool>& cancel_flag,
     std::string& out_error,
     const HeaderCallback& on_headers,
-    int connect_timeout_ms) {
+    int connect_timeout_ms,
+    HttpRequestDiagnostics* out_diag,
+    bool fresh_session) {
     int status = 0;
     std::string content_type;
     std::int64_t content_len = -1;
+    if (out_diag) {
+        *out_diag = {};
+    }
 
     bool header_emitted = false;
     ChunkCallback wrapped_chunk = [&](const std::uint8_t* data, std::size_t size) {
@@ -1405,15 +2056,105 @@ bool HttpClient::StreamGet(
     };
 
 #ifdef _WIN32
-    bool ok = PerformWinHttpRequest("GET", url, headers, connect_timeout_ms, true, status, content_type, content_len, wrapped_chunk, &cancel_flag, out_error);
+    bool ok = PerformWinHttpRequest("GET", url, headers, connect_timeout_ms, true, status, content_type, content_len, wrapped_chunk, &cancel_flag, out_error, out_diag, fresh_session);
 #else
-    bool ok = PerformLinuxCurlRequest("GET", url, headers, connect_timeout_ms, false, true, status, content_type, content_len, wrapped_chunk, &cancel_flag, out_error);
+    (void)fresh_session;
+    bool ok = PerformLinuxCurlRequest("GET", url, headers, connect_timeout_ms, false, true, status, content_type, content_len, wrapped_chunk, &cancel_flag, out_error, out_diag);
 #endif
+    if (!header_emitted && status > 0 && on_headers) {
+        header_emitted = true;
+        on_headers(status, content_type, content_len);
+    }
+    if (!cancel_flag.load() && status >= 400 && out_error != "Cancelled" && out_error != "URL not allowed") {
+        out_error = "HTTP status " + std::to_string(status);
+        return false;
+    }
     if (ok && (status < 200 || status >= 300)) {
         out_error = "HTTP status " + std::to_string(status);
         return false;
     }
     return ok;
+}
+
+HttpAbProbeResult HttpClient::ProbeUrlSharedVsFreshForDebug(
+    const std::string& url,
+    const HeaderMap& headers,
+    const std::atomic<bool>* cancel_flag,
+    int timeout_ms) {
+    HttpAbProbeResult res;
+    HeaderMap probe_a_headers = {{"Range", "bytes=0-1023"}};
+    HeaderMap probe_b_headers = headers;
+    probe_b_headers["Range"] = "bytes=0-1023";
+
+    std::string ct_a, ct_b;
+    std::int64_t cl_a = -1, cl_b = -1;
+#ifdef _WIN32
+    PerformWinHttpRequest(
+        "GET",
+        url,
+        probe_a_headers,
+        timeout_ms,
+        false,
+        res.shared_no_headers_status,
+        ct_a,
+        cl_a,
+        nullptr,
+        cancel_flag,
+        res.shared_no_headers_error,
+        nullptr,
+        false);
+    if (cancel_flag && cancel_flag->load()) {
+        return res;
+    }
+    PerformWinHttpRequest(
+        "GET",
+        url,
+        probe_b_headers,
+        timeout_ms,
+        false,
+        res.fresh_same_headers_status,
+        ct_b,
+        cl_b,
+        nullptr,
+        cancel_flag,
+        res.fresh_same_headers_error,
+        nullptr,
+        true);
+#else
+    ChunkCallback accept_probe = [](const std::uint8_t*, std::size_t) { return true; };
+    PerformLinuxCurlRequest(
+        "GET",
+        url,
+        probe_a_headers,
+        timeout_ms,
+        true,
+        false,
+        res.shared_no_headers_status,
+        ct_a,
+        cl_a,
+        accept_probe,
+        cancel_flag,
+        res.shared_no_headers_error,
+        nullptr);
+    if (cancel_flag && cancel_flag->load()) {
+        return res;
+    }
+    PerformLinuxCurlRequest(
+        "GET",
+        url,
+        probe_b_headers,
+        timeout_ms,
+        true,
+        false,
+        res.fresh_same_headers_status,
+        ct_b,
+        cl_b,
+        accept_probe,
+        cancel_flag,
+        res.fresh_same_headers_error,
+        nullptr);
+#endif
+    return res;
 }
 
 bool HttpClient::CheckRuntimeSupport(std::string& out_error) {
@@ -1428,6 +2169,25 @@ bool HttpClient::CheckRuntimeSupport(std::string& out_error) {
     }
     return true;
 #endif
+}
+
+bool HttpClient::IsTransientCurlError(int code) {
+    return code == 6 ||  // CURLE_COULDNT_RESOLVE_HOST
+           code == 7 ||  // CURLE_COULDNT_CONNECT
+           code == 28 || // CURLE_OPERATION_TIMEDOUT
+           code == 35 || // CURLE_SSL_CONNECT_ERROR
+           code == 52 || // CURLE_GOT_NOTHING
+           code == 55 || // CURLE_SEND_ERROR
+           code == 56;   // CURLE_RECV_ERROR
+}
+
+bool HttpClient::IsTransientWinHttpError(unsigned long code) {
+    return code == 12002UL || // ERROR_WINHTTP_TIMEOUT
+           code == 12007UL || // ERROR_WINHTTP_NAME_NOT_RESOLVED
+           code == 12029UL || // ERROR_WINHTTP_CANNOT_CONNECT
+           code == 12030UL || // ERROR_WINHTTP_CONNECTION_ERROR
+           code == 12152UL || // ERROR_WINHTTP_INVALID_SERVER_RESPONSE
+           code == 12175UL;   // ERROR_WINHTTP_SECURE_FAILURE
 }
 
 std::string HttpClient::BuildLibcurlInstallHintFromOsRelease(const std::string& os_release_content, bool dpkg_has_i386) {
@@ -1579,6 +2339,12 @@ std::string HttpClient::BuildLibcurlInstallHintFromOsRelease(const std::string& 
            "Then restart the server. Verify with: ldconfig -p | grep libcurl.so.4  (a line with \"(libc6)\" without \"x86-64\" must appear)";
 }
 
+void HttpClient::Initialize() {
+#ifdef _WIN32
+    GetWinHttpCloserState().Reenable();
+#endif
+}
+
 void HttpClient::PollCancellations() {
 #ifdef _WIN32
     std::vector<std::shared_ptr<CancelableWinHttpRequest>> to_close;
@@ -1596,9 +2362,62 @@ void HttpClient::PollCancellations() {
             }),
             g_active_winhttp.end());
     }
-    for (auto& r : to_close) {
-        r->Close();
+    if (!to_close.empty()) {
+        GetWinHttpCloserState().Enqueue(to_close);
     }
+#endif
+}
+
+void HttpClient::Shutdown() {
+#ifdef _WIN32
+    GetWinHttpCloserState().Shutdown(3000);
+    PollCancellations();
+#endif
+}
+
+void HttpClient::SetWinHttpBetweenCallsHookForTesting(std::function<void()> hook) {
+#ifdef _WIN32
+    std::lock_guard<std::mutex> lock(g_winhttp_hook_mtx);
+    g_winhttp_between_calls_hook = std::move(hook);
+#else
+    (void)hook;
+#endif
+}
+
+std::uint64_t HttpClient::GetWinHttpReadDataCallCountForTesting() {
+#ifdef _WIN32
+    return g_winhttp_read_data_calls.load(std::memory_order_relaxed);
+#else
+    return 0;
+#endif
+}
+
+std::uint64_t HttpClient::GetWinHttpCloserThreadCountForTesting() {
+#ifdef _WIN32
+    return GetWinHttpCloserState().threads_created.load(std::memory_order_relaxed);
+#else
+    return 0;
+#endif
+}
+
+std::uint64_t HttpClient::GetWinHttpFreshSessionCountForTesting() {
+#ifdef _WIN32
+    return g_winhttp_fresh_session_count.load(std::memory_order_relaxed);
+#else
+    return 0;
+#endif
+}
+
+void HttpClient::ResetWinHttpSessionCountersForTesting() {
+#ifdef _WIN32
+    g_winhttp_fresh_session_count.store(0, std::memory_order_relaxed);
+#endif
+}
+
+void HttpClient::FlushCancellationsForTesting() {
+#ifdef _WIN32
+    PollCancellations();
+    GetWinHttpCloserState().WaitUntilIdle(5000);
 #endif
 }
 

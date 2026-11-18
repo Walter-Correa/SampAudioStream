@@ -1,4 +1,4 @@
-LIBRARY sampaudiostream
+LIBRARY SampAudioStream
 EXPORTS
     ComponentEntryPoint
     Supports

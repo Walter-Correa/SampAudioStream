@@ -17,149 +17,271 @@ namespace sampaudiostream {
 
 namespace {
 
-void ReadJsonUint(
-    const nlohmann::json& obj,
-    const char* key,
-    const char* full_key,
-    std::int64_t min_val,
-    std::int64_t max_val,
-    std::uint32_t default_val,
-    std::uint32_t& out_val,
-    bool allow_nearest_clamp = false) {
-    if (!obj.contains(key)) return;
-    if (!obj[key].is_number_integer()) {
-        Logger::Instance().Warn(std::string("Config key '") + full_key + "' must be an integer; using default (" + std::to_string(default_val) + ").");
-        out_val = default_val;
+enum class ConfigFieldType {
+    String,
+    Bool,
+    Uint32,
+    PortUint16
+};
+
+struct ConfigFieldSpec {
+    const char* group;
+    const char* key;
+    const char* full_key;
+    ConfigFieldType type;
+    std::int64_t min_val{0};
+    std::int64_t max_val{0};
+    bool snap_nearest{false};
+    std::string PluginConfig::* str_member{nullptr};
+    bool PluginConfig::* bool_member{nullptr};
+    std::uint32_t PluginConfig::* uint_member{nullptr};
+    std::uint16_t PluginConfig::* port_member{nullptr};
+};
+
+constexpr ConfigFieldSpec StrSpec(const char* g, const char* k, const char* fk, std::string PluginConfig::* m) {
+    return {g, k, fk, ConfigFieldType::String, 0, 0, false, m, nullptr, nullptr, nullptr};
+}
+
+constexpr ConfigFieldSpec BoolSpec(const char* g, const char* k, const char* fk, bool PluginConfig::* m) {
+    return {g, k, fk, ConfigFieldType::Bool, 0, 0, false, nullptr, m, nullptr, nullptr};
+}
+
+constexpr ConfigFieldSpec UintSpec(const char* g, const char* k, const char* fk,
+                                   std::int64_t min_v, std::int64_t max_v, bool snap,
+                                   std::uint32_t PluginConfig::* m) {
+    return {g, k, fk, ConfigFieldType::Uint32, min_v, max_v, snap, nullptr, nullptr, m, nullptr};
+}
+
+constexpr ConfigFieldSpec PortSpec(const char* g, const char* k, const char* fk, std::uint16_t PluginConfig::* m) {
+    return {g, k, fk, ConfigFieldType::PortUint16, 0, 65535, false, nullptr, nullptr, nullptr, m};
+}
+
+// Single authoritative schema shared by SA-MP JSON, open.mp flat/dotted config, and Sanitize().
+constexpr ConfigFieldSpec kConfigSchema[] = {
+    // network
+    StrSpec("network", "bind_ip", "network.bind_ip", &PluginConfig::bind_ip),
+    StrSpec("network", "public_ip", "network.public_ip", &PluginConfig::public_ip),
+    PortSpec("network", "http_port", "network.http_port", &PluginConfig::http_port),
+    BoolSpec("network", "lan_aware_urls", "network.lan_aware_urls", &PluginConfig::lan_aware_urls),
+    BoolSpec("network", "allow_private_network_urls", "network.allow_private_network_urls", &PluginConfig::allow_private_network_urls),
+    UintSpec("network", "max_http_connections", "network.max_http_connections", 64, 8192, false, &PluginConfig::max_http_connections),
+    UintSpec("network", "max_connections_per_ip", "network.max_connections_per_ip", 1, 4096, false, &PluginConfig::max_connections_per_ip),
+
+    // audio
+    UintSpec("audio", "mp3_bitrate_kbps", "audio.mp3_bitrate_kbps", 0, 320, true, &PluginConfig::mp3_bitrate_kbps),
+    UintSpec("audio", "mp3_sample_rate", "audio.mp3_sample_rate", 0, 48000, true, &PluginConfig::mp3_sample_rate),
+    UintSpec("audio", "transcoder_burst_ms", "audio.transcoder_burst_ms", 2000, 15000, false, &PluginConfig::transcoder_burst_ms),
+    UintSpec("audio", "max_concurrent_streams", "audio.max_concurrent_streams", 1, 256, false, &PluginConfig::max_concurrent_streams),
+    UintSpec("audio", "spatial_update_interval_ms", "audio.spatial_update_interval_ms", 50, 5000, false, &PluginConfig::spatial_update_interval_ms),
+    StrSpec("audio", "player_priority_order", "audio.player_priority_order", &PluginConfig::player_priority_order),
+
+    // channels
+    UintSpec("channels", "max_channels", "channels.max_channels", 1, 1000, false, &PluginConfig::max_channels),
+    UintSpec("channels", "max_queue_per_channel", "channels.max_queue_per_channel", 1, 1000, false, &PluginConfig::max_queue_per_channel),
+    BoolSpec("channels", "persist_channels", "channels.persist_channels", &PluginConfig::persist_channels),
+    UintSpec("channels", "channel_restore_grace_seconds", "channels.channel_restore_grace_seconds", 0, 3600, false, &PluginConfig::channel_restore_grace_seconds),
+
+    // extractor
+    StrSpec("extractor", "bin_dir", "extractor.bin_dir", &PluginConfig::bin_dir),
+    BoolSpec("extractor", "auto_download", "extractor.auto_download", &PluginConfig::auto_download_extractor),
+    BoolSpec("extractor", "auto_update", "extractor.auto_update", &PluginConfig::auto_update_extractor),
+    BoolSpec("extractor", "enable_js_runtime", "extractor.enable_js_runtime", &PluginConfig::enable_js_runtime),
+    StrSpec("extractor", "js_runtime", "extractor.js_runtime", &PluginConfig::js_runtime),
+    StrSpec("extractor", "cookies_file", "extractor.cookies_file", &PluginConfig::cookies_file),
+    StrSpec("extractor", "cookies_from_browser", "extractor.cookies_from_browser", &PluginConfig::cookies_from_browser),
+    UintSpec("extractor", "yt_dlp_cache_max_age_days", "extractor.yt_dlp_cache_max_age_days", 0, 90, false, &PluginConfig::yt_dlp_cache_max_age_days),
+    UintSpec("extractor", "max_search_results", "extractor.max_search_results", 1, 50, false, &PluginConfig::max_search_results),
+
+    // performance
+    UintSpec("performance", "worker_threads", "performance.worker_threads", 1, 16, false, &PluginConfig::worker_threads),
+    UintSpec("performance", "max_concurrent_transcoders", "performance.max_concurrent_transcoders", 1, 128, false, &PluginConfig::max_concurrent_transcoders),
+    UintSpec("performance", "max_prefetch_mb", "performance.max_prefetch_mb", 1, 64, false, &PluginConfig::max_prefetch_mb),
+    UintSpec("performance", "cache_max_entries", "performance.cache_max_entries", 16, 4096, false, &PluginConfig::cache_max_entries),
+    UintSpec("performance", "cache_ttl_seconds", "performance.cache_ttl_seconds", 60, 86400, false, &PluginConfig::cache_ttl_seconds),
+
+    // scripting
+    BoolSpec("scripting", "hook_native_audio", "scripting.hook_native_audio", &PluginConfig::hook_native_audio),
+    StrSpec("scripting", "pawn_text_encoding", "scripting.pawn_text_encoding", &PluginConfig::pawn_text_encoding),
+
+    // logging
+    BoolSpec("logging", "debug", "logging.debug", &PluginConfig::debug_logging),
+    BoolSpec("logging", "startup_banner", "logging.startup_banner", &PluginConfig::log_startup_banner),
+    BoolSpec("logging", "http_listen", "logging.http_listen", &PluginConfig::log_http_listen),
+    BoolSpec("logging", "public_ip_detected", "logging.public_ip_detected", &PluginConfig::log_public_ip_detected),
+    BoolSpec("logging", "extractor_status", "logging.extractor_status", &PluginConfig::log_extractor_status)
+};
+
+void ApplyValidatedRawInt(
+    const ConfigFieldSpec& spec,
+    std::int64_t raw,
+    const PluginConfig& def,
+    PluginConfig& cfg) {
+    if (spec.type == ConfigFieldType::PortUint16) {
+        std::uint32_t port_val = def.*(spec.port_member);
+        ConfigManager::ParseValidatedInt(
+            spec.full_key, raw, spec.min_val, spec.max_val,
+            static_cast<std::uint32_t>(def.*(spec.port_member)), port_val);
+        cfg.*(spec.port_member) = static_cast<std::uint16_t>(port_val);
         return;
     }
-    std::int64_t raw = obj[key].get<std::int64_t>();
-    if (allow_nearest_clamp && raw >= 0) {
-        out_val = (raw > 0xFFFFFFFFLL) ? 0xFFFFFFFFu : static_cast<std::uint32_t>(raw);
+    const std::uint32_t def_val = def.*(spec.uint_member);
+    if (spec.snap_nearest && raw >= 0) {
+        cfg.*(spec.uint_member) = (raw > 0xFFFFFFFFLL) ? 0xFFFFFFFFu : static_cast<std::uint32_t>(raw);
         return;
     }
-    ConfigManager::ParseValidatedInt(full_key, raw, min_val, max_val, default_val, out_val);
+    ConfigManager::ParseValidatedInt(
+        spec.full_key, raw, spec.min_val, spec.max_val, def_val, cfg.*(spec.uint_member));
 }
 
 void ApplyJsonToConfig(const nlohmann::json& j, PluginConfig& cfg) {
-    PluginConfig def;
-    if (j.contains("network") && j["network"].is_object()) {
-        const auto& net = j["network"];
-        if (net.contains("bind_ip") && net["bind_ip"].is_string()) cfg.bind_ip = net["bind_ip"].get<std::string>();
-        if (net.contains("public_ip") && net["public_ip"].is_string()) cfg.public_ip = net["public_ip"].get<std::string>();
-        if (net.contains("http_port")) {
-            std::uint32_t port_val = def.http_port;
-            if (!net["http_port"].is_number_integer()) {
-                Logger::Instance().Warn("Config key 'network.http_port' must be an integer; using default (0).");
-            } else {
-                ConfigManager::ParseValidatedInt("network.http_port", net["http_port"].get<std::int64_t>(), 0, 65535, def.http_port, port_val);
+    if (!j.is_object()) {
+        return;
+    }
+    const PluginConfig def;
+    for (const auto& spec : kConfigSchema) {
+        auto git = j.find(spec.group);
+        if (git == j.end() || !git->is_object()) {
+            continue;
+        }
+        auto kit = git->find(spec.key);
+        if (kit == git->end()) {
+            continue;
+        }
+        const nlohmann::json& val = *kit;
+        switch (spec.type) {
+            case ConfigFieldType::String:
+                if (val.is_string()) {
+                    cfg.*(spec.str_member) = val.get<std::string>();
+                } else {
+                    const std::string& def_str = def.*(spec.str_member);
+                    Logger::Instance().Warn(
+                        std::string("Config key '") + spec.full_key +
+                        "' must be a string; using default ('" + def_str + "').");
+                    cfg.*(spec.str_member) = def_str;
+                }
+                break;
+            case ConfigFieldType::Bool:
+                if (val.is_boolean()) {
+                    cfg.*(spec.bool_member) = val.get<bool>();
+                } else {
+                    const bool def_bool = def.*(spec.bool_member);
+                    Logger::Instance().Warn(
+                        std::string("Config key '") + spec.full_key +
+                        "' must be a boolean; using default (" + (def_bool ? "true" : "false") + ").");
+                    cfg.*(spec.bool_member) = def_bool;
+                }
+                break;
+            case ConfigFieldType::Uint32:
+            case ConfigFieldType::PortUint16: {
+                const std::uint32_t def_num = (spec.type == ConfigFieldType::PortUint16)
+                    ? static_cast<std::uint32_t>(def.*(spec.port_member))
+                    : def.*(spec.uint_member);
+                if (!val.is_number_integer()) {
+                    Logger::Instance().Warn(
+                        std::string("Config key '") + spec.full_key +
+                        "' must be an integer; using default (" + std::to_string(def_num) + ").");
+                    if (spec.type == ConfigFieldType::PortUint16) {
+                        cfg.*(spec.port_member) = static_cast<std::uint16_t>(def_num);
+                    } else {
+                        cfg.*(spec.uint_member) = def_num;
+                    }
+                    break;
+                }
+                ApplyValidatedRawInt(spec, val.get<std::int64_t>(), def, cfg);
+                break;
             }
-            cfg.http_port = static_cast<std::uint16_t>(port_val);
         }
-        if (net.contains("allow_private_network_urls") && net["allow_private_network_urls"].is_boolean()) {
-            cfg.allow_private_network_urls = net["allow_private_network_urls"].get<bool>();
-        }
-        if (net.contains("lan_aware_urls") && net["lan_aware_urls"].is_boolean()) {
-            cfg.lan_aware_urls = net["lan_aware_urls"].get<bool>();
-        }
-    }
-
-    if (j.contains("audio") && j["audio"].is_object()) {
-        const auto& aud = j["audio"];
-        ReadJsonUint(aud, "max_concurrent_streams", "audio.max_concurrent_streams", 1, 256, def.max_concurrent_streams, cfg.max_concurrent_streams);
-        ReadJsonUint(aud, "mp3_bitrate_kbps", "audio.mp3_bitrate_kbps", 0, 320, def.mp3_bitrate_kbps, cfg.mp3_bitrate_kbps, true);
-        ReadJsonUint(aud, "mp3_sample_rate", "audio.mp3_sample_rate", 0, 48000, def.mp3_sample_rate, cfg.mp3_sample_rate, true);
-        ReadJsonUint(aud, "transcoder_burst_ms", "audio.transcoder_burst_ms", 2000, 15000, def.transcoder_burst_ms, cfg.transcoder_burst_ms);
-        ReadJsonUint(aud, "spatial_update_interval_ms", "audio.spatial_update_interval_ms", 50, 5000, def.spatial_update_interval_ms, cfg.spatial_update_interval_ms);
-        if (aud.contains("player_priority_order") && aud["player_priority_order"].is_string())
-            cfg.player_priority_order = aud["player_priority_order"].get<std::string>();
-    }
-
-    if (j.contains("extractor") && j["extractor"].is_object()) {
-        const auto& ext = j["extractor"];
-        if (ext.contains("bin_dir") && ext["bin_dir"].is_string()) cfg.bin_dir = ext["bin_dir"].get<std::string>();
-        if (ext.contains("cookies_file") && ext["cookies_file"].is_string()) cfg.cookies_file = ext["cookies_file"].get<std::string>();
-        if (ext.contains("auto_download") && ext["auto_download"].is_boolean()) cfg.auto_download_extractor = ext["auto_download"].get<bool>();
-        if (ext.contains("auto_update") && ext["auto_update"].is_boolean()) cfg.auto_update_extractor = ext["auto_update"].get<bool>();
-        if (ext.contains("enable_js_runtime") && ext["enable_js_runtime"].is_boolean()) cfg.enable_js_runtime = ext["enable_js_runtime"].get<bool>();
-    }
-
-    if (j.contains("performance") && j["performance"].is_object()) {
-        const auto& perf = j["performance"];
-        ReadJsonUint(perf, "worker_threads", "performance.worker_threads", 1, 16, def.worker_threads, cfg.worker_threads);
-        ReadJsonUint(perf, "max_concurrent_transcoders", "performance.max_concurrent_transcoders", 1, 128, def.max_concurrent_transcoders, cfg.max_concurrent_transcoders);
-        ReadJsonUint(perf, "cache_max_entries", "performance.cache_max_entries", 16, 4096, def.cache_max_entries, cfg.cache_max_entries);
-        ReadJsonUint(perf, "cache_ttl_seconds", "performance.cache_ttl_seconds", 60, 86400, def.cache_ttl_seconds, cfg.cache_ttl_seconds);
-        ReadJsonUint(perf, "max_search_results", "performance.max_search_results", 1, 50, def.max_search_results, cfg.max_search_results);
-        ReadJsonUint(perf, "max_prefetch_mb", "performance.max_prefetch_mb", 1, 64, def.max_prefetch_mb, cfg.max_prefetch_mb);
-    }
-
-    if (j.contains("scripting") && j["scripting"].is_object()) {
-        const auto& scr = j["scripting"];
-        if (scr.contains("hook_native_audio") && scr["hook_native_audio"].is_boolean())
-            cfg.hook_native_audio = scr["hook_native_audio"].get<bool>();
-        if (scr.contains("debug_logging") && scr["debug_logging"].is_boolean())
-            cfg.debug_logging = scr["debug_logging"].get<bool>();
-        if (scr.contains("pawn_text_encoding") && scr["pawn_text_encoding"].is_string())
-            cfg.pawn_text_encoding = scr["pawn_text_encoding"].get<std::string>();
-    }
-
-    if (j.contains("logging") && j["logging"].is_object()) {
-        const auto& log = j["logging"];
-        if (log.contains("startup_banner") && log["startup_banner"].is_boolean())
-            cfg.log_startup_banner = log["startup_banner"].get<bool>();
-        if (log.contains("http_listen") && log["http_listen"].is_boolean())
-            cfg.log_http_listen = log["http_listen"].get<bool>();
-        if (log.contains("public_ip_detected") && log["public_ip_detected"].is_boolean())
-            cfg.log_public_ip_detected = log["public_ip_detected"].get<bool>();
-        if (log.contains("extractor_status") && log["extractor_status"].is_boolean())
-            cfg.log_extractor_status = log["extractor_status"].get<bool>();
     }
 }
 
-nlohmann::json ConfigToJson(const PluginConfig& cfg) {
-    return nlohmann::json{
-        {"network", {
-            {"bind_ip", cfg.bind_ip},
-            {"public_ip", cfg.public_ip},
-            {"http_port", cfg.http_port},
-            {"allow_private_network_urls", cfg.allow_private_network_urls},
-            {"lan_aware_urls", cfg.lan_aware_urls}
-        }},
-        {"audio", {
-            {"max_concurrent_streams", cfg.max_concurrent_streams},
-            {"mp3_bitrate_kbps", cfg.mp3_bitrate_kbps},
-            {"mp3_sample_rate", cfg.mp3_sample_rate},
-            {"transcoder_burst_ms", cfg.transcoder_burst_ms},
-            {"spatial_update_interval_ms", cfg.spatial_update_interval_ms},
-            {"player_priority_order", cfg.player_priority_order}
-        }},
-        {"extractor", {
-            {"bin_dir", cfg.bin_dir},
-            {"cookies_file", cfg.cookies_file},
-            {"auto_download", cfg.auto_download_extractor},
-            {"auto_update", cfg.auto_update_extractor},
-            {"enable_js_runtime", cfg.enable_js_runtime}
-        }},
-        {"performance", {
-            {"worker_threads", cfg.worker_threads},
-            {"max_concurrent_transcoders", cfg.max_concurrent_transcoders},
-            {"cache_max_entries", cfg.cache_max_entries},
-            {"cache_ttl_seconds", cfg.cache_ttl_seconds},
-            {"max_search_results", cfg.max_search_results},
-            {"max_prefetch_mb", cfg.max_prefetch_mb}
-        }},
-        {"scripting", {
-            {"hook_native_audio", cfg.hook_native_audio},
-            {"debug_logging", cfg.debug_logging},
-            {"pawn_text_encoding", cfg.pawn_text_encoding}
-        }},
-        {"logging", {
-            {"startup_banner", cfg.log_startup_banner},
-            {"http_listen", cfg.log_http_listen},
-            {"public_ip_detected", cfg.log_public_ip_detected},
-            {"extractor_status", cfg.log_extractor_status}
-        }}
-    };
+struct AllmanJsonNode {
+    enum class Kind { Object, String, Int, Bool };
+    Kind kind{Kind::Object};
+    std::vector<std::pair<std::string, AllmanJsonNode>> children;
+    std::string str_val;
+    std::int64_t int_val{0};
+    bool bool_val{false};
+
+    static AllmanJsonNode MakeString(std::string s) {
+        AllmanJsonNode n;
+        n.kind = Kind::String;
+        n.str_val = std::move(s);
+        return n;
+    }
+    static AllmanJsonNode MakeInt(std::int64_t v) {
+        AllmanJsonNode n;
+        n.kind = Kind::Int;
+        n.int_val = v;
+        return n;
+    }
+    static AllmanJsonNode MakeBool(bool v) {
+        AllmanJsonNode n;
+        n.kind = Kind::Bool;
+        n.bool_val = v;
+        return n;
+    }
+};
+
+void SerializeAllmanJson(std::ostream& os, const AllmanJsonNode& node, int indent_level) {
+    if (node.kind == AllmanJsonNode::Kind::String) {
+        os << nlohmann::json(node.str_val).dump();
+        return;
+    }
+    if (node.kind == AllmanJsonNode::Kind::Int) {
+        os << nlohmann::json(node.int_val).dump();
+        return;
+    }
+    if (node.kind == AllmanJsonNode::Kind::Bool) {
+        os << nlohmann::json(node.bool_val).dump();
+        return;
+    }
+
+    const std::string pad(static_cast<std::size_t>(indent_level) * 4, ' ');
+    const std::string child_pad(static_cast<std::size_t>(indent_level + 1) * 4, ' ');
+    os << pad << "{\n";
+    for (std::size_t i = 0; i < node.children.size(); ++i) {
+        const auto& kv = node.children[i];
+        const bool is_last = (i + 1 == node.children.size());
+        if (kv.second.kind == AllmanJsonNode::Kind::Object) {
+            os << child_pad << nlohmann::json(kv.first).dump() << ":\n";
+            SerializeAllmanJson(os, kv.second, indent_level + 1);
+            os << (is_last ? "\n" : ",\n");
+        } else {
+            os << child_pad << nlohmann::json(kv.first).dump() << ": ";
+            SerializeAllmanJson(os, kv.second, indent_level + 1);
+            os << (is_last ? "\n" : ",\n");
+        }
+    }
+    os << pad << "}";
+}
+
+AllmanJsonNode BuildConfigTree(const PluginConfig& cfg) {
+    AllmanJsonNode root;
+    root.kind = AllmanJsonNode::Kind::Object;
+
+    for (const auto& spec : kConfigSchema) {
+        if (root.children.empty() || root.children.back().first != spec.group) {
+            AllmanJsonNode grp;
+            grp.kind = AllmanJsonNode::Kind::Object;
+            root.children.emplace_back(spec.group, std::move(grp));
+        }
+        AllmanJsonNode& group_node = root.children.back().second;
+        switch (spec.type) {
+            case ConfigFieldType::String:
+                group_node.children.emplace_back(spec.key, AllmanJsonNode::MakeString(cfg.*(spec.str_member)));
+                break;
+            case ConfigFieldType::Bool:
+                group_node.children.emplace_back(spec.key, AllmanJsonNode::MakeBool(cfg.*(spec.bool_member)));
+                break;
+            case ConfigFieldType::Uint32:
+                group_node.children.emplace_back(spec.key, AllmanJsonNode::MakeInt(static_cast<std::int64_t>(cfg.*(spec.uint_member))));
+                break;
+            case ConfigFieldType::PortUint16:
+                group_node.children.emplace_back(spec.key, AllmanJsonNode::MakeInt(static_cast<std::int64_t>(cfg.*(spec.port_member))));
+                break;
+        }
+    }
+    return root;
 }
 
 } // namespace
@@ -190,20 +312,99 @@ bool ConfigManager::ParseValidatedInt(
     return true;
 }
 
+PluginConfig ConfigManager::LoadFromOmp(const OmpConfigReader& reader) {
+    PluginConfig cfg;
+    const PluginConfig def;
+    for (const auto& spec : kConfigSchema) {
+        const std::string omp_key = std::string("sampaudiostream.") + spec.full_key;
+        switch (spec.type) {
+            case ConfigFieldType::String:
+                if (reader.get_string) {
+                    std::string val;
+                    if (reader.get_string(omp_key.c_str(), val)) {
+                        cfg.*(spec.str_member) = std::move(val);
+                    }
+                }
+                break;
+            case ConfigFieldType::Bool:
+                if (reader.get_bool) {
+                    bool val = false;
+                    if (reader.get_bool(omp_key.c_str(), val)) {
+                        cfg.*(spec.bool_member) = val;
+                    }
+                }
+                break;
+            case ConfigFieldType::Uint32:
+            case ConfigFieldType::PortUint16:
+                if (reader.get_int) {
+                    std::int64_t raw = 0;
+                    if (reader.get_int(omp_key.c_str(), raw)) {
+                        ApplyValidatedRawInt(spec, raw, def, cfg);
+                    }
+                }
+                break;
+        }
+    }
+    Sanitize(cfg);
+    return cfg;
+}
+
+void ConfigManager::ProvideOmpDefaults(const OmpConfigWriter& writer) {
+    const PluginConfig def;
+    for (const auto& spec : kConfigSchema) {
+        const std::string omp_key = std::string("sampaudiostream.") + spec.full_key;
+        switch (spec.type) {
+            case ConfigFieldType::String:
+                if (writer.set_string) {
+                    writer.set_string(omp_key.c_str(), def.*(spec.str_member));
+                }
+                break;
+            case ConfigFieldType::Bool:
+                if (writer.set_bool) {
+                    writer.set_bool(omp_key.c_str(), def.*(spec.bool_member));
+                }
+                break;
+            case ConfigFieldType::Uint32:
+                if (writer.set_int) {
+                    writer.set_int(omp_key.c_str(), static_cast<std::int32_t>(def.*(spec.uint_member)));
+                }
+                break;
+            case ConfigFieldType::PortUint16:
+                if (writer.set_int) {
+                    writer.set_int(omp_key.c_str(), static_cast<std::int32_t>(def.*(spec.port_member)));
+                }
+                break;
+        }
+    }
+}
+
+std::vector<ConfigSchemaFieldInfo> ConfigManager::GetUnifiedSchemaFields() {
+    std::vector<ConfigSchemaFieldInfo> out;
+    out.reserve(sizeof(kConfigSchema) / sizeof(kConfigSchema[0]));
+    for (const auto& spec : kConfigSchema) {
+        out.push_back(ConfigSchemaFieldInfo{spec.group, spec.key, spec.full_key});
+    }
+    return out;
+}
+
 void ConfigManager::Sanitize(PluginConfig& cfg) {
-    PluginConfig def;
-    auto check_range = [](const char* key, std::uint32_t& val, std::uint32_t min_v, std::uint32_t max_v, std::uint32_t def_v) {
+    const PluginConfig def;
+    for (const auto& spec : kConfigSchema) {
+        if (spec.type != ConfigFieldType::Uint32 || spec.snap_nearest) {
+            continue;
+        }
+        std::uint32_t& val = cfg.*(spec.uint_member);
+        const std::uint32_t min_v = static_cast<std::uint32_t>(spec.min_val);
+        const std::uint32_t max_v = static_cast<std::uint32_t>(spec.max_val);
+        const std::uint32_t def_v = def.*(spec.uint_member);
         if (val < min_v || val > max_v) {
             Logger::Instance().Warn(
-                std::string("Config key '") + key + "' value " + std::to_string(val) +
+                std::string("Config key '") + spec.full_key + "' value " + std::to_string(val) +
                 " is out of range [" + std::to_string(min_v) + ".." + std::to_string(max_v) +
                 "]; using default (" + std::to_string(def_v) + ").");
             val = def_v;
         }
-    };
-
-    check_range("max_concurrent_streams", cfg.max_concurrent_streams, 1, 256, def.max_concurrent_streams);
-    check_range("max_search_results", cfg.max_search_results, 1, 50, def.max_search_results);
+    }
 
     static constexpr std::uint32_t kValidBitrates[] = {64, 96, 128, 160, 192, 256, 320};
     std::uint32_t best_br = 128;
@@ -217,7 +418,7 @@ void ConfigManager::Sanitize(PluginConfig& cfg) {
     }
     if (cfg.mp3_bitrate_kbps != best_br) {
         Logger::Instance().Warn(
-            "Config key 'mp3_bitrate_kbps' value " + std::to_string(cfg.mp3_bitrate_kbps) +
+            "Config key 'audio.mp3_bitrate_kbps' value " + std::to_string(cfg.mp3_bitrate_kbps) +
             " snapped to nearest supported bitrate (" + std::to_string(best_br) + ").");
     }
     cfg.mp3_bitrate_kbps = best_br;
@@ -234,21 +435,14 @@ void ConfigManager::Sanitize(PluginConfig& cfg) {
     }
     if (cfg.mp3_sample_rate != best_sr) {
         Logger::Instance().Warn(
-            "Config key 'mp3_sample_rate' value " + std::to_string(cfg.mp3_sample_rate) +
+            "Config key 'audio.mp3_sample_rate' value " + std::to_string(cfg.mp3_sample_rate) +
             " snapped to nearest supported sample rate (" + std::to_string(best_sr) + ").");
     }
     cfg.mp3_sample_rate = best_sr;
 
-    check_range("transcoder_burst_ms", cfg.transcoder_burst_ms, 2000, 15000, def.transcoder_burst_ms);
-    check_range("worker_threads", cfg.worker_threads, 1, 16, def.worker_threads);
-    check_range("max_concurrent_transcoders", cfg.max_concurrent_transcoders, 1, 128, def.max_concurrent_transcoders);
-    check_range("cache_max_entries", cfg.cache_max_entries, 16, 4096, def.cache_max_entries);
-    check_range("cache_ttl_seconds", cfg.cache_ttl_seconds, 60, 86400, def.cache_ttl_seconds);
-    check_range("max_prefetch_mb", cfg.max_prefetch_mb, 1, 64, def.max_prefetch_mb);
-    check_range("spatial_update_interval_ms", cfg.spatial_update_interval_ms, 50, 5000, def.spatial_update_interval_ms);
     if (cfg.bind_ip.empty()) cfg.bind_ip = "0.0.0.0";
-    if (cfg.base_dir.empty()) cfg.base_dir = "scriptfiles/samp-audio-stream";
-    if (cfg.bin_dir.empty()) cfg.bin_dir = "scriptfiles/samp-audio-stream/bin";
+    if (cfg.base_dir.empty()) cfg.base_dir = "scriptfiles/SampAudioStream";
+    if (cfg.bin_dir.empty()) cfg.bin_dir = "scriptfiles/SampAudioStream/bin";
     if (cfg.player_priority_order.empty()) cfg.player_priority_order = "personal,channel,global";
 
     for (char& ch : cfg.pawn_text_encoding) {
@@ -256,9 +450,29 @@ void ConfigManager::Sanitize(PluginConfig& cfg) {
     }
     if (cfg.pawn_text_encoding != "utf8" && cfg.pawn_text_encoding != "cp1252") {
         Logger::Instance().Warn(
-            "Config key 'pawn_text_encoding' value '" + cfg.pawn_text_encoding +
+            "Config key 'scripting.pawn_text_encoding' value '" + cfg.pawn_text_encoding +
             "' is invalid; expected 'utf8' or 'cp1252'. Using default ('cp1252').");
         cfg.pawn_text_encoding = "cp1252";
+    }
+
+    for (char& ch : cfg.js_runtime) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (cfg.js_runtime != "auto" && cfg.js_runtime != "deno" && cfg.js_runtime != "quickjs") {
+        Logger::Instance().Warn(
+            "Config key 'extractor.js_runtime' value '" + cfg.js_runtime +
+            "' is invalid; expected 'auto', 'deno', or 'quickjs'. Using default ('auto').");
+        cfg.js_runtime = "auto";
+    }
+
+    for (char& ch : cfg.cookies_from_browser) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (cfg.cookies_from_browser != "auto" && cfg.cookies_from_browser != "off") {
+        Logger::Instance().Warn(
+            "Config key 'extractor.cookies_from_browser' value '" + cfg.cookies_from_browser +
+            "' is invalid; expected 'auto' or 'off'. Using default ('auto').");
+        cfg.cookies_from_browser = "auto";
     }
 }
 
@@ -392,6 +606,133 @@ std::string ConvertTextForPawn(const std::string& utf8, const std::string& encod
     return out;
 }
 
+namespace {
+
+void AppendUtf8CodePoint(std::string& out, std::uint32_t cp) {
+    if (cp <= 0x7Fu) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp <= 0x7FFu) {
+        out.push_back(static_cast<char>(0xC0u | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+    } else if (cp <= 0xFFFFu) {
+        out.push_back(static_cast<char>(0xE0u | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+    } else {
+        out.push_back(static_cast<char>(0xF0u | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80u | ((cp >> 12) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+    }
+}
+
+bool IsStrictValidUtf8(const std::string& s) {
+    std::size_t i = 0;
+    while (i < s.size()) {
+        std::uint8_t b0 = static_cast<std::uint8_t>(s[i]);
+        if (b0 <= 0x7Fu) {
+            ++i;
+            continue;
+        }
+        std::uint32_t cp = 0;
+        std::size_t len = 0;
+        std::uint32_t min_cp = 0;
+        if ((b0 & 0xE0u) == 0xC0u) {
+            len = 2;
+            cp = b0 & 0x1Fu;
+            min_cp = 0x80u;
+        } else if ((b0 & 0xF0u) == 0xE0u) {
+            len = 3;
+            cp = b0 & 0x0Fu;
+            min_cp = 0x800u;
+        } else if ((b0 & 0xF8u) == 0xF0u) {
+            len = 4;
+            cp = b0 & 0x07u;
+            min_cp = 0x10000u;
+        } else {
+            return false;
+        }
+        if (i + len > s.size()) {
+            return false;
+        }
+        for (std::size_t j = 1; j < len; ++j) {
+            std::uint8_t bx = static_cast<std::uint8_t>(s[i + j]);
+            if ((bx & 0xC0u) != 0x80u) {
+                return false;
+            }
+            cp = (cp << 6) | (bx & 0x3Fu);
+        }
+        if (cp < min_cp || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu)) {
+            return false;
+        }
+        i += len;
+    }
+    return true;
+}
+
+} // namespace
+
+std::string ConvertTextFromPawn(const std::string& text, const std::string& encoding) {
+    if (encoding != "cp1252" || text.empty()) {
+        return text;
+    }
+
+    std::string out;
+    out.reserve(text.size() * 2);
+    for (unsigned char uc : text) {
+        if (uc < 0x80u) {
+            out.push_back(static_cast<char>(uc));
+            continue;
+        }
+        if (uc >= 0xA0u) {
+            AppendUtf8CodePoint(out, static_cast<std::uint32_t>(uc));
+            continue;
+        }
+        std::uint32_t cp = 0;
+        switch (uc) {
+            case 0x80u: cp = 0x20ACu; break;
+            case 0x82u: cp = 0x201Au; break;
+            case 0x83u: cp = 0x0192u; break;
+            case 0x84u: cp = 0x201Eu; break;
+            case 0x85u: cp = 0x2026u; break;
+            case 0x86u: cp = 0x2020u; break;
+            case 0x87u: cp = 0x2021u; break;
+            case 0x88u: cp = 0x02C6u; break;
+            case 0x89u: cp = 0x2030u; break;
+            case 0x8Au: cp = 0x0160u; break;
+            case 0x8Bu: cp = 0x2039u; break;
+            case 0x8Cu: cp = 0x0152u; break;
+            case 0x8Eu: cp = 0x017Du; break;
+            case 0x91u: cp = 0x2018u; break;
+            case 0x92u: cp = 0x2019u; break;
+            case 0x93u: cp = 0x201Cu; break;
+            case 0x94u: cp = 0x201Du; break;
+            case 0x95u: cp = 0x2022u; break;
+            case 0x96u: cp = 0x2013u; break;
+            case 0x97u: cp = 0x2014u; break;
+            case 0x98u: cp = 0x02DCu; break;
+            case 0x99u: cp = 0x2122u; break;
+            case 0x9Au: cp = 0x0161u; break;
+            case 0x9Bu: cp = 0x203Au; break;
+            case 0x9Cu: cp = 0x0153u; break;
+            case 0x9Eu: cp = 0x017Eu; break;
+            case 0x9Fu: cp = 0x0178u; break;
+            default:
+                // Undefined CP1252 slots (0x81, 0x8D, 0x8F, 0x90, 0x9D) are stripped cleanly.
+                continue;
+        }
+        AppendUtf8CodePoint(out, cp);
+    }
+    return out;
+}
+
+std::string NormalizeExternalTextToUtf8(const std::string& raw) {
+    if (raw.empty() || IsStrictValidUtf8(raw)) {
+        return raw;
+    }
+    return ConvertTextFromPawn(raw, "cp1252");
+}
+
 ServerCfgInfo ConfigManager::LoadServerCfg(const std::string& path) {
     ServerCfgInfo info;
     std::ifstream ifs(path);
@@ -500,12 +841,14 @@ bool ConfigManager::Save(const PluginConfig& config, const std::string& config_p
         std::filesystem::create_directories(path.parent_path(), ec);
     }
 
-    std::ofstream ofs(path, std::ios::trunc);
+    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
         return false;
     }
 
-    ofs << ConfigToJson(config).dump(4) << '\n';
+    const AllmanJsonNode tree = BuildConfigTree(config);
+    SerializeAllmanJson(ofs, tree, 0);
+    ofs << '\n';
     return true;
 }
 

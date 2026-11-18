@@ -37,6 +37,10 @@ public:
     // If stream_offset fell behind the sliding window, it snaps forward to the oldest available byte.
     std::size_t Read(std::uint64_t& stream_offset, std::uint8_t* out_data, std::size_t max_bytes, int timeout_ms = 50);
 
+    // Non-blocking peek starting at stream_offset (does not advance caller offset).
+    // Returns bytes copied if stream_offset is currently inside [EarliestAvailableOffset, TotalWritten).
+    std::size_t PeekAt(std::uint64_t stream_offset, std::uint8_t* out_data, std::size_t max_bytes) const;
+
     std::uint64_t TotalWritten() const;
     std::uint64_t EarliestAvailableOffset() const;
     bool IsEof() const;
@@ -56,6 +60,7 @@ private:
     WaiterId next_waiter_id_{1};
     std::unordered_map<WaiterId, NotifyCallback> waiters_;
     void NotifyWaitersLocked(std::vector<NotifyCallback>& out);
+    std::size_t CopyRangeLocked(std::uint64_t offset, std::uint8_t* out_data, std::size_t max_bytes) const;
 };
 
 } // namespace sampaudiostream
