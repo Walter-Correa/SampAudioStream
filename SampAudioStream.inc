@@ -1,6 +1,6 @@
 /*
  * SampAudioStream - Universal Audio Streaming Plugin/Component for SA-MP & open.mp
- * Version: 2.0.0
+ * Version: 2.1.0
  *
  * Features:
  *  - YouTube, SoundCloud, Twitch, Vimeo, TikTok, Direct MP3/OGG/WAV/FLAC & HLS streams
@@ -25,9 +25,9 @@
 #endif
 
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
-#define SAMPAUDIOSTREAM_VERSION_MINOR  (0)
+#define SAMPAUDIOSTREAM_VERSION_MINOR  (1)
 #define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.0.0"
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.1.0"
 
 // -----------------------------------------------------------------------------
 // Constants & Enums
@@ -136,7 +136,7 @@ native SA_CancelAudioStreamSearch(playerid);
 native SA_CreateAudioStreamChannel(const name[], creator_playerid = INVALID_PLAYER_ID, const password[] = "", E_SA_CHANNEL_DESTROY_MODE:destroy_mode = SA_CHANNEL_DESTROY_MANUAL, destroy_timeout_sec = 0);
 native SA_DestroyAudioStreamChannel(channelid);
 native SA_PlayChannelAudioStream(channelid, const url[]);
-native SA_QueueChannelAudioStream(channelid, const url[]);
+native SA_QueueChannelAudioStream(channelid, const url[], const label[] = "");
 native SA_SkipChannelAudioStream(channelid);
 native SA_StopChannelAudioStream(channelid);
 // Pausing a channel while a track is completing or transitioning preserves the
@@ -160,6 +160,7 @@ native SA_GetAudioStreamChannelID(index);
 native SA_GetAudioStreamChannelInfo(channelid, name[], name_len = sizeof(name), creator_name[], creator_len = sizeof(creator_name), &listener_count, &E_SA_STREAM_STATE:channel_state, &bool:has_password, &queue_count);
 native SA_GetAudioStreamChannelTrack(channelid, title[], title_len = sizeof(title), artist[], artist_len = sizeof(artist), &duration);
 native SA_GetAudioStreamChannelQueue(channelid, index, item[], item_len = sizeof(item));
+native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len = sizeof(label));
 native SA_ClearAudioStreamChannelQueue(channelid);
 // Positional / spatial channel configuration. For password-restricted areas, pass auto_listen = false.
 native SA_SetAudioStreamChannelPos(channelid, Float:x, Float:y, Float:z, Float:distance = 50.0, worldid = -1, interiorid = -1, bool:auto_listen = true);
@@ -167,7 +168,9 @@ native SA_ClearAudioStreamChannelPos(channelid);
 native SA_AttachAudioStreamChannelToPlayer(channelid, target_playerid);
 native SA_AttachAudioStreamChannelToVehicle(channelid, vehicleid);
 native SA_RemoveAudioStreamChannelQueue(channelid, index);
-native SA_InsertAudioStreamChannelQueue(channelid, index, const url[]);
+native SA_InsertAudioStreamChannelQueue(channelid, index, const url[], const label[] = "");
+native SA_MoveAudioStreamChannelQueue(channelid, from_index, to_index);
+native SA_ShuffleAudioStreamChannelQueue(channelid);
 native SA_QueueChannelAudioStreamPlaylist(channelid, const url[], max_items = 25);
 native SA_SeekChannelAudioStream(channelid, seconds);
 native SA_SetAudioStreamChannelLoop(channelid, E_SA_CHANNEL_LOOP_MODE:mode);
@@ -177,6 +180,8 @@ native SA_GetAudioStreamChannelElapsed(channelid);
 // or INVALID_PLAYER_ID. Range-only auto_listen listeners are not included.
 native SA_GetAudioStreamChannelListener(channelid, index);
 native SA_SetAudioStreamChannelName(channelid, const name[]);
+native SA_GetAudioStreamChannelLiveTitle(channelid, title[], title_len = sizeof(title));
+native SA_SetAudioStreamChannelLiveTitle(channelid, const title[]);
 
 // -----------------------------------------------------------------------------
 // Diagnostics & Metadata Natives
@@ -190,6 +195,8 @@ native SA_GetAudioStreamElapsed(streamid);
 native SA_GetAudioStreamURL(streamid, url[], url_len = sizeof(url));
 native SA_GetAudioStreamStats(&active_streams, &active_channels, &active_transcoders, &active_listeners);
 native SA_GetAudioStreamInfo(streamid, title[], title_len = sizeof(title), artist[], artist_len = sizeof(artist), &duration, &E_SA_STREAM_STATE:stream_state);
+native SA_GetAudioStreamLiveTitle(streamid, title[], title_len = sizeof(title));
+native SA_SetAudioStreamLiveTitle(streamid, const title[]);
 native bool:SA_IsAudioStreamExtractorReady();
 native SA_GetAudioStreamHttpPort();
 
@@ -214,7 +221,9 @@ forward OnAudioStreamReady(playerid, streamid, const title[], const artist[], du
 forward OnAudioStreamStart(playerid, streamid);
 forward OnAudioStreamFinished(playerid, streamid);
 forward OnAudioStreamError(playerid, streamid, E_SA_ERROR_CODE:error_code, const error_message[]);
+forward OnAudioStreamLiveTitleChange(playerid, streamid, const title[]);
 forward OnPlayerAudioStreamSourceChange(playerid, E_SA_AUDIO_STREAM_SOURCE:source_type, source_id);
+forward OnPlayerAudioStreamNoConnect(playerid, E_SA_AUDIO_STREAM_SOURCE:source_type, source_id);
 
 forward OnAudioStreamSearchResults(playerid, search_id, total_found, E_SA_ERROR_CODE:error_code, const error_message[]);
 forward OnAudioStreamSearchResultItem(playerid, search_id, item_index, const title[], const artist[], duration, const video_id[]);
@@ -225,6 +234,7 @@ forward OnAudioStreamChannelQueueEnd(channelid);
 forward OnAudioStreamChannelError(channelid, E_SA_ERROR_CODE:error_code, const error_message[]);
 forward OnAudioStreamChannelRestored(channelid, const name[], const creator_name[]);
 forward OnAudioStreamChannelPlaylistQueued(channelid, added, E_SA_ERROR_CODE:error_code, const error_message[]);
+forward OnAudioStreamChannelLiveTitleChange(channelid, const title[]);
 
 // -----------------------------------------------------------------------------
 // Internal Runtime Bridge (do not call directly)

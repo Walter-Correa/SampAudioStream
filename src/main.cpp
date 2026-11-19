@@ -87,7 +87,7 @@ PLUGIN_EXPORT bool PLUGIN_CALL Load(void** ppData) {
     g_samp_engine->WaitForStartupReadinessAndLog(
         [&]() {
             if (logprintf && cfg.log_startup_banner) {
-                logprintf("[SampAudioStream] SampAudioStream v2.0.0 [SA-MP] loaded (config: %s, HTTP port: %u)",
+                logprintf("[SampAudioStream] SampAudioStream v2.1.0 [SA-MP] loaded (config: %s, HTTP port: %u)",
                           cfg_path.c_str(), g_samp_engine->GetHttpPort());
             }
         },

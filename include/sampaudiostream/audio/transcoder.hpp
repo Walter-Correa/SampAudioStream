@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace sampaudiostream {
 
@@ -24,6 +25,7 @@ struct TranscoderConfig {
     std::uint64_t buffer_generation{0};   // Expected AudioStreamBuffer track generation (0 = any)
     bool pace_realtime{true};             // Emit at ~1.0x realtime for finite tracks and channels
     bool emit_silence_on_pause{false};    // True on shared radio channels, false on personal pause
+    bool normalize_volume{false};         // Optional sliding-RMS AGC + peak limiter before int16 encoding
     std::uint32_t hls_poll_interval_ms{2000};
     std::uint32_t hls_live_stall_timeout_ms{30000};
     std::uint32_t max_prefetch_mb{16};
@@ -59,5 +61,16 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+// Feeds synthetic PCM chunks directly through Mp3OutputPipeline for deterministic unit tests.
+bool RunNormalizedPipelineForTesting(
+    const TranscoderConfig& config,
+    float volume_percent,
+    int sample_rate,
+    int channels,
+    const std::vector<std::vector<std::int16_t>>& chunks,
+    std::vector<std::uint8_t>& out_mp3_bytes,
+    std::vector<std::int16_t>* out_pre_encode_pcm = nullptr,
+    float* out_final_gain_db = nullptr);
 
 } // namespace sampaudiostream

@@ -9,8 +9,8 @@
  * Commands:
  *   /audiomenu  or  /sa   - Open the interactive SampAudioStream Control Center
  *
- * Demonstrates ALL 66 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
- * and ALL 16 plugin callbacks cleanly from in-game menus (no shadow arrays).
+ * Demonstrates ALL 73 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
+ * and ALL 19 plugin callbacks cleanly from in-game menus (no shadow arrays).
  *
  * Persistence & Permissions:
  *  - Reuses the persistent server radio channel ("SampAudioStream FM") across restarts/reloads;
@@ -34,6 +34,8 @@
 #define DEMO_MAX_TRACKED_GLOBALS   (64)
 #define DEMO_MAX_LISTED_CHANNELS   (64)
 #define DEMO_MAX_QUEUE_VIEW_ITEMS  (10)
+#define DEMO_MAX_HIST_CHANNELS     (16)
+#define DEMO_HIST_DEPTH            (5)
 #define DEMO_SERVER_RADIO_NAME     "SampAudioStream FM"
 
 enum
@@ -80,7 +82,11 @@ enum
     DLG_SA_GLOBAL_SEEK_ID,
     DLG_SA_GLOBAL_SEEK_SEC,
     DLG_SA_VANILLA_PLAY,
-    DLG_SA_DIAGNOSTICS
+    DLG_SA_DIAGNOSTICS,
+    DLG_SA_CH_LIVE_VIEW,
+    DLG_SA_CH_LIVE_SET,
+    DLG_SA_GLOBAL_LIVE_SET_ID,
+    DLG_SA_CH_QUEUE_ITEM
 }
 
 // -----------------------------------------------------------------------------
@@ -107,6 +113,21 @@ static gChListIds[MAX_PLAYERS][DEMO_MAX_LISTED_CHANNELS];
 static gChListCount[MAX_PLAYERS];
 static gQueueViewHash[MAX_PLAYERS][DEMO_MAX_QUEUE_VIEW_ITEMS];
 static gQueueViewCount[MAX_PLAYERS];
+static gQueueSelIdx[MAX_PLAYERS];
+static gQueueSelHash[MAX_PLAYERS];
+static gVoteCid[MAX_PLAYERS];
+static gVoteSerial[MAX_PLAYERS];
+
+// Shared per-channel track history & vote-skip serial state (in-memory only; resets on FS reload/restart)
+static gHistCid[DEMO_MAX_HIST_CHANNELS];
+static gTrackSerial[DEMO_MAX_HIST_CHANNELS];
+static gTrackSerialCounter = 0;
+static gHistUrl[DEMO_MAX_HIST_CHANNELS][DEMO_HIST_DEPTH][256 char];
+static gHistLabel[DEMO_MAX_HIST_CHANNELS][DEMO_HIST_DEPTH][128 char];
+static gHistCount[DEMO_MAX_HIST_CHANNELS];
+static gCurUrl[DEMO_MAX_HIST_CHANNELS][256 char];
+static gCurLabel[DEMO_MAX_HIST_CHANNELS][128 char];
+static bool:gHistGoingBack[DEMO_MAX_HIST_CHANNELS];
 
 // Global streams created through this filterscript and their creator playerid
 static gTrackedGlobalSid[DEMO_MAX_TRACKED_GLOBALS];
@@ -354,6 +375,105 @@ static stock bool:EnsureStreamControlPermission(playerid, sid)
     return true;
 }
 
+static stock SendTruncatedLiveMessage(playerid, const prefix[], const raw_text[], color = -1)
+{
+    new clean[280];
+    format(clean, sizeof(clean), "%s", raw_text);
+    SanitizeDialogField(clean);
+
+    new msg[145];
+    new plen = strlen(prefix);
+    new tlen = strlen(clean);
+    if (plen + tlen <= 144)
+    {
+        format(msg, sizeof(msg), "%s%s", prefix, clean);
+    }
+    else if (plen < 141)
+    {
+        new keep = 144 - plen - 3;
+        clean[keep] = EOS;
+        format(msg, sizeof(msg), "%s%s...", prefix, clean);
+    }
+    else
+    {
+        format(msg, sizeof(msg), "%s", prefix);
+        msg[144] = EOS;
+    }
+    SendClientMessage(playerid, color, msg);
+}
+
+static stock ResetHistSlot(slot)
+{
+    if (slot < 0 || slot >= DEMO_MAX_HIST_CHANNELS) return;
+    gHistCid[slot] = INVALID_AUDIO_CHANNEL_ID;
+    gTrackSerial[slot] = 0;
+    gHistCount[slot] = 0;
+    gHistGoingBack[slot] = false;
+    gCurUrl[slot]{0} = EOS;
+    gCurLabel[slot]{0} = EOS;
+    for (new i = 0; i < DEMO_HIST_DEPTH; i++)
+    {
+        gHistUrl[slot][i]{0} = EOS;
+        gHistLabel[slot][i]{0} = EOS;
+    }
+}
+
+static stock InitHistSlots()
+{
+    for (new i = 0; i < DEMO_MAX_HIST_CHANNELS; i++)
+    {
+        ResetHistSlot(i);
+    }
+}
+
+static stock FindHistSlot(cid)
+{
+    if (cid == INVALID_AUDIO_CHANNEL_ID) return -1;
+    for (new i = 0; i < DEMO_MAX_HIST_CHANNELS; i++)
+    {
+        if (gHistCid[i] == cid) return i;
+    }
+    return -1;
+}
+
+static stock FindOrAllocHistSlot(cid)
+{
+    if (cid == INVALID_AUDIO_CHANNEL_ID) return -1;
+    new existing = FindHistSlot(cid);
+    if (existing != -1) return existing;
+
+    for (new i = 0; i < DEMO_MAX_HIST_CHANNELS; i++)
+    {
+        if (gHistCid[i] == INVALID_AUDIO_CHANNEL_ID)
+        {
+            ResetHistSlot(i);
+            gHistCid[i] = cid;
+            return i;
+        }
+    }
+
+    new cname[8], ccreator[8], listeners, E_SA_STREAM_STATE:st, bool:locked, qcount;
+    for (new i = 0; i < DEMO_MAX_HIST_CHANNELS; i++)
+    {
+        if (!SA_GetAudioStreamChannelInfo(gHistCid[i], cname, sizeof(cname), ccreator, sizeof(ccreator), listeners, st, locked, qcount))
+        {
+            ResetHistSlot(i);
+            gHistCid[i] = cid;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static stock FreeHistSlot(cid)
+{
+    new slot = FindHistSlot(cid);
+    if (slot != -1)
+    {
+        ResetHistSlot(slot);
+    }
+}
+
 static stock ResetPlayerDemoState(playerid)
 {
     gSearchId[playerid] = INVALID_AUDIO_SEARCH_ID;
@@ -366,6 +486,10 @@ static stock ResetPlayerDemoState(playerid)
     gSelChannelId[playerid] = gServerRadioId;
     gChListCount[playerid] = 0;
     gQueueViewCount[playerid] = 0;
+    gQueueSelIdx[playerid] = -1;
+    gQueueSelHash[playerid] = 0;
+    gVoteCid[playerid] = INVALID_AUDIO_CHANNEL_ID;
+    gVoteSerial[playerid] = 0;
     gNewChName[playerid][0] = EOS;
     gNewChPass[playerid][0] = EOS;
 }
@@ -449,7 +573,8 @@ Attach Global Stream to a Player {AAAAAA}(SA_AttachAudioStreamToPlayer)\n\
 Pause / Resume Any Stream by ID {AAAAAA}(SA_PauseAudioStream)\n\
 Seek Stream to Seconds by ID {AAAAAA}(SA_SeekAudioStream)\n\
 Inspect Stream Info by ID {AAAAAA}(SA_GetAudioStreamInfo)\n\
-Stop Global Stream by ID {AAAAAA}(SA_StopAudioStream)",
+Stop Global Stream by ID {AAAAAA}(SA_StopAudioStream)\n\
+Set Live Radio Text by ID {AAAAAA}(SA_SetAudioStreamLiveTitle)",
         gLastGlobalSid[playerid],
         gLastGlobalSid[playerid],
         gLastGlobalSid[playerid]
@@ -557,6 +682,9 @@ static stock ShowChannelManageMenu(playerid, channelid)
         timeout_note[0] = EOS;
     }
 
+    new hslot = FindHistSlot(channelid);
+    new hist_cnt = (hslot != -1) ? gHistCount[hslot] : 0;
+
     new title[96], body[2048];
     format(title, sizeof(title), "{FF88FF}Channel #%d: %s", channelid, cname);
     format(body, sizeof(body),
@@ -576,6 +704,10 @@ Configure Auto-Destroy Policy {AAAAAA}(%s%s)\n\
 Reclaim Creator Ownership Here {AAAAAA}(By: %s [%s])\n\
 {FF5555}Stop Stream & Clear Queue {AAAAAA}(SA_StopChannelAudioStream)\n\
 {FF5555}Destroy Channel {AAAAAA}(SA_DestroyAudioStreamChannel)\n\
+Radio Now Playing {AAAAAA}(SA_GetAudioStreamChannelLiveTitle)\n\
+Set Radio Text {AAAAAA}(SA_SetAudioStreamChannelLiveTitle)\n\
+Vote to Skip Track {AAAAAA}(listeners vote)\n\
+Previous Track {AAAAAA}(history: %d)\n\
 {CCCCCC}--- %s (%ds) | Listeners: %d | Track: %s%s%s ---",
         joined ? "Leave" : "Join",
         joined ? "SA_LeaveAudioStreamChannel" : "SA_JoinAudioStreamChannel",
@@ -590,6 +722,7 @@ Reclaim Creator Ownership Here {AAAAAA}(By: %s [%s])\n\
         timeout_note,
         ccreator,
         cre_online ? "Online" : "Offline",
+        hist_cnt,
         st_lbl,
         (elapsed < 0) ? 0 : elapsed,
         listeners,
@@ -652,6 +785,22 @@ static stock bool:EnsureSelectedChannelExists(playerid, channelid)
     return true;
 }
 
+static stock bool:GetChannelQueueDisplayText(channelid, index, out[], len = sizeof(out))
+{
+    if (SA_GetAudioStreamChannelQueueLabel(channelid, index, out, len) && out[0] != EOS)
+    {
+        SanitizeDialogField(out);
+        return true;
+    }
+    if (SA_GetAudioStreamChannelQueue(channelid, index, out, len))
+    {
+        SanitizeDialogField(out);
+        return true;
+    }
+    out[0] = EOS;
+    return false;
+}
+
 static stock ShowChannelQueueDialog(playerid, channelid)
 {
     new cname[40], ccreator[32], listeners, E_SA_STREAM_STATE:st, bool:locked, qcount;
@@ -661,20 +810,20 @@ static stock ShowChannelQueueDialog(playerid, channelid)
         return;
     }
 
-    new body[2048], item[96], line[128];
+    new body[2048], item[132], line[160];
     format(body, sizeof(body),
         "{00FF88}+ Insert URL at Index 0 (Play Next) {AAAAAA}(SA_InsertAudioStreamChannelQueue)\n\
 {FF8888}- Remove Queue Item by Index {AAAAAA}(SA_RemoveAudioStreamChannelQueue)\n\
 {00CCFF}+ Import Playlist URL {AAAAAA}(SA_QueueChannelAudioStreamPlaylist)\n\
 {FFCC00}> Seek Current Track {AAAAAA}(SA_SeekChannelAudioStream)\n\
-{FF5555}x Clear All Queued Tracks {AAAAAA}(SA_ClearAudioStreamChannelQueue) [%d]\n",
-        qcount);
+{FF5555}x Clear All Queued Tracks {AAAAAA}(SA_ClearAudioStreamChannelQueue) [%d]\n\
+{00CCFF}~ Shuffle Queue {AAAAAA}(SA_ShuffleAudioStreamChannelQueue) [%d]\n",
+        qcount, qcount);
     gQueueViewCount[playerid] = 0;
     for (new i = 0; i < qcount && i < DEMO_MAX_QUEUE_VIEW_ITEMS; i++)
     {
-        if (SA_GetAudioStreamChannelQueue(channelid, i, item, sizeof(item)))
+        if (GetChannelQueueDisplayText(channelid, i, item, sizeof(item)))
         {
-            SanitizeDialogField(item);
             format(line, sizeof(line), "{FFCC00}#%d: {FFFFFF}%s\n", i, item);
             if (strlen(body) + strlen(line) >= sizeof(body)) break;
             strcat(body, line);
@@ -685,6 +834,184 @@ static stock ShowChannelQueueDialog(playerid, channelid)
 
     ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_VIEW, DIALOG_STYLE_LIST,
         "{FF88FF}Channel Queue Actions", body, "Run", "Back");
+}
+
+static stock ShowChannelQueueItemDialog(playerid, channelid, idx)
+{
+    new title[96], item[132];
+    if (GetChannelQueueDisplayText(channelid, idx, item, sizeof(item)))
+    {
+        format(title, sizeof(title), "{00CCFF}Item #%d: %.48s", idx, item);
+    }
+    else
+    {
+        format(title, sizeof(title), "{00CCFF}Queue Item #%d Actions", idx);
+    }
+    ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_ITEM, DIALOG_STYLE_LIST, title,
+        "Move to Top\nMove Up\nMove Down\n{FF8888}Remove", "Apply", "Back");
+}
+
+static stock HandleChannelVoteSkip(playerid, cid)
+{
+    new cname[40], ccreator[32], listeners, E_SA_STREAM_STATE:st, bool:locked, qcount;
+    if (!SA_GetAudioStreamChannelInfo(cid, cname, sizeof(cname), ccreator, sizeof(ccreator), listeners, st, locked, qcount))
+    {
+        SendClientMessage(playerid, 0xFFAA00FF, "[Channel] That channel no longer exists.");
+        ShowChannelListMenu(playerid);
+        return;
+    }
+
+    new bool:is_listener = false;
+    for (new i = 0; i < listeners; i++)
+    {
+        if (SA_GetAudioStreamChannelListener(cid, i) == playerid)
+        {
+            is_listener = true;
+            break;
+        }
+    }
+    if (!is_listener)
+    {
+        SendClientMessage(playerid, 0xFFAA00FF, "[Channel] Only listeners of this channel can vote.");
+        ShowChannelManageMenu(playerid, cid);
+        return;
+    }
+
+    if (st != SA_STATE_PLAYING)
+    {
+        SendClientMessage(playerid, 0xFFAA00FF, "[Channel] Nothing is playing right now.");
+        ShowChannelManageMenu(playerid, cid);
+        return;
+    }
+
+    new slot = FindOrAllocHistSlot(cid);
+    if (slot == -1)
+    {
+        SendClientMessage(playerid, 0xFF5555FF, "[Channel] Voting is unavailable for this channel.");
+        ShowChannelManageMenu(playerid, cid);
+        return;
+    }
+    if (gTrackSerial[slot] == 0)
+    {
+        if (++gTrackSerialCounter == 0) gTrackSerialCounter = 1;
+        gTrackSerial[slot] = gTrackSerialCounter;
+    }
+
+    if (gVoteCid[playerid] == cid && gVoteSerial[playerid] == gTrackSerial[slot])
+    {
+        SendClientMessage(playerid, 0xFFAA00FF, "[Channel] You already voted to skip this track.");
+        ShowChannelManageMenu(playerid, cid);
+        return;
+    }
+
+    gVoteCid[playerid] = cid;
+    gVoteSerial[playerid] = gTrackSerial[slot];
+
+    new votes = 0;
+    for (new i = 0; i < listeners; i++)
+    {
+        new lp = SA_GetAudioStreamChannelListener(cid, i);
+        if (lp != INVALID_PLAYER_ID && IsPlayerConnected(lp) &&
+            gVoteCid[lp] == cid && gVoteSerial[lp] == gTrackSerial[slot])
+        {
+            votes++;
+        }
+    }
+    new needed = (listeners / 2) + 1;
+    if (needed < 1) needed = 1;
+
+    new pname[MAX_PLAYER_NAME + 1], msg[144];
+    GetPlayerName(playerid, pname, sizeof(pname));
+    format(msg, sizeof(msg), "[Channel] %s voted to skip (%d/%d).", pname, votes, needed);
+    for (new i = 0; i < listeners; i++)
+    {
+        new lp = SA_GetAudioStreamChannelListener(cid, i);
+        if (lp != INVALID_PLAYER_ID && IsPlayerConnected(lp))
+        {
+            SendClientMessage(lp, 0x00CCFFFF, msg);
+        }
+    }
+
+    if (votes >= needed)
+    {
+        SA_SkipChannelAudioStream(cid);
+        if (++gTrackSerialCounter == 0) gTrackSerialCounter = 1;
+        gTrackSerial[slot] = gTrackSerialCounter;
+        for (new i = 0; i < listeners; i++)
+        {
+            new lp = SA_GetAudioStreamChannelListener(cid, i);
+            if (lp != INVALID_PLAYER_ID && IsPlayerConnected(lp))
+            {
+                SendClientMessage(lp, 0x00FF88FF, "[Channel] Vote passed: skipping track.");
+            }
+        }
+    }
+    ShowChannelManageMenu(playerid, cid);
+}
+
+static stock HandleChannelPreviousTrack(playerid, cid)
+{
+    if (!EnsureChannelManagePermission(playerid, cid)) return;
+
+    new cname[40], ccreator[32], listeners, E_SA_STREAM_STATE:st, bool:locked, qcount;
+    if (!SA_GetAudioStreamChannelInfo(cid, cname, sizeof(cname), ccreator, sizeof(ccreator), listeners, st, locked, qcount))
+    {
+        SendClientMessage(playerid, 0xFFAA00FF, "[Channel] That channel no longer exists.");
+        ShowChannelListMenu(playerid);
+        return;
+    }
+
+    if (st != SA_STATE_PLAYING)
+    {
+        SendClientMessage(playerid, 0xFFAA00FF, "[Channel] Nothing is playing right now.");
+        ShowChannelManageMenu(playerid, cid);
+        return;
+    }
+
+    new slot = FindHistSlot(cid);
+    if (slot == -1 || gHistCount[slot] <= 0)
+    {
+        SendClientMessage(playerid, 0xFFAA00FF, "[Channel] No previous track in history.");
+        ShowChannelManageMenu(playerid, cid);
+        return;
+    }
+
+    new cur_u[256], cur_l[128], prev_u[256], prev_l[128];
+    new bool:inserted_cur = false;
+    if (gCurUrl[slot]{0} != EOS)
+    {
+        strunpack(cur_u, gCurUrl[slot]);
+        strunpack(cur_l, gCurLabel[slot]);
+        if (!SA_InsertAudioStreamChannelQueue(cid, 0, cur_u, cur_l))
+        {
+            SendClientMessage(playerid, 0xFF5555FF, "[Channel] Queue is full.");
+            ShowChannelManageMenu(playerid, cid);
+            return;
+        }
+        inserted_cur = true;
+    }
+
+    new top = gHistCount[slot] - 1;
+    strunpack(prev_u, gHistUrl[slot][top]);
+    strunpack(prev_l, gHistLabel[slot][top]);
+    if (!SA_InsertAudioStreamChannelQueue(cid, 0, prev_u, prev_l))
+    {
+        if (inserted_cur)
+        {
+            SA_RemoveAudioStreamChannelQueue(cid, 0);
+        }
+        SendClientMessage(playerid, 0xFF5555FF, "[Channel] Queue is full.");
+        ShowChannelManageMenu(playerid, cid);
+        return;
+    }
+
+    gHistCount[slot] = top;
+    gHistUrl[slot][top]{0} = EOS;
+    gHistLabel[slot][top]{0} = EOS;
+    gHistGoingBack[slot] = true;
+    SA_SkipChannelAudioStream(cid);
+    SendClientMessage(playerid, 0x00FF88FF, "[Channel] Going back to the previous track.");
+    ShowChannelManageMenu(playerid, cid);
 }
 
 static stock ShowChannelListenersDialog(playerid, channelid)
@@ -804,6 +1131,7 @@ static stock ShowDiagnosticsDialog(playerid)
 
 public OnFilterScriptInit()
 {
+    InitHistSlots();
     print("============================================================");
     printf("  FS_SampAudioStream_Demo loaded (Include v%s)", SAMPAUDIOSTREAM_VERSION_STRING);
     print("  Commands: /audiomenu or /sa");
@@ -875,6 +1203,7 @@ public OnFilterScriptInit()
 public OnFilterScriptExit()
 {
     gServerRadioId = INVALID_AUDIO_CHANNEL_ID;
+    InitHistSlots();
     ResetTrackedGlobals();
     for (new p = 0; p < MAX_PLAYERS; p++)
     {
@@ -1297,6 +1626,13 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                         "{FFFFFF}Enter Stream ID to stop via SA_StopAudioStream:",
                         "Stop", "Back");
                 }
+                case 11:
+                {
+                    ShowPlayerDialog(playerid, DLG_SA_GLOBAL_LIVE_SET_ID, DIALOG_STYLE_INPUT,
+                        "{00CCFF}Set Live Radio Text by ID",
+                        "{FFFFFF}Enter Stream ID and text separated by space (e.g. '2 My Radio Text', or '2' to clear):",
+                        "Apply", "Back");
+                }
             }
             return 1;
         }
@@ -1484,6 +1820,16 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                 GetStateLabel(st, st_lbl, sizeof(st_lbl));
                 format(msg, sizeof(msg), "[Stream #%d] %s - %s | %ds | State: %s", sid, a, t, dur, st_lbl);
                 SendClientMessage(playerid, 0x00CCFFFF, msg);
+
+                new live[280];
+                if (SA_GetAudioStreamLiveTitle(sid, live, sizeof(live)) && live[0] != EOS)
+                {
+                    SendTruncatedLiveMessage(playerid, "Live radio text: ", live, 0x00CCFFFF);
+                }
+                else
+                {
+                    SendClientMessage(playerid, 0xAAAAAAFF, "Live radio text: (none)");
+                }
             }
             else
             {
@@ -1557,12 +1903,14 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
             }
             gSearchSelIdx[playerid] = listitem;
 
-            new body[512];
+            new body[640];
             format(body, sizeof(body),
                 "Play For Me Only {AAAAAA}(SA_PlayAudioStreamForPlayer)\n\
 Play Global 3D Here {AAAAAA}(SA_PlayAudioStream 45m)\n\
 Queue on Selected Channel #%d {AAAAAA}(SA_QueueChannelAudioStream)\n\
+Insert at Top of Selected Channel #%d {AAAAAA}(SA_InsertAudioStreamChannelQueue)\n\
 Play Now on Selected Channel #%d {AAAAAA}(SA_PlayChannelAudioStream)",
+                gSelChannelId[playerid],
                 gSelChannelId[playerid],
                 gSelChannelId[playerid]
             );
@@ -1584,8 +1932,18 @@ Play Now on Selected Channel #%d {AAAAAA}(SA_PlayChannelAudioStream)",
                 ShowSaMainMenu(playerid);
                 return 1;
             }
-            new vid[24], url[96];
+            new vid[24], title[64], artist[48], label[120], url[96];
             strunpack(vid, gSearchVid[playerid][idx]);
+            strunpack(title, gSearchTitle[playerid][idx]);
+            strunpack(artist, gSearchArtist[playerid][idx]);
+            if (artist[0] != EOS)
+            {
+                format(label, sizeof(label), "%s - %s", artist, title);
+            }
+            else
+            {
+                format(label, sizeof(label), "%s", title);
+            }
             format(url, sizeof(url), "https://www.youtube.com/watch?v=%s", vid);
 
             switch (listitem)
@@ -1622,7 +1980,7 @@ Play Now on Selected Channel #%d {AAAAAA}(SA_PlayChannelAudioStream)",
                 }
                 case 2:
                 {
-                    if (SA_QueueChannelAudioStream(gSelChannelId[playerid], url))
+                    if (SA_QueueChannelAudioStream(gSelChannelId[playerid], url, label))
                     {
                         SendClientMessage(playerid, 0x00FF88FF, "[Search] Track added to channel queue.");
                     }
@@ -1632,6 +1990,32 @@ Play Now on Selected Channel #%d {AAAAAA}(SA_PlayChannelAudioStream)",
                     }
                 }
                 case 3:
+                {
+                    new target_cid = gSelChannelId[playerid];
+                    new cname[40], ccreator[32], listeners, E_SA_STREAM_STATE:st, bool:locked, qcount;
+                    if (!SA_GetAudioStreamChannelInfo(target_cid, cname, sizeof(cname), ccreator, sizeof(ccreator), listeners, st, locked, qcount))
+                    {
+                        SendClientMessage(playerid, 0xFF5555FF, "[Search] Target channel unavailable.");
+                        return 1;
+                    }
+                    if (!CanPlayerManageChannel(playerid, ccreator))
+                    {
+                        new msg[128];
+                        SanitizeDialogField(ccreator);
+                        format(msg, sizeof(msg), "[Channel] This channel belongs to %s; only its creator can do that.", ccreator);
+                        SendClientMessage(playerid, 0xFF5555FF, msg);
+                        return 1;
+                    }
+                    if (SA_InsertAudioStreamChannelQueue(target_cid, 0, url, label))
+                    {
+                        SendClientMessage(playerid, 0x00FF88FF, "[Search] Track inserted at front of channel queue.");
+                    }
+                    else
+                    {
+                        SendClientMessage(playerid, 0xFF5555FF, "[Search] Target channel unavailable or queue full.");
+                    }
+                }
+                case 4:
                 {
                     new target_cid = gSelChannelId[playerid];
                     new cname[40], ccreator[32], listeners, E_SA_STREAM_STATE:st, bool:locked, qcount;
@@ -2008,6 +2392,31 @@ Offline Timeout (Custom seconds)",
                     SendClientMessage(playerid, 0xFFAA00FF, "[Channel] Channel destroyed.");
                     ShowChannelListMenu(playerid);
                 }
+                case 16:
+                {
+                    new live[280], box[384], title[64];
+                    format(title, sizeof(title), "{00CCFF}Channel #%d Radio Now Playing", cid);
+                    if (SA_GetAudioStreamChannelLiveTitle(cid, live, sizeof(live)) && live[0] != EOS)
+                    {
+                        SanitizeDialogField(live);
+                        format(box, sizeof(box), "{FFFFFF}%s", live);
+                    }
+                    else
+                    {
+                        format(box, sizeof(box), "{AAAAAA}No live radio text yet.");
+                    }
+                    ShowPlayerDialog(playerid, DLG_SA_CH_LIVE_VIEW, DIALOG_STYLE_MSGBOX, title, box, "Back", "");
+                }
+                case 17:
+                {
+                    if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+                    ShowPlayerDialog(playerid, DLG_SA_CH_LIVE_SET, DIALOG_STYLE_INPUT,
+                        "{00CCFF}Set Channel Live Radio Text",
+                        "{FFFFFF}Enter custom live radio text for this channel (leave blank to clear):",
+                        "Save", "Back");
+                }
+                case 18: HandleChannelVoteSkip(playerid, cid);
+                case 19: HandleChannelPreviousTrack(playerid, cid);
                 default: ShowChannelManageMenu(playerid, cid);
             }
             return 1;
@@ -2104,19 +2513,26 @@ Offline Timeout (Custom seconds)",
                     }
                     ShowChannelManageMenu(playerid, cid);
                 }
+                case 5:
+                {
+                    if (SA_ShuffleAudioStreamChannelQueue(cid))
+                    {
+                        SendClientMessage(playerid, 0x00FF88FF, "[Channel] Queue shuffled.");
+                    }
+                    ShowChannelQueueDialog(playerid, cid);
+                }
                 default:
                 {
-                    new idx = listitem - 5;
-                    new cur_item[96];
+                    new idx = listitem - 6;
+                    new cur_item[132];
                     if (idx < 0 || idx >= gQueueViewCount[playerid] ||
-                        !SA_GetAudioStreamChannelQueue(cid, idx, cur_item, sizeof(cur_item)))
+                        !GetChannelQueueDisplayText(cid, idx, cur_item, sizeof(cur_item)))
                     {
                         SendClientMessage(playerid, 0xFFAA00FF,
                             "[Channel] Queue changed before selection; refreshing list.");
                         ShowChannelQueueDialog(playerid, cid);
                         return 1;
                     }
-                    SanitizeDialogField(cur_item);
                     if (HashStringDjb2(cur_item) != gQueueViewHash[playerid][idx])
                     {
                         SendClientMessage(playerid, 0xFFAA00FF,
@@ -2124,15 +2540,90 @@ Offline Timeout (Custom seconds)",
                         ShowChannelQueueDialog(playerid, cid);
                         return 1;
                     }
+                    gQueueSelIdx[playerid] = idx;
+                    gQueueSelHash[playerid] = gQueueViewHash[playerid][idx];
+                    ShowChannelQueueItemDialog(playerid, cid, idx);
+                }
+            }
+            return 1;
+        }
+
+        case DLG_SA_CH_QUEUE_ITEM:
+        {
+            new cid = gSelChannelId[playerid];
+            if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+            if (!response)
+            {
+                ShowChannelQueueDialog(playerid, cid);
+                return 1;
+            }
+            new idx = gQueueSelIdx[playerid];
+            new cur_item[132];
+            if (idx < 0 || !GetChannelQueueDisplayText(cid, idx, cur_item, sizeof(cur_item)) ||
+                HashStringDjb2(cur_item) != gQueueSelHash[playerid])
+            {
+                SendClientMessage(playerid, 0xFFAA00FF,
+                    "[Channel] Queue changed before selection; refreshing list.");
+                ShowChannelQueueDialog(playerid, cid);
+                return 1;
+            }
+
+            new cname[40], ccreator[32], listeners, E_SA_STREAM_STATE:st, bool:locked, qcount;
+            if (!SA_GetAudioStreamChannelInfo(cid, cname, sizeof(cname), ccreator, sizeof(ccreator), listeners, st, locked, qcount))
+            {
+                ShowChannelListMenu(playerid);
+                return 1;
+            }
+
+            new msg[80];
+            switch (listitem)
+            {
+                case 0:
+                {
+                    if (idx == 0)
+                    {
+                        SendClientMessage(playerid, 0xFFAA00FF, "[Channel] Item is already at the top.");
+                    }
+                    else if (SA_MoveAudioStreamChannelQueue(cid, idx, 0))
+                    {
+                        format(msg, sizeof(msg), "[Channel] Moved queue item #%d to #0.", idx);
+                        SendClientMessage(playerid, 0x00FF88FF, msg);
+                    }
+                }
+                case 1:
+                {
+                    if (idx <= 0)
+                    {
+                        SendClientMessage(playerid, 0xFFAA00FF, "[Channel] Item is already at the top.");
+                    }
+                    else if (SA_MoveAudioStreamChannelQueue(cid, idx, idx - 1))
+                    {
+                        format(msg, sizeof(msg), "[Channel] Moved queue item #%d to #%d.", idx, idx - 1);
+                        SendClientMessage(playerid, 0x00FF88FF, msg);
+                    }
+                }
+                case 2:
+                {
+                    if (idx + 1 >= qcount)
+                    {
+                        SendClientMessage(playerid, 0xFFAA00FF, "[Channel] Item is already at the bottom.");
+                    }
+                    else if (SA_MoveAudioStreamChannelQueue(cid, idx, idx + 1))
+                    {
+                        format(msg, sizeof(msg), "[Channel] Moved queue item #%d to #%d.", idx, idx + 1);
+                        SendClientMessage(playerid, 0x00FF88FF, msg);
+                    }
+                }
+                case 3:
+                {
                     if (SA_RemoveAudioStreamChannelQueue(cid, idx))
                     {
-                        new msg[64];
                         format(msg, sizeof(msg), "[Channel] Removed queue item #%d.", idx);
                         SendClientMessage(playerid, 0x00FF88FF, msg);
                     }
-                    ShowChannelQueueDialog(playerid, cid);
                 }
             }
+            ShowChannelQueueDialog(playerid, cid);
             return 1;
         }
 
@@ -2546,12 +3037,83 @@ Offline Timeout (Custom seconds)",
             }
             return 1;
         }
+
+        case DLG_SA_CH_LIVE_VIEW:
+        {
+            new cid = gSelChannelId[playerid];
+            if (!EnsureSelectedChannelExists(playerid, cid)) return 1;
+            ShowChannelManageMenu(playerid, cid);
+            return 1;
+        }
+
+        case DLG_SA_CH_LIVE_SET:
+        {
+            new cid = gSelChannelId[playerid];
+            if (!response)
+            {
+                if (!EnsureSelectedChannelExists(playerid, cid)) return 1;
+                ShowChannelManageMenu(playerid, cid);
+                return 1;
+            }
+            if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+            if (SA_SetAudioStreamChannelLiveTitle(cid, inputtext))
+            {
+                SendClientMessage(playerid, 0x00FF88FF, "[Channel] Radio text updated.");
+            }
+            else
+            {
+                SendClientMessage(playerid, 0xFF5555FF, "[Channel] Failed to update radio text (no active track playing).");
+            }
+            ShowChannelManageMenu(playerid, cid);
+            return 1;
+        }
+
+        case DLG_SA_GLOBAL_LIVE_SET_ID:
+        {
+            if (!response || inputtext[0] == EOS)
+            {
+                ShowGlobalMenu(playerid);
+                return 1;
+            }
+            new sid = strval(inputtext);
+            if (!EnsureStreamControlPermission(playerid, sid))
+            {
+                ShowGlobalMenu(playerid);
+                return 1;
+            }
+            new text_pos = strfind(inputtext, " ");
+            if (text_pos != -1)
+            {
+                while (inputtext[text_pos] == ' ') text_pos++;
+                if (SA_SetAudioStreamLiveTitle(sid, inputtext[text_pos]))
+                {
+                    SendClientMessage(playerid, 0x00FF88FF, "[Stream] Live radio text updated.");
+                }
+                else
+                {
+                    SendClientMessage(playerid, 0xFF5555FF, "[Stream] Failed to update live radio text (inactive stream).");
+                }
+            }
+            else
+            {
+                if (SA_SetAudioStreamLiveTitle(sid, ""))
+                {
+                    SendClientMessage(playerid, 0x00FF88FF, "[Stream] Live radio text cleared.");
+                }
+                else
+                {
+                    SendClientMessage(playerid, 0xFF5555FF, "[Stream] Failed to update live radio text (inactive stream).");
+                }
+            }
+            ShowGlobalMenu(playerid);
+            return 1;
+        }
     }
     return 0;
 }
 
 // -----------------------------------------------------------------------------
-// All 16 SampAudioStream Plugin Callbacks
+// All 19 SampAudioStream Plugin Callbacks
 // -----------------------------------------------------------------------------
 
 public OnAudioStreamProcessing(playerid, streamid, const url[], bool:from_cache)
@@ -2745,6 +3307,7 @@ public OnAudioStreamSearchResults(playerid, search_id, total_found, E_SA_ERROR_C
 
 public OnAudioStreamChannelDestroyed(channelid, E_SA_CHANNEL_DESTROY_REASON:reason)
 {
+    FreeHistSlot(channelid);
     if (channelid == gServerRadioId)
     {
         gServerRadioId = INVALID_AUDIO_CHANNEL_ID;
@@ -2788,6 +3351,62 @@ public OnAudioStreamChannelTrackStart(channelid, const title[], const artist[], 
 {
     printf("[SampAudioStream] Channel #%d track started: %s - %s (%ds) [%s]",
         channelid, artist, title, duration, url);
+
+    new slot = FindOrAllocHistSlot(channelid);
+    if (slot == -1) return 1;
+
+    if (++gTrackSerialCounter == 0) gTrackSerialCounter = 1;
+    gTrackSerial[slot] = gTrackSerialCounter;
+
+    new new_lbl[128];
+    if (artist[0] != EOS && title[0] != EOS)
+    {
+        format(new_lbl, sizeof(new_lbl), "%s - %s", artist, title);
+    }
+    else
+    {
+        format(new_lbl, sizeof(new_lbl), "%s", title);
+    }
+
+    if (gHistGoingBack[slot])
+    {
+        gHistGoingBack[slot] = false;
+    }
+    else if (gCurUrl[slot]{0} != EOS)
+    {
+        new cur_u[256];
+        strunpack(cur_u, gCurUrl[slot]);
+        if (strcmp(cur_u, url, false) != 0)
+        {
+            if (gHistCount[slot] >= DEMO_HIST_DEPTH)
+            {
+                for (new i = 1; i < DEMO_HIST_DEPTH; i++)
+                {
+                    new tmp_u[256], tmp_l[128];
+                    strunpack(tmp_u, gHistUrl[slot][i]);
+                    strunpack(tmp_l, gHistLabel[slot][i]);
+                    strpack(gHistUrl[slot][i - 1], tmp_u);
+                    strpack(gHistLabel[slot][i - 1], tmp_l);
+                }
+                gHistCount[slot] = DEMO_HIST_DEPTH - 1;
+            }
+            new dst = gHistCount[slot]++;
+            new cur_l[128];
+            strunpack(cur_l, gCurLabel[slot]);
+            strpack(gHistUrl[slot][dst], cur_u);
+            strpack(gHistLabel[slot][dst], cur_l);
+        }
+    }
+
+    if (strlen(url) >= 255)
+    {
+        gCurUrl[slot]{0} = EOS;
+    }
+    else
+    {
+        strpack(gCurUrl[slot], url);
+    }
+    strpack(gCurLabel[slot], new_lbl);
     return 1;
 }
 
@@ -2829,9 +3448,58 @@ public OnPlayerAudioStreamSourceChange(playerid, E_SA_AUDIO_STREAM_SOURCE:source
     return 1;
 }
 
+public OnPlayerAudioStreamNoConnect(playerid, E_SA_AUDIO_STREAM_SOURCE:source_type, source_id)
+{
+    #pragma unused source_type, source_id
+    if (IsPlayerConnected(playerid))
+    {
+        SendClientMessage(playerid, 0xFFAA00FF,
+            "[Audio] Your game did not connect to the audio stream. Check that your radio volume is above 0 (Options > Audio).");
+    }
+    return 1;
+}
+
 public OnAudioStreamChannelPlaylistQueued(channelid, added, E_SA_ERROR_CODE:error_code, const error_message[])
 {
     printf("[SampAudioStream] Channel #%d playlist import finished: added=%d err=%d (%s)",
         channelid, added, _:error_code, error_message);
+    return 1;
+}
+
+public OnAudioStreamLiveTitleChange(playerid, streamid, const title[])
+{
+    if (playerid != INVALID_PLAYER_ID && IsPlayerConnected(playerid))
+    {
+        if (gOptNotify[playerid])
+        {
+            SendTruncatedLiveMessage(playerid, "{00CCFF}[Radio] {FFFFFF}Now playing: ", title);
+        }
+    }
+    else
+    {
+        printf("[SampAudioStream] Global stream #%d radio text: %s", streamid, title);
+    }
+    return 1;
+}
+
+public OnAudioStreamChannelLiveTitleChange(channelid, const title[])
+{
+    new cname[40], ccreator[32], listeners, E_SA_STREAM_STATE:st, bool:locked, qcount;
+    if (!SA_GetAudioStreamChannelInfo(channelid, cname, sizeof(cname), ccreator, sizeof(ccreator), listeners, st, locked, qcount))
+    {
+        return 1;
+    }
+    SanitizeDialogField(cname);
+
+    new prefix[96];
+    format(prefix, sizeof(prefix), "{00CCFF}[Radio] {FFFFFF}Now playing on %s: ", cname);
+    for (new i = 0; i < listeners; i++)
+    {
+        new lp = SA_GetAudioStreamChannelListener(channelid, i);
+        if (lp != INVALID_PLAYER_ID && IsPlayerConnected(lp) && gOptNotify[lp])
+        {
+            SendTruncatedLiveMessage(lp, prefix, title);
+        }
+    }
     return 1;
 }

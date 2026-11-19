@@ -38,7 +38,7 @@ Modular guides and exhaustive API documentation are available in the [`docs/`](d
 | **[🔊 Playback, Hooking & Spatial Audio](docs/playback-and-spatial.md)** | `SA_PlayAudioStreamForPlayer` vs. `SA_PlayAudioStream`, radius time sync, live streams, volume, pause, and 3D entity attachment. |
 | **[🔎 Music Search & Synced Channels](docs/search-and-channels.md)** | Asynchronous `SA_SearchAudioStream` dialog workflows and synchronized multi-player radio stations with passwords, creator lifecycle, and queues. |
 | **[⚙️ Architecture, Transcoding & Caching](docs/architecture-and-caching.md)** | Internal C++20 worker pool, embedded codecs, HLS/MPEG-TS live decoding, LRU RAM cache, and ~30s ring buffers. |
-| **[📚 Complete API Reference](docs/api-reference.md)** | Exhaustive reference for all 66 `SA_*` natives, hooked vanilla natives, 16 callbacks, enums, constants, and helpers. |
+| **[📚 Complete API Reference](docs/api-reference.md)** | Exhaustive reference for all 73 `SA_*` natives, hooked vanilla natives, 19 callbacks, enums, constants, and helpers (plus optional `audio.normalize_volume` equalization for transcoded/proxy streams and live broadcasts, excluding direct passthrough). |
 | **[⚠️ Important Notes](#important-notes)** | Extractor (`yt-dlp`) dependency notice, server owner content responsibility, and non-affiliation disclaimer. |
 
 ---
@@ -97,21 +97,21 @@ CMD:zone(playerid, params[])
 }
 ```
 
-See [`FS_SampAudioStream_Demo.pwn`](FS_SampAudioStream_Demo.pwn) for a complete plug-and-play English showcase filterscript (`/audiomenu` / `/sa`) demonstrating all 66 `SA_*` natives, hooked vanilla functions, player mute/source tracking, global pause, stream listing/stats, playlist import, seeking, boombox/vehicle attachment, volume/position/distance controls, and synchronized radio channels.
+See [`FS_SampAudioStream_Demo.pwn`](FS_SampAudioStream_Demo.pwn) for a complete plug-and-play English showcase filterscript (`/audiomenu` / `/sa`) demonstrating all 73 `SA_*` natives, hooked vanilla functions, player mute/source tracking, global pause, stream listing/stats, playlist import, seeking, queue item moving, listener skip voting, previous-track history, live radio text inspection/overrides, boombox/vehicle attachment, volume/position/distance controls, and synchronized radio channels.
 
 ---
 
 ## Complete API Reference
 
-All 66 `SA_*` natives, hooked vanilla functions, 16 callbacks, constants, and enums are documented with signatures and examples in **[`docs/api-reference.md`](docs/api-reference.md)**:
+All 73 `SA_*` natives, hooked vanilla functions, 19 callbacks, constants, and enums are documented with signatures and examples in **[`docs/api-reference.md`](docs/api-reference.md)**:
 
 * **[Playback & Control](docs/api-reference.md#1-playback--control-natives):** `SA_PlayAudioStreamForPlayer`, `SA_PlayAudioStream`, `SA_StopAudioStreamForPlayer`, `SA_StopAudioStream`, `SA_PauseAudioStreamForPlayer`, `SA_PauseAudioStream`, `SA_SeekAudioStream`, `SA_SetPlayerAudioStreamMuted`, `SA_IsPlayerAudioStreamMuted`, `SA_GetPlayerAudioStreamSource`, `SA_SetPlayerAudioStreamVolume`, `SA_SetAudioStreamVolume`, `SA_SetPlayerAudioStreamDistance`, `SA_SetAudioStreamDistance`, `SA_SetPlayerAudioStreamPos`, `SA_SetAudioStreamPos`
 * **[Spatial & Entity Attachment](docs/api-reference.md#2-spatial--attachment-natives):** `SA_AttachAudioStreamToPlayer`, `SA_AttachAudioStreamToVehicle`
 * **[Asynchronous Music Search](docs/api-reference.md#3-asynchronous-music-search-natives):** `SA_SearchAudioStream`, `SA_CancelAudioStreamSearch`
-* **[Synchronized Radio Channels](docs/api-reference.md#4-synchronized-radio-channel-natives):** `SA_CreateAudioStreamChannel`, `SA_DestroyAudioStreamChannel`, `SA_SetAudioStreamChannelName`, `SA_PlayChannelAudioStream`, `SA_QueueChannelAudioStream`, `SA_QueueChannelAudioStreamPlaylist`, `SA_SeekChannelAudioStream`, `SA_RemoveAudioStreamChannelQueue`, `SA_InsertAudioStreamChannelQueue`, `SA_SkipChannelAudioStream`, `SA_StopChannelAudioStream`, `SA_PauseChannelAudioStream`, `SA_SetChannelAudioStreamVolume`, `SA_SetAudioStreamChannelLoop`, `SA_GetAudioStreamChannelLoop`, `SA_SetAudioStreamChannelPos`, `SA_ClearAudioStreamChannelPos`, `SA_AttachAudioStreamChannelToPlayer`, `SA_AttachAudioStreamChannelToVehicle`, `SA_JoinAudioStreamChannel`, `SA_LeaveAudioStreamChannel`, `SA_IsPlayerInAudioStreamChannel`, `SA_GetPlayerAudioStreamChannel`, `SA_SetAudioStreamChannelPass`, `SA_CheckAudioStreamChannelPass`, `SA_SetAudioStreamChannelCreator`, `SA_SetAudioStreamChannelDestroy`, `SA_GetAudioStreamChannelDestroy`, `SA_GetAudioStreamChannelCount`, `SA_GetAudioStreamChannelID`, `SA_GetAudioStreamChannelInfo`, `SA_GetAudioStreamChannelTrack`, `SA_GetAudioStreamChannelElapsed`, `SA_GetAudioStreamChannelListener`, `SA_GetAudioStreamChannelQueue`, `SA_ClearAudioStreamChannelQueue`
-* **[Diagnostics & Metadata](docs/api-reference.md#5-diagnostics--metadata-natives):** `SA_GetPlayerAudioStreamID`, `SA_GetAudioStreamCount`, `SA_GetAudioStreamID`, `SA_GetAudioStreamOwner`, `SA_GetAudioStreamElapsed`, `SA_GetAudioStreamURL`, `SA_GetAudioStreamStats`, `SA_GetAudioStreamInfo`, `SA_IsAudioStreamExtractorReady`, `SA_GetAudioStreamHttpPort`
+* **[Synchronized Radio Channels](docs/api-reference.md#4-synchronized-radio-channel-natives):** `SA_CreateAudioStreamChannel`, `SA_DestroyAudioStreamChannel`, `SA_SetAudioStreamChannelName`, `SA_GetAudioStreamChannelLiveTitle`, `SA_SetAudioStreamChannelLiveTitle`, `SA_PlayChannelAudioStream`, `SA_QueueChannelAudioStream`, `SA_QueueChannelAudioStreamPlaylist`, `SA_SeekChannelAudioStream`, `SA_RemoveAudioStreamChannelQueue`, `SA_InsertAudioStreamChannelQueue`, `SA_MoveAudioStreamChannelQueue`, `SA_ShuffleAudioStreamChannelQueue`, `SA_SkipChannelAudioStream`, `SA_StopChannelAudioStream`, `SA_PauseChannelAudioStream`, `SA_SetChannelAudioStreamVolume`, `SA_SetAudioStreamChannelLoop`, `SA_GetAudioStreamChannelLoop`, `SA_SetAudioStreamChannelPos`, `SA_ClearAudioStreamChannelPos`, `SA_AttachAudioStreamChannelToPlayer`, `SA_AttachAudioStreamChannelToVehicle`, `SA_JoinAudioStreamChannel`, `SA_LeaveAudioStreamChannel`, `SA_IsPlayerInAudioStreamChannel`, `SA_GetPlayerAudioStreamChannel`, `SA_SetAudioStreamChannelPass`, `SA_CheckAudioStreamChannelPass`, `SA_SetAudioStreamChannelCreator`, `SA_SetAudioStreamChannelDestroy`, `SA_GetAudioStreamChannelDestroy`, `SA_GetAudioStreamChannelCount`, `SA_GetAudioStreamChannelID`, `SA_GetAudioStreamChannelInfo`, `SA_GetAudioStreamChannelTrack`, `SA_GetAudioStreamChannelElapsed`, `SA_GetAudioStreamChannelListener`, `SA_GetAudioStreamChannelQueue`, `SA_GetAudioStreamChannelQueueLabel`, `SA_ClearAudioStreamChannelQueue`
+* **[Diagnostics & Metadata](docs/api-reference.md#5-diagnostics--metadata-natives):** `SA_GetPlayerAudioStreamID`, `SA_GetAudioStreamCount`, `SA_GetAudioStreamID`, `SA_GetAudioStreamOwner`, `SA_GetAudioStreamElapsed`, `SA_GetAudioStreamURL`, `SA_GetAudioStreamStats`, `SA_GetAudioStreamInfo`, `SA_GetAudioStreamLiveTitle`, `SA_SetAudioStreamLiveTitle`, `SA_IsAudioStreamExtractorReady`, `SA_GetAudioStreamHttpPort`
 * **[Hooked Vanilla Natives](docs/api-reference.md#6-hooked-vanilla-sa-mp-natives):** `PlayAudioStreamForPlayer`, `StopAudioStreamForPlayer`
-* **[Callbacks](docs/api-reference.md#7-callbacks):** `OnAudioStreamProcessing`, `OnAudioStreamWaiting`, `OnAudioStreamReady`, `OnAudioStreamStart`, `OnAudioStreamFinished`, `OnAudioStreamError`, `OnPlayerAudioStreamSourceChange`, `OnAudioStreamSearchResults`, `OnAudioStreamSearchResultItem`, `OnAudioStreamChannelDestroyed`, `OnAudioStreamChannelTrackWaiting`, `OnAudioStreamChannelTrackStart`, `OnAudioStreamChannelQueueEnd`, `OnAudioStreamChannelError`, `OnAudioStreamChannelRestored`, `OnAudioStreamChannelPlaylistQueued`
+* **[Callbacks](docs/api-reference.md#7-callbacks):** `OnAudioStreamProcessing`, `OnAudioStreamWaiting`, `OnAudioStreamReady`, `OnAudioStreamStart`, `OnAudioStreamFinished`, `OnAudioStreamError`, `OnAudioStreamLiveTitleChange`, `OnPlayerAudioStreamSourceChange`, `OnPlayerAudioStreamNoConnect`, `OnAudioStreamSearchResults`, `OnAudioStreamSearchResultItem`, `OnAudioStreamChannelDestroyed`, `OnAudioStreamChannelTrackWaiting`, `OnAudioStreamChannelTrackStart`, `OnAudioStreamChannelQueueEnd`, `OnAudioStreamChannelError`, `OnAudioStreamChannelRestored`, `OnAudioStreamChannelPlaylistQueued`, `OnAudioStreamChannelLiveTitleChange`
 
 ---
 
@@ -147,6 +147,19 @@ ctest --test-dir build -R core_tests --output-on-failure
 
 <details>
 <summary>Show the version history</summary>
+
+### 2.1.0 — 19/11/2026
+- **Live Internet Radio Text & Script Overrides (`73 SA_*` Natives, `19` Callbacks)**:
+  - Added periodic ICY `StreamTitle` polling (`audio.live_title_poll_seconds`, default `30s`, `0` to disable or `10..300s`, capped at 2 concurrent `64 KB` probes) for direct Shoutcast/Icecast radio streams (including extension mounts like `.mp3`), while permanently skipping finite files (`Content-Length`), HLS playlists, and `yt-dlp` extractors.
+  - Added `OnAudioStreamLiveTitleChange(playerid, streamid, const title[])` and `OnAudioStreamChannelLiveTitleChange(channelid, const title[])`, plus `SA_GetAudioStreamLiveTitle`, `SA_SetAudioStreamLiveTitle`, `SA_GetAudioStreamChannelLiveTitle`, and `SA_SetAudioStreamChannelLiveTitle` to read, filter, or customize outgoing HUD radio text separately from channel names and track metadata without re-firing callbacks.
+- **Queue Display Labels, Item Moving & One-Time Shuffle**:
+  - Added optional `label[]` support to `SA_QueueChannelAudioStream` and `SA_InsertAudioStreamChannelQueue` plus automatic entry-title labeling for `SA_QueueChannelAudioStreamPlaylist`, persisted across restarts/loops and readable with `SA_GetAudioStreamChannelQueueLabel`.
+  - Added `SA_ShuffleAudioStreamChannelQueue(channelid)` and `SA_MoveAudioStreamChannelQueue(channelid, from_index, to_index)` (preserving raw UTF-8/Pawn labels losslessly and pre-resolving queue index `0` when changed).
+- **Audio Normalization, Client No-Connect Feedback & Playlist Error Clarity**:
+  - Added optional sliding-RMS AGC loudness normalization (`audio.normalize_volume`, default `false`) with peak limiting for server-transcoded/proxied streams and channels.
+  - Added `OnPlayerAudioStreamNoConnect` handling/notifications and improved `OnAudioStreamChannelPlaylistQueued` error reporting when queues or concurrent transcoder limits block playback.
+- **Interactive Demo Filterscript Enhancements (`FS_SampAudioStream_Demo.pwn`)**:
+  - Added live radio text announcements (`Now playing...`), live text inspection/editing dialogs, queue item action submenu (`Move to Top`, `Move Up`, `Move Down`, `Remove`), listener majority skip voting (`Vote to Skip Track`), and per-channel in-memory previous track history (`Previous Track`).
 
 ### 2.0.0 — 18/11/2026
 - **Breaking API & Storage Standardization (`AudioStream` Naming + `scriptfiles/SampAudioStream/`)**:

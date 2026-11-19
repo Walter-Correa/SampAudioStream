@@ -23,6 +23,7 @@ struct StreamEndpointInfo {
     std::size_t live_burst_bytes{48 * 1024};
     std::shared_ptr<AudioStreamBuffer> buffer;
     std::string station_name;
+    std::string live_title;
 };
 
 class HttpStreamingServer {
@@ -43,6 +44,7 @@ public:
     void RegisterEndpoint(const StreamEndpointInfo& info);
     void UnregisterEndpoint(const std::string& token);
     void UpdateEndpointMetadata(const std::string& token, const std::string& title, const std::string& artist, std::shared_ptr<AudioStreamBuffer> new_buffer = nullptr);
+    void UpdateEndpointLiveTitle(const std::string& token, const std::string& live_title);
     void UpdateEndpointStationName(const std::string& token, const std::string& station_name);
     std::uint64_t GetEndpointServedOffset(const std::string& token) const;
     std::uint64_t GetEndpointPlayedOffset(const std::string& token) const;

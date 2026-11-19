@@ -46,6 +46,8 @@ struct PluginConfig {
     bool log_public_ip_detected{true};
     bool log_extractor_status{true};
     std::string player_priority_order{"personal,channel,global"};
+    bool normalize_volume{false};
+    std::uint32_t live_title_poll_seconds{30};
     std::string pawn_text_encoding{"cp1252"}; // "cp1252" (client default) or "utf8"
 };
 

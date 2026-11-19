@@ -17,6 +17,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -589,6 +590,17 @@ struct MockChannelWaitingEvent {
     std::int32_t wait_ms{0};
 };
 
+struct MockLiveTitleEvent {
+    PlayerId player_id{INVALID_PLAYER_ID};
+    StreamId stream_id{INVALID_STREAM_ID};
+    std::string title;
+};
+
+struct MockChannelLiveTitleEvent {
+    ChannelId channel_id{INVALID_CHANNEL_ID};
+    std::string title;
+};
+
 class MockPlatformHost final : public IPlatformHost {
 public:
     mutable std::mutex mtx;
@@ -605,9 +617,12 @@ public:
     std::vector<MockChannelErrorEvent> channel_errors;
     std::vector<MockChannelRestoredEvent> restored_channels;
     std::vector<MockSourceChangeEvent> source_changes;
+    std::vector<MockSourceChangeEvent> no_connect_events;
     std::vector<MockPlaylistQueuedEvent> playlist_queued_events;
     std::vector<MockWaitingEvent> waiting_events;
     std::vector<MockChannelWaitingEvent> channel_waiting_events;
+    std::vector<MockLiveTitleEvent> live_title_events;
+    std::vector<MockChannelLiveTitleEvent> channel_live_title_events;
     std::vector<std::string> callback_names;
     mutable std::thread::id expected_host_thread{std::this_thread::get_id()};
     mutable std::atomic<bool> get_ip_off_main_thread{false};
@@ -801,6 +816,14 @@ public:
                 std::lock_guard<std::mutex> lock(mtx);
                 source_changes.push_back({*pid, *stype, *sid});
             }
+        } else if (name == "OnPlayerAudioStreamNoConnect" && args.size() >= 3) {
+            auto* pid = std::get_if<std::int32_t>(&args[0]);
+            auto* stype = std::get_if<std::int32_t>(&args[1]);
+            auto* sid = std::get_if<std::int32_t>(&args[2]);
+            if (pid && stype && sid) {
+                std::lock_guard<std::mutex> lock(mtx);
+                no_connect_events.push_back({*pid, *stype, *sid});
+            }
         } else if (name == "OnAudioStreamChannelPlaylistQueued" && args.size() >= 4) {
             auto* cid = std::get_if<std::int32_t>(&args[0]);
             auto* added = std::get_if<std::int32_t>(&args[1]);
@@ -824,6 +847,21 @@ public:
             if (cid && wms) {
                 std::lock_guard<std::mutex> lock(mtx);
                 channel_waiting_events.push_back({*cid, *wms});
+            }
+        } else if (name == "OnAudioStreamLiveTitleChange" && args.size() >= 3) {
+            auto* pid = std::get_if<std::int32_t>(&args[0]);
+            auto* sid = std::get_if<std::int32_t>(&args[1]);
+            auto* title = std::get_if<std::string>(&args[2]);
+            if (pid && sid && title) {
+                std::lock_guard<std::mutex> lock(mtx);
+                live_title_events.push_back({*pid, *sid, *title});
+            }
+        } else if (name == "OnAudioStreamChannelLiveTitleChange" && args.size() >= 2) {
+            auto* cid = std::get_if<std::int32_t>(&args[0]);
+            auto* title = std::get_if<std::string>(&args[1]);
+            if (cid && title) {
+                std::lock_guard<std::mutex> lock(mtx);
+                channel_live_title_events.push_back({*cid, *title});
             }
         }
     }
@@ -1106,6 +1144,385 @@ void TestSpatialPerformanceBenchmark() {
     StopTestAcceptor(acc, pls_port);
     if (pls_srv.joinable()) pls_srv.join();
     std::cout << "[PASS] TestSpatialPerformanceBenchmark\n";
+}
+
+void TestRound60Features() {
+    std::error_code fec;
+    const std::filesystem::path temp_dir = std::filesystem::temp_directory_path() / "sampaudiostream_r60_test";
+    std::filesystem::remove_all(temp_dir, fec);
+    std::filesystem::create_directories(temp_dir / "bin", fec);
+
+    auto make_cfg = [&]() {
+        PluginConfig c;
+        c.bind_ip = "127.0.0.1";
+        c.public_ip = "127.0.0.1";
+        c.http_port = 0;
+        c.base_dir = temp_dir.string();
+        c.bin_dir = (temp_dir / "bin").string();
+        c.auto_download_extractor = false;
+        c.auto_update_extractor = false;
+        c.enable_js_runtime = false;
+        c.allow_private_network_urls = true;
+        c.persist_channels = true;
+        c.pawn_text_encoding = "utf8";
+        c.max_queue_per_channel = 50;
+        return c;
+    };
+
+    // 1. Config schema includes audio.normalize_volume (bool, default false)
+    TEST_PHASE("r60_config");
+    {
+        PluginConfig def_cfg;
+        TEST_CHECK(!def_cfg.normalize_volume);
+        const auto fields = ConfigManager::GetUnifiedSchemaFields();
+        bool found_norm = false;
+        for (const auto& f : fields) {
+            if (f.full_key == "audio.normalize_volume") {
+                found_norm = true;
+                break;
+            }
+        }
+        TEST_CHECK(found_norm);
+
+        const std::string cfg_path = (temp_dir / "norm_cfg.json").string();
+        PluginConfig loaded = ConfigManager::LoadOrCreate(cfg_path);
+        TEST_CHECK(!loaded.normalize_volume);
+        std::ifstream ifs(cfg_path);
+        std::string raw_json((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        TEST_CHECK(raw_json.find("\"normalize_volume\": false") != std::string::npos);
+
+        PluginConfig saved = loaded;
+        saved.normalize_volume = true;
+        TEST_CHECK(ConfigManager::Save(saved, cfg_path));
+        PluginConfig reloaded = ConfigManager::LoadOrCreate(cfg_path);
+        TEST_CHECK(reloaded.normalize_volume);
+    }
+
+    // 2. Queue item labels: sanitization, UTF-8 128-byte boundary, persistence & legacy JSON load, shuffle
+    TEST_PHASE("r60_queue_labels_and_shuffle");
+    {
+#ifdef _WIN32
+        const std::filesystem::path fake_ext = temp_dir / "bin" / "yt-dlp.exe";
+#else
+        const std::filesystem::path fake_ext = temp_dir / "bin" / "yt-dlp";
+#endif
+        {
+            std::ofstream ofs(fake_ext, std::ios::binary);
+            ofs << std::string(128 * 1024, 'x');
+        }
+#ifndef _WIN32
+        std::filesystem::permissions(
+            fake_ext,
+            std::filesystem::perms::owner_exec,
+            std::filesystem::perm_options::add,
+            fec);
+#endif
+        MockPlatformHost host;
+        AudioEngine engine(host, make_cfg());
+        TEST_CHECK(engine.Initialize());
+        TEST_CHECK(engine.BinariesForTesting().WaitUntilSettled(std::chrono::seconds(2)));
+
+        const ChannelId cid = engine.CreateChannel("R60 Radio", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0);
+        TEST_CHECK(cid != INVALID_CHANNEL_ID);
+
+        // Start a dummy active track so subsequent queue pushes remain in queue for inspection/shuffle
+        // First queue item becomes active current_input via PlayChannelLocked, preserving its label too.
+        TEST_CHECK(engine.QueueChannel(cid, "http://127.0.0.1:9/seed.mp3", "http://127.0.0.1:9/seed.mp3", "Seed\tLine\r\nTrack"));
+
+        // 127 ASCII bytes + 3-byte UTF-8 note (E2 99 AA) -> truncated safely to 127 bytes without half-codepoint
+        const std::string label_boundary = std::string(127, 'A') + "\xE2\x99\xAA" + "XYZ";
+        TEST_CHECK(engine.QueueChannel(cid, "http://127.0.0.1:9/t1.mp3", "", label_boundary));
+        TEST_CHECK(engine.InsertChannelQueueItem(cid, 0, "http://127.0.0.1:9/t0.mp3", "", "Tab\tCR\rLF\nTitle"));
+
+        std::string url0, lbl0, url1, lbl1;
+        TEST_CHECK(engine.GetChannelQueueItem(cid, 0, url0));
+        TEST_CHECK(engine.GetChannelQueueItemLabel(cid, 0, lbl0));
+        TEST_CHECK(url0 == "http://127.0.0.1:9/t0.mp3");
+        TEST_CHECK(lbl0 == "Tab CR LF Title");
+
+        TEST_CHECK(engine.GetChannelQueueItem(cid, 1, url1));
+        TEST_CHECK(engine.GetChannelQueueItemLabel(cid, 1, lbl1));
+        TEST_CHECK(url1 == "http://127.0.0.1:9/t1.mp3");
+        TEST_CHECK(lbl1.size() == 127);
+        TEST_CHECK(lbl1 == std::string(127, 'A'));
+
+        std::string bad_lbl;
+        TEST_CHECK(!engine.GetChannelQueueItemLabel(cid, 99, bad_lbl));
+        TEST_CHECK(!engine.GetChannelQueueItemLabel(999999, 0, bad_lbl));
+
+        // Add more items and test ShuffleChannelQueue preserves URL<->label pairing and never touches invalid channel
+        TEST_CHECK(!engine.ShuffleChannelQueue(999999));
+        for (int k = 2; k <= 7; ++k) {
+            TEST_CHECK(engine.QueueChannel(
+                cid,
+                "http://127.0.0.1:9/t" + std::to_string(k) + ".mp3",
+                "",
+                "Label #" + std::to_string(k)));
+        }
+
+        std::vector<std::pair<std::string, std::string>> before_items;
+        for (std::size_t i = 0; i < 8; ++i) {
+            std::string u, l;
+            TEST_CHECK(engine.GetChannelQueueItem(cid, i, u));
+            TEST_CHECK(engine.GetChannelQueueItemLabel(cid, i, l));
+            before_items.emplace_back(u, l);
+        }
+
+        bool order_changed = false;
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            TEST_CHECK(engine.ShuffleChannelQueue(cid));
+            std::vector<std::pair<std::string, std::string>> after_items;
+            for (std::size_t i = 0; i < 8; ++i) {
+                std::string u, l;
+                TEST_CHECK(engine.GetChannelQueueItem(cid, i, u));
+                TEST_CHECK(engine.GetChannelQueueItemLabel(cid, i, l));
+                after_items.emplace_back(u, l);
+            }
+            if (after_items != before_items) {
+                order_changed = true;
+            }
+            std::sort(before_items.begin(), before_items.end());
+            std::sort(after_items.begin(), after_items.end());
+            TEST_CHECK(before_items == after_items);
+            if (order_changed) break;
+        }
+        TEST_CHECK(order_changed);
+
+        // Playlist import populates labels from flat-playlist entry titles
+        engine.ResolverForTesting().SetYtDlpTestHook([](
+            const std::vector<std::string>&,
+            std::string& out_stdout,
+            std::string&,
+            int,
+            const std::atomic<bool>*) {
+            out_stdout = R"({"entries":[
+                {"id":"plVid000001","title":"First Playlist Song"},
+                {"id":"plVid000002","title":"Second\tPlaylist\nSong"}
+            ]})";
+            return true;
+        });
+        TEST_CHECK(engine.QueueChannelPlaylist(cid, "https://www.youtube.com/playlist?list=R60PL", 10));
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (std::chrono::steady_clock::now() < deadline) {
+            engine.Tick();
+            ChannelInfo ci{};
+            if (engine.GetChannelInfo(cid, ci) && ci.queue_count >= 10) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(15));
+        }
+        std::string pl_u0, pl_l0, pl_u1, pl_l1;
+        TEST_CHECK(engine.GetChannelQueueItem(cid, 8, pl_u0));
+        TEST_CHECK(engine.GetChannelQueueItemLabel(cid, 8, pl_l0));
+        TEST_CHECK(pl_u0.find("plVid000001") != std::string::npos);
+        TEST_CHECK(pl_l0 == "First Playlist Song");
+        TEST_CHECK(engine.GetChannelQueueItem(cid, 9, pl_u1));
+        TEST_CHECK(engine.GetChannelQueueItemLabel(cid, 9, pl_l1));
+        TEST_CHECK(pl_l1 == "Second Playlist Song");
+
+        engine.Shutdown();
+
+        // Persistence round-trip restores labels on queue items and current_input
+        {
+            MockPlatformHost host2;
+            AudioEngine engine2(host2, make_cfg());
+            TEST_CHECK(engine2.Initialize());
+            std::string r_u, r_l;
+            TEST_CHECK(engine2.GetChannelQueueItem(cid, 8, r_u));
+            TEST_CHECK(engine2.GetChannelQueueItemLabel(cid, 8, r_l));
+            TEST_CHECK(r_l == "First Playlist Song");
+            engine2.Shutdown();
+        }
+
+        // Legacy channel JSON without label_hex / pawn_label_hex loads cleanly with empty label
+        {
+            const std::filesystem::path legacy_path = temp_dir / "channels" / "channel_777.json";
+            std::filesystem::create_directories(legacy_path.parent_path(), fec);
+            std::ofstream lfs(legacy_path, std::ios::binary | std::ios::trunc);
+            lfs << R"({
+  "format_version": 1,
+  "id": 777,
+  "name": "Legacy Channel",
+  "has_creator": false,
+  "destroy_mode": 0,
+  "destroy_timeout_seconds": 0,
+  "volume": 100.0,
+  "paused": false,
+  "loop_mode": 0,
+  "current_input": {"utf8_url": "", "pawn_url_hex": ""},
+  "was_playing": false,
+  "queue": [{"utf8_url": "http://127.0.0.1:9/legacy.mp3", "pawn_url_hex": ""}],
+  "spatial": {"use_position": false, "x": 0.0, "y": 0.0, "z": 0.0, "distance": 50.0, "world_id": -1, "interior_id": -1, "auto_listen": true}
+})";
+            lfs.close();
+
+            MockPlatformHost host3;
+            AudioEngine engine3(host3, make_cfg());
+            TEST_CHECK(engine3.Initialize());
+            std::string leg_url, leg_lbl = "nonempty";
+            TEST_CHECK(engine3.GetChannelQueueItem(777, 0, leg_url));
+            TEST_CHECK(leg_url == "http://127.0.0.1:9/legacy.mp3");
+            TEST_CHECK(engine3.GetChannelQueueItemLabel(777, 0, leg_lbl));
+            TEST_CHECK(leg_lbl.empty());
+            engine3.Shutdown();
+        }
+    }
+
+    // 3. Volume normalization pipeline tests
+    TEST_PHASE("r60_volume_normalization");
+    {
+        auto make_sine_chunks = [](double target_rms_dbfs, int seconds, int sample_rate = 48000, int freq_hz = 440) {
+            const double rms_lin = std::pow(10.0, target_rms_dbfs / 20.0);
+            const double amp = rms_lin * std::sqrt(2.0) * 32768.0;
+            const std::size_t chunk_frames = 4096;
+            const std::size_t total_frames = static_cast<std::size_t>(seconds) * static_cast<std::size_t>(sample_rate);
+            std::vector<std::vector<std::int16_t>> chunks;
+            std::size_t generated = 0;
+            constexpr double kTwoPi = 6.28318530717958647692;
+            while (generated < total_frames) {
+                const std::size_t n = std::min(chunk_frames, total_frames - generated);
+                std::vector<std::int16_t> c(n);
+                for (std::size_t i = 0; i < n; ++i) {
+                    const double t = static_cast<double>(generated + i) / static_cast<double>(sample_rate);
+                    const double v = std::clamp(std::sin(kTwoPi * freq_hz * t) * amp, -32768.0, 32767.0);
+                    c[i] = static_cast<std::int16_t>(std::lrint(v));
+                }
+                chunks.push_back(std::move(c));
+                generated += n;
+            }
+            return chunks;
+        };
+
+        auto measure_tail_rms_db = [](const std::vector<std::int16_t>& stereo_pcm, std::size_t tail_frames) {
+            const std::size_t total_frames = stereo_pcm.size() / 2;
+            const std::size_t count = std::min(tail_frames, total_frames);
+            const std::size_t start_frame = total_frames - count;
+            double sum_sq = 0.0;
+            for (std::size_t i = start_frame; i < total_frames; ++i) {
+                const double l = static_cast<double>(stereo_pcm[i * 2]) / 32768.0;
+                const double r = static_cast<double>(stereo_pcm[i * 2 + 1]) / 32768.0;
+                sum_sq += 0.5 * (l * l + r * r);
+            }
+            const double mean_sq = sum_sq / static_cast<double>(count);
+            return (mean_sq > 1e-12) ? (10.0 * std::log10(mean_sq)) : -120.0;
+        };
+
+        TranscoderConfig base_cfg;
+        base_cfg.target_sample_rate = 48000;
+        base_cfg.target_bitrate_kbps = 128;
+        base_cfg.pace_realtime = false;
+
+        // 3a: Quiet -22 dBFS sine converges to -16 dBFS +/- 2 dB; -30 dBFS caps gain at +9 dB
+        {
+            TranscoderConfig cfg = base_cfg;
+            cfg.normalize_volume = true;
+            std::vector<std::uint8_t> mp3;
+            std::vector<std::int16_t> pcm;
+            float gain_db = 0.0f;
+
+            const auto quiet_22 = make_sine_chunks(-22.0, 6);
+            TEST_CHECK(RunNormalizedPipelineForTesting(cfg, 100.0f, 48000, 1, quiet_22, mp3, &pcm, &gain_db));
+            const double tail_db_22 = measure_tail_rms_db(pcm, 48000);
+            TEST_CHECK(tail_db_22 >= -18.0 && tail_db_22 <= -14.0);
+            TEST_CHECK(gain_db <= 9.001f);
+
+            const auto quiet_30 = make_sine_chunks(-30.0, 8);
+            TEST_CHECK(RunNormalizedPipelineForTesting(cfg, 100.0f, 48000, 1, quiet_30, mp3, &pcm, &gain_db));
+            TEST_CHECK(gain_db <= 9.001f && gain_db >= 8.5f);
+            const double tail_db_30 = measure_tail_rms_db(pcm, 48000);
+            TEST_CHECK(tail_db_30 > -23.0 && tail_db_30 < -19.0);
+        }
+
+        // 3b: Loud -3 dBFS sine stays <= 0.98 full scale across every sample (including first transient sample)
+        {
+            TranscoderConfig cfg = base_cfg;
+            cfg.normalize_volume = true;
+            std::vector<std::uint8_t> mp3;
+            std::vector<std::int16_t> pcm;
+            float gain_db = 0.0f;
+            const auto loud = make_sine_chunks(-3.0, 4);
+            TEST_CHECK(RunNormalizedPipelineForTesting(cfg, 100.0f, 48000, 1, loud, mp3, &pcm, &gain_db));
+            const double max_allowed = 0.98 * 32768.0;
+            double peak = 0.0;
+            for (std::int16_t s : pcm) {
+                peak = std::max(peak, std::abs(static_cast<double>(s)));
+            }
+            TEST_CHECK(peak <= max_allowed);
+            TEST_CHECK(gain_db < 0.0f);
+        }
+
+        // 3c: Silence leaves gain at 0 dB and matches disabled output
+        {
+            std::vector<std::vector<std::int16_t>> silence_chunks(10, std::vector<std::int16_t>(4800, 0));
+            TranscoderConfig cfg_off = base_cfg;
+            cfg_off.normalize_volume = false;
+            TranscoderConfig cfg_on = base_cfg;
+            cfg_on.normalize_volume = true;
+
+            std::vector<std::uint8_t> mp3_off, mp3_on;
+            std::vector<std::int16_t> pcm_off, pcm_on;
+            float gain_db = 123.0f;
+            TEST_CHECK(RunNormalizedPipelineForTesting(cfg_off, 100.0f, 48000, 1, silence_chunks, mp3_off, &pcm_off));
+            TEST_CHECK(RunNormalizedPipelineForTesting(cfg_on, 100.0f, 48000, 1, silence_chunks, mp3_on, &pcm_on, &gain_db));
+            TEST_CHECK(std::abs(gain_db) < 0.001f);
+            TEST_CHECK(pcm_off == pcm_on);
+            TEST_CHECK(mp3_off == mp3_on);
+        }
+
+        // 3d: Disabled option reproduces exact untouched path (100% mono passthrough matches input sample-for-sample)
+        {
+            const auto test_in = make_sine_chunks(-22.0, 2);
+            TranscoderConfig cfg_off = base_cfg;
+            cfg_off.normalize_volume = false;
+            std::vector<std::uint8_t> mp3_a, mp3_b;
+            std::vector<std::int16_t> pcm_a, pcm_b;
+            TEST_CHECK(RunNormalizedPipelineForTesting(cfg_off, 100.0f, 48000, 1, test_in, mp3_a, &pcm_a));
+            TEST_CHECK(RunNormalizedPipelineForTesting(cfg_off, 100.0f, 48000, 1, test_in, mp3_b, &pcm_b));
+            TEST_CHECK(mp3_a == mp3_b);
+            std::size_t idx = 0;
+            for (const auto& ch : test_in) {
+                for (std::int16_t s : ch) {
+                    TEST_CHECK(pcm_a[idx++] == s);
+                    TEST_CHECK(pcm_a[idx++] == s);
+                }
+            }
+        }
+
+        // 3e: Asymmetric gain drop (-35 dBFS intro 6s -> -10 dBFS chorus 6s drops fast at 6 dB/s)
+        {
+            TranscoderConfig cfg = base_cfg;
+            cfg.normalize_volume = true;
+            auto chunks = make_sine_chunks(-35.0, 6);
+            auto chorus = make_sine_chunks(-10.0, 6);
+            chunks.insert(chunks.end(), chorus.begin(), chorus.end());
+
+            std::vector<std::uint8_t> mp3;
+            std::vector<std::int16_t> pcm;
+            float gain_db = 0.0f;
+            TEST_CHECK(RunNormalizedPipelineForTesting(cfg, 100.0f, 48000, 1, chunks, mp3, &pcm, &gain_db));
+            const double tail_db = measure_tail_rms_db(pcm, 48000);
+            TEST_CHECK(tail_db >= -18.0 && tail_db <= -14.0);
+            TEST_CHECK(gain_db < 0.0f);
+        }
+
+        // 3f: Initial 4s silence does NOT consume the 3s fast phase before 3s of -22 dBFS
+        {
+            TranscoderConfig cfg = base_cfg;
+            cfg.normalize_volume = true;
+            std::vector<std::vector<std::int16_t>> chunks(40, std::vector<std::int16_t>(4800, 0)); // 4 s silence @ 48kHz
+            auto active = make_sine_chunks(-22.0, 3);
+            chunks.insert(chunks.end(), active.begin(), active.end());
+
+            std::vector<std::uint8_t> mp3;
+            std::vector<std::int16_t> pcm;
+            float gain_db = 0.0f;
+            TEST_CHECK(RunNormalizedPipelineForTesting(cfg, 100.0f, 48000, 1, chunks, mp3, &pcm, &gain_db));
+            const double tail_db = measure_tail_rms_db(pcm, 48000);
+            TEST_CHECK(tail_db >= -18.0 && tail_db <= -14.0);
+            TEST_CHECK(gain_db >= 5.0f);
+        }
+    }
+
+    std::filesystem::remove_all(temp_dir, fec);
+    std::cout << "[PASS] TestRound60Features\n";
 }
 
 void TestTranscoderWaveAndBadMp4() {
@@ -12889,7 +13306,9 @@ void TestRound52PartBUnifiedConfig() {
         "        \"transcoder_burst_ms\": 6000,\n"
         "        \"max_concurrent_streams\": 64,\n"
         "        \"spatial_update_interval_ms\": 200,\n"
-        "        \"player_priority_order\": \"personal,channel,global\"\n"
+        "        \"player_priority_order\": \"personal,channel,global\",\n"
+        "        \"normalize_volume\": false,\n"
+        "        \"live_title_poll_seconds\": 30\n"
         "    },\n"
         "    \"channels\":\n"
         "    {\n"
@@ -12979,6 +13398,7 @@ void TestRound52PartBUnifiedConfig() {
         custom.max_concurrent_streams = 32;
         custom.spatial_update_interval_ms = 120;
         custom.player_priority_order = "channel,personal,global";
+        custom.live_title_poll_seconds = 45;
         custom.max_channels = 222;
         custom.max_queue_per_channel = 77;
         custom.persist_channels = false;
@@ -13021,6 +13441,7 @@ void TestRound52PartBUnifiedConfig() {
         TEST_CHECK(read_back.max_concurrent_streams == 32);
         TEST_CHECK(read_back.spatial_update_interval_ms == 120);
         TEST_CHECK(read_back.player_priority_order == "channel,personal,global");
+        TEST_CHECK(read_back.live_title_poll_seconds == 45);
         TEST_CHECK(read_back.max_channels == 222);
         TEST_CHECK(read_back.max_queue_per_channel == 77);
         TEST_CHECK(!read_back.persist_channels);
@@ -13094,7 +13515,7 @@ void TestRound52PartBUnifiedConfig() {
         ConfigManager::ProvideOmpDefaults(writer);
 
         const std::vector<ConfigSchemaFieldInfo> schema = ConfigManager::GetUnifiedSchemaFields();
-        TEST_CHECK(schema.size() == 38);
+        TEST_CHECK(schema.size() == 40);
         TEST_CHECK(registered_omp_keys.size() == schema.size());
         for (std::size_t i = 0; i < schema.size(); ++i) {
             TEST_CHECK(registered_omp_keys[i] == ("sampaudiostream." + schema[i].full_key));
@@ -13127,6 +13548,8 @@ void TestRound52PartBUnifiedConfig() {
         omp_ints["sampaudiostream.audio.max_concurrent_streams"] = 48;
         omp_ints["sampaudiostream.audio.spatial_update_interval_ms"] = 150;
         omp_strings["sampaudiostream.audio.player_priority_order"] = "global,channel,personal";
+        omp_bools["sampaudiostream.audio.normalize_volume"] = true;
+        omp_ints["sampaudiostream.audio.live_title_poll_seconds"] = 75;
         omp_ints["sampaudiostream.channels.max_channels"] = 250;
         omp_ints["sampaudiostream.channels.max_queue_per_channel"] = 80;
         omp_bools["sampaudiostream.channels.persist_channels"] = false;
@@ -13187,6 +13610,8 @@ void TestRound52PartBUnifiedConfig() {
         TEST_CHECK(omp_loaded.max_concurrent_streams == 48);
         TEST_CHECK(omp_loaded.spatial_update_interval_ms == 150);
         TEST_CHECK(omp_loaded.player_priority_order == "global,channel,personal");
+        TEST_CHECK(omp_loaded.normalize_volume);
+        TEST_CHECK(omp_loaded.live_title_poll_seconds == 75);
         TEST_CHECK(omp_loaded.max_channels == 250);
         TEST_CHECK(omp_loaded.max_queue_per_channel == 80);
         TEST_CHECK(!omp_loaded.persist_channels);
@@ -13934,10 +14359,53 @@ void TestRound53NetworkRetryAndPortWarn() {
             TEST_CHECK(pump_until(engine, 1000, [&]() {
                 return count_logs(LogSeverity::Warning, "Player 5 did not connect to the audio stream within 15 s") >= 1;
             }));
+            TEST_CHECK(pump_until(engine, 500, [&]() {
+                std::lock_guard<std::mutex> lk(host.mtx);
+                return !host.no_connect_events.empty();
+            }));
+            TEST_CHECK(count_logs(LogSeverity::Warning, "common causes") == 1);
             const std::string port_tok = "(HTTP port " + std::to_string(engine.GetHttpPort()) + "/TCP)";
             TEST_CHECK(count_logs(LogSeverity::Warning, port_tok) == 1);
             TEST_CHECK(count_logs(LogSeverity::Warning, "'network.public_ip'") == 1);
             TEST_CHECK(count_logs(LogSeverity::Warning, "/stream/") == 0);
+            engine.Shutdown();
+        }
+
+        // 7e: Two unconnected players emit two OnPlayerAudioStreamNoConnect callbacks and a single throttled Warn
+        {
+            clear_logs();
+            Logger::Instance().SetDebugEnabled(false);
+            MockPlatformHost host;
+            host.players = {{5, {0.0f, 0.0f, 0.0f}, 0, 0}, {6, {0.0f, 0.0f, 0.0f}, 0, 0}};
+            AudioEngine engine(host, make_engine_cfg());
+            engine.SetConnectTimeoutWarningMsForTesting(150);
+            TEST_CHECK(engine.Initialize());
+
+            StreamOptions opts;
+            opts.process_direct_audio_files = true;
+            const StreamId sid5 = engine.PlayAudioStreamForPlayer(5, wav_url, opts);
+            const StreamId sid6 = engine.PlayAudioStreamForPlayer(6, wav_url, opts);
+            TEST_CHECK(sid5 != INVALID_STREAM_ID && sid6 != INVALID_STREAM_ID);
+
+            TEST_CHECK(pump_until(engine, 2500, [&]() {
+                std::lock_guard<std::mutex> lk(host.mtx);
+                return host.no_connect_events.size() >= 2;
+            }));
+            {
+                std::lock_guard<std::mutex> lk(host.mtx);
+                TEST_CHECK(host.no_connect_events.size() == 2);
+                bool seen5 = false;
+                bool seen6 = false;
+                for (const auto& ev : host.no_connect_events) {
+                    if (ev.player_id == 5 && ev.source_type == static_cast<std::int32_t>(AudioStreamSourceType::Personal) && ev.source_id == sid5) {
+                        seen5 = true;
+                    } else if (ev.player_id == 6 && ev.source_type == static_cast<std::int32_t>(AudioStreamSourceType::Personal) && ev.source_id == sid6) {
+                        seen6 = true;
+                    }
+                }
+                TEST_CHECK(seen5 && seen6);
+            }
+            TEST_CHECK(count_logs(LogSeverity::Warning, "did not connect to the audio stream within 15 s") == 1);
             engine.Shutdown();
         }
 
@@ -14278,6 +14746,455 @@ void TestRound54HttpConnectionLimits() {
     std::cout << "[PASS] TestRound54HttpConnectionLimits\n";
 }
 
+void TestRound63Features() {
+    std::error_code fec;
+    const std::filesystem::path r63_dir =
+        std::filesystem::temp_directory_path() / "sampaudiostream_r63_tests";
+    std::filesystem::remove_all(r63_dir, fec);
+    std::filesystem::create_directories(r63_dir, fec);
+
+    // 1. ExtractIcyStreamTitle
+    TEST_PHASE("1. ExtractIcyStreamTitle parsing, encoding, truncation, and control-char stripping");
+    {
+        std::string title;
+        TEST_CHECK(ExtractIcyStreamTitle("StreamTitle='Simple Title';", title));
+        TEST_CHECK(title == "Simple Title");
+
+        // Artist - Title with cp1252 accents -> converted to UTF-8
+        const std::string cp1252_icy = "StreamTitle='Jo\xE3o - Can\xE7\xE3o';StreamUrl='';";
+        TEST_CHECK(ExtractIcyStreamTitle(cp1252_icy, title));
+        TEST_CHECK(title == "Jo\xC3\xA3o - Can\xC3\xA7\xC3\xA3o");
+
+        // Already valid UTF-8 stays valid UTF-8
+        TEST_CHECK(ExtractIcyStreamTitle("StreamTitle='Caf\xC3\xA9 - M\xC3\xBAsica';", title));
+        TEST_CHECK(title == "Caf\xC3\xA9 - M\xC3\xBAsica");
+
+        // Empty title returns true with empty output
+        TEST_CHECK(ExtractIcyStreamTitle("StreamTitle='';", title));
+        TEST_CHECK(title.empty());
+
+        // Missing closing delimiter returns false
+        TEST_CHECK(!ExtractIcyStreamTitle("StreamTitle='Incomplete", title));
+        TEST_CHECK(!ExtractIcyStreamTitle("NoMarker='Value';", title));
+
+        // > 256 UTF-8 bytes truncated cleanly without splitting multibyte sequences
+        std::string long_raw = "StreamTitle='";
+        for (int i = 0; i < 140; ++i) {
+            long_raw += "\xC3\xA9"; // 2-byte UTF-8 sequence (280 bytes total)
+        }
+        long_raw += "';";
+        TEST_CHECK(ExtractIcyStreamTitle(long_raw, title));
+        TEST_CHECK(title.size() == 256);
+        TEST_CHECK((title.size() % 2) == 0);
+
+        // Control chars stripped (except normal space)
+        TEST_CHECK(ExtractIcyStreamTitle("StreamTitle='One\x01\r\nTwo\tThree\x7F';", title));
+        TEST_CHECK(title == "OneTwoThree");
+    }
+
+    // 2. IsLiveTitlePollCandidate
+    TEST_PHASE("2. IsLiveTitlePollCandidate filter");
+    {
+        TrackMetadata mp3_icecast;
+        mp3_icecast.extractor_name = "direct";
+        mp3_icecast.direct_media_url = "https://radio.example.com/stream.mp3";
+        mp3_icecast.is_live = false;
+        TEST_CHECK(IsLiveTitlePollCandidate(mp3_icecast, 30));
+
+        TrackMetadata extensionless;
+        extensionless.extractor_name = "direct";
+        extensionless.direct_media_url = "https://radio.example.com:8000/mount";
+        extensionless.is_live = true;
+        TEST_CHECK(IsLiveTitlePollCandidate(extensionless, 30));
+
+        TrackMetadata yt_live;
+        yt_live.extractor_name = "youtube";
+        yt_live.direct_media_url = "https://cdn.example.com/live";
+        yt_live.is_live = true;
+        TEST_CHECK(!IsLiveTitlePollCandidate(yt_live, 30));
+
+        TrackMetadata hls;
+        hls.extractor_name = "direct";
+        hls.direct_media_url = "https://radio.example.com/playlist.m3u8?token=1";
+        hls.is_live = true;
+        TEST_CHECK(!IsLiveTitlePollCandidate(hls, 30));
+
+        TEST_CHECK(!IsLiveTitlePollCandidate(mp3_icecast, 0));
+    }
+
+    // 3 & 5c. FetchIcyStreamTitle against HttpStreamingServer & BuildIcyMetaFrame with live_title
+    TEST_PHASE("3/5c. FetchIcyStreamTitle live ICY endpoints, live_title framing, UpdateEndpointMetadata clear");
+    {
+        HttpClient::SetSecurityPolicy(HttpSecurityPolicy{true, "0.0.0.0", "203.0.113.10", 0});
+        HttpStreamingServer srv;
+        std::string err;
+        TEST_CHECK(srv.Start("127.0.0.1", 0, err, false));
+
+        auto buf = std::make_shared<AudioStreamBuffer>(128 * 1024);
+        std::vector<std::uint8_t> payload(36000, 0x55);
+        buf->Write(payload.data(), payload.size());
+
+        StreamEndpointInfo ep;
+        ep.token = "r63_icy";
+        ep.title = "Title A";
+        ep.artist = "";
+        ep.bitrate_kbps = 128;
+        ep.buffer = buf;
+        srv.RegisterEndpoint(ep);
+
+        const std::string ep_url = "http://127.0.0.1:" + std::to_string(srv.BoundPort()) + "/stream/r63_icy.mp3";
+        std::atomic<bool> cancel{false};
+        std::string out_title;
+        TEST_CHECK(FetchIcyStreamTitle(ep_url, {}, cancel, out_title) == IcyPollResult::Title);
+        TEST_CHECK(out_title == "Title A");
+
+        srv.UpdateEndpointMetadata("r63_icy", "Title B", "");
+        TEST_CHECK(FetchIcyStreamTitle(ep_url, {}, cancel, out_title) == IcyPollResult::Title);
+        TEST_CHECK(out_title == "Title B");
+
+        // live_title override appears in ICY frame, and UpdateEndpointMetadata zeroes live_title
+        srv.UpdateEndpointLiveTitle("r63_icy", "Live Override Title");
+        TEST_CHECK(FetchIcyStreamTitle(ep_url, {}, cancel, out_title) == IcyPollResult::Title);
+        TEST_CHECK(out_title == "Live Override Title");
+
+        srv.UpdateEndpointMetadata("r63_icy", "Track Title", "Artist");
+        TEST_CHECK(FetchIcyStreamTitle(ep_url, {}, cancel, out_title) == IcyPollResult::Title);
+        TEST_CHECK(out_title == "Artist - Track Title");
+
+        cancel.store(true);
+        TEST_CHECK(FetchIcyStreamTitle(ep_url, {}, cancel, out_title) == IcyPollResult::Failed);
+
+        buf->Close();
+        srv.Stop();
+        HttpClient::SetSecurityPolicy(HttpSecurityPolicy{false, "0.0.0.0", "", 0});
+    }
+
+    // 4. FetchIcyStreamTitle against finite Content-Length endpoint -> NotLive without reading body
+    TEST_PHASE("4. FetchIcyStreamTitle returns NotLive for Content-Length finite files");
+    {
+        HttpClient::SetSecurityPolicy(HttpSecurityPolicy{true, "0.0.0.0", "203.0.113.10", 0});
+        asio::io_context srv_io;
+        asio::ip::tcp::acceptor acc(
+            srv_io, asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+        const std::uint16_t port = acc.local_endpoint().port();
+        std::atomic<bool> stop{false};
+        std::atomic<std::size_t> body_bytes_sent{0};
+        std::thread thr([&]() {
+            while (!stop.load()) {
+                asio::error_code aec;
+                asio::ip::tcp::socket sock(srv_io);
+                acc.accept(sock, aec);
+                if (aec || stop.load()) break;
+                std::string req;
+                std::array<char, 512> tmp{};
+                while (req.find("\r\n\r\n") == std::string::npos) {
+                    asio::error_code rec;
+                    std::size_t n = sock.read_some(asio::buffer(tmp), rec);
+                    if (n > 0) req.append(tmp.data(), n);
+                    if (rec) break;
+                }
+                const std::string wav = BuildTestWavBytes(44100, 100);
+                const std::string resp =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: audio/wav\r\n"
+                    "Content-Length: 10000000\r\n"
+                    "Connection: close\r\n\r\n" +
+                    wav;
+                asio::error_code wec;
+                std::size_t written = asio::write(sock, asio::buffer(resp), wec);
+                body_bytes_sent.store(written);
+                sock.close(wec);
+            }
+        });
+
+        std::atomic<bool> cancel{false};
+        std::string title = "untouched";
+        const IcyPollResult res = FetchIcyStreamTitle(
+            "http://127.0.0.1:" + std::to_string(port) + "/x.wav", {}, cancel, title);
+
+        stop.store(true);
+        StopTestAcceptor(acc, port);
+        if (thr.joinable()) thr.join();
+        HttpClient::SetSecurityPolicy(HttpSecurityPolicy{false, "0.0.0.0", "", 0});
+
+        TEST_CHECK(res == IcyPollResult::NotLive);
+        TEST_CHECK(body_bytes_sent.load() < 100000);
+    }
+
+    // 7. Config sanitization for live_title_poll_seconds
+    TEST_PHASE("7. PluginConfig live_title_poll_seconds defaults and clamping (0, 5->10, 999->300)");
+    {
+        PluginConfig def_cfg;
+        TEST_CHECK(def_cfg.live_title_poll_seconds == 30);
+
+        auto load_poll_val = [&](std::int64_t val, const char* fname) {
+            const auto p = r63_dir / fname;
+            {
+                std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
+                ofs << "{\"audio\":{\"live_title_poll_seconds\":" << val << "}}";
+            }
+            return ConfigManager::LoadOrCreate(p.string()).live_title_poll_seconds;
+        };
+        TEST_CHECK(load_poll_val(0, "cfg0.json") == 0);
+        TEST_CHECK(load_poll_val(5, "cfg5.json") == 10);
+        TEST_CHECK(load_poll_val(999, "cfg999.json") == 300);
+    }
+
+    // 5a/5b & 6 & 8. Live title natives, MoveChannelQueueItem, polling deduplication & NotLive stop
+    TEST_PHASE("5/6/8. Natives Get/SetLiveTitle, MoveChannelQueueItem order/labels, and ICY polling callbacks");
+    {
+        std::atomic<int> radio_poll_count{0};
+        std::atomic<bool> radio_use_title_two{false};
+        std::atomic<int> vod_icy_probe_count{0};
+        const std::string wav_long = BuildTestWavBytes(44100, 12000);
+
+        asio::io_context srv_io;
+        asio::ip::tcp::acceptor acc(
+            srv_io, asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+        const std::uint16_t port = acc.local_endpoint().port();
+        std::atomic<bool> stop{false};
+        std::mutex srv_mtx;
+        std::vector<std::thread> srv_workers;
+        std::vector<std::shared_ptr<asio::ip::tcp::socket>> srv_sockets;
+
+        auto make_icy_packet = [](const std::string& stitle) {
+            std::string raw = "StreamTitle='" + stitle + "';";
+            std::size_t blocks = (raw.size() + 15) / 16;
+            std::string pkt;
+            pkt.push_back(static_cast<char>(blocks));
+            pkt.append(raw);
+            pkt.append(blocks * 16 - raw.size(), '\0');
+            return pkt;
+        };
+
+        std::thread thr([&]() {
+            while (!stop.load()) {
+                asio::error_code aec;
+                auto sock = std::make_shared<asio::ip::tcp::socket>(srv_io);
+                acc.accept(*sock, aec);
+                if (aec || stop.load()) break;
+                std::lock_guard<std::mutex> lk(srv_mtx);
+                srv_sockets.push_back(sock);
+                srv_workers.emplace_back([sock, &radio_poll_count, &radio_use_title_two, &vod_icy_probe_count, &wav_long, &make_icy_packet]() {
+                    std::string req;
+                    std::array<char, 1024> tmp{};
+                    while (req.find("\r\n\r\n") == std::string::npos) {
+                        asio::error_code rec;
+                        std::size_t n = sock->read_some(asio::buffer(tmp), rec);
+                        if (n > 0) req.append(tmp.data(), n);
+                        if (rec) break;
+                    }
+                    if (req.find("\r\n\r\n") == std::string::npos) {
+                        asio::error_code sec;
+                        sock->close(sec);
+                        return;
+                    }
+                    const bool wants_icy = (req.find("Icy-MetaData: 1") != std::string::npos) ||
+                                           (req.find("icy-metadata: 1") != std::string::npos);
+                    if (req.find("/vod.wav") != std::string::npos) {
+                        if (wants_icy) vod_icy_probe_count.fetch_add(1);
+                        const std::string resp =
+                            "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: " +
+                            std::to_string(wav_long.size()) + "\r\nConnection: close\r\n\r\n" + wav_long;
+                        asio::error_code ec;
+                        asio::write(*sock, asio::buffer(resp), ec);
+                    } else {
+                        if (wants_icy) {
+                            radio_poll_count.fetch_add(1);
+                            const std::string title = radio_use_title_two.load() ? "Song Two" : "Song One";
+                            const std::string audio_chunk(16000, '\0');
+                            const std::string body = audio_chunk + make_icy_packet(title);
+                            const std::string resp =
+                                "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nicy-name: Test FM\r\nicy-metaint: 16000\r\nConnection: close\r\n\r\n" +
+                                body;
+                            asio::error_code ec;
+                            asio::write(*sock, asio::buffer(resp), ec);
+                        } else {
+                            // Main stream connection serving WAV so channel/session stays Playing during test
+                            const std::string resp =
+                                "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: " +
+                                std::to_string(wav_long.size()) + "\r\nConnection: close\r\n\r\n" + wav_long;
+                            asio::error_code ec;
+                            asio::write(*sock, asio::buffer(resp), ec);
+                        }
+                    }
+                    asio::error_code sec;
+                    sock->close(sec);
+                });
+            }
+        });
+
+        MockPlatformHost host;
+        host.players.push_back(PlayerSnapshot{0, {}, 0, 0});
+        host.players.push_back(PlayerSnapshot{1, {}, 0, 0});
+        host.player_names[0] = "Owner";
+        host.player_names[1] = "Listener";
+
+        PluginConfig cfg;
+        cfg.base_dir = r63_dir.string();
+        cfg.allow_private_network_urls = true;
+        cfg.persist_channels = false;
+        cfg.hook_native_audio = true;
+        cfg.pawn_text_encoding = "utf8";
+        cfg.live_title_poll_seconds = 30;
+        cfg.debug_logging = false;
+
+        AudioEngine engine(host, cfg);
+        TEST_CHECK(engine.Initialize());
+
+        auto wait_until = [&](auto&& pred, int timeout_ms = 5000) -> bool {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+            while (std::chrono::steady_clock::now() < deadline) {
+                engine.Tick();
+                if (pred()) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(15));
+            }
+            engine.Tick();
+            return pred();
+        };
+
+        // 5/6: Create channel with 1 active track + 3 queued items (with non-cp1252 UTF-8 label)
+        const std::string base = "http://127.0.0.1:" + std::to_string(port);
+        ChannelId ch = engine.CreateChannel("ChannelFM", 0);
+        TEST_CHECK(ch != INVALID_CHANNEL_ID);
+        TEST_CHECK(engine.JoinChannel(0, ch));
+        TEST_CHECK(engine.PlayChannel(ch, base + "/radio"));
+
+        TEST_CHECK(wait_until([&]() {
+            return engine.GetChannelState(ch) == StreamState::Playing;
+        }));
+
+        // Initial automatic poll should receive "Song One" once and emit 1 channel callback
+        TEST_CHECK(wait_until([&]() {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            return !host.channel_live_title_events.empty();
+        }));
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            TEST_CHECK(host.channel_live_title_events.size() == 1);
+            TEST_CHECK(host.channel_live_title_events[0].channel_id == ch);
+            TEST_CHECK(host.channel_live_title_events[0].title == "Song One");
+        }
+        std::string ch_live;
+        TEST_CHECK(engine.GetChannelLiveTitle(ch, ch_live) && ch_live == "Song One");
+
+        // Second poll with same title ("Song One") emits NO second callback
+        const int polls_before_same = radio_poll_count.load();
+        engine.PollLiveTitlesAtForTesting(std::chrono::steady_clock::now() + std::chrono::seconds(45));
+        TEST_CHECK(wait_until([&]() {
+            return radio_poll_count.load() > polls_before_same;
+        }));
+        PumpEngineTicks(engine, 6);
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            TEST_CHECK(host.channel_live_title_events.size() == 1);
+        }
+
+        // Third poll with "Song Two" emits second callback
+        radio_use_title_two.store(true);
+        const int polls_before_two = radio_poll_count.load();
+        engine.PollLiveTitlesAtForTesting(std::chrono::steady_clock::now() + std::chrono::seconds(90));
+        TEST_CHECK(wait_until([&]() {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            return host.channel_live_title_events.size() == 2;
+        }));
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            TEST_CHECK(host.channel_live_title_events[1].title == "Song Two");
+        }
+
+        // Manual SetChannelLiveTitle updates GetChannelLiveTitle, fires NO callback, preserves name & track title
+        TEST_CHECK(engine.SetChannelLiveTitle(ch, "Manual Override\x01"));
+        TEST_CHECK(engine.GetChannelLiveTitle(ch, ch_live) && ch_live == "Manual Override");
+        ChannelInfo cinfo;
+        TEST_CHECK(engine.GetChannelInfo(ch, cinfo));
+        TEST_CHECK(cinfo.name == "ChannelFM");
+        TEST_CHECK(cinfo.current_track_title != "Manual Override");
+        PumpEngineTicks(engine, 4);
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            TEST_CHECK(host.channel_live_title_events.size() == 2);
+        }
+        TEST_CHECK(engine.SetChannelLiveTitle(ch, ""));
+        TEST_CHECK(engine.GetChannelLiveTitle(ch, ch_live) && ch_live.empty());
+        TEST_CHECK(!engine.SetChannelLiveTitle(99999, "Bad"));
+
+        // MoveChannelQueueItem checks (items 0, 1, 2 with Unicode non-cp1252 in label)
+        TEST_CHECK(engine.QueueChannel(ch, base + "/t0.mp3", "", "Label Zero"));
+        TEST_CHECK(engine.QueueChannel(ch, base + "/t1.mp3", "", "Label One"));
+        TEST_CHECK(engine.QueueChannel(ch, base + "/t2.mp3", "", "Label \xE6\x97\xA5\xE6\x9C\xAC"));
+        TEST_CHECK(engine.MoveChannelQueueItem(ch, 1, 1)); // from == to no-op
+        TEST_CHECK(!engine.MoveChannelQueueItem(ch, 99, 0));
+        TEST_CHECK(!engine.MoveChannelQueueItem(ch, 0, 99));
+        TEST_CHECK(!engine.MoveChannelQueueItem(99999, 0, 1));
+
+        TEST_CHECK(engine.MoveChannelQueueItem(ch, 2, 0));
+        std::string q0, q1, q2, l0, l1, l2;
+        TEST_CHECK(engine.GetChannelQueueItem(ch, 0, q0) && q0.find("/t2.mp3") != std::string::npos);
+        TEST_CHECK(engine.GetChannelQueueItemLabel(ch, 0, l0) && l0 == "Label \xE6\x97\xA5\xE6\x9C\xAC");
+        TEST_CHECK(engine.GetChannelQueueItem(ch, 1, q1) && q1.find("/t0.mp3") != std::string::npos);
+        TEST_CHECK(engine.GetChannelQueueItemLabel(ch, 1, l1) && l1 == "Label Zero");
+        TEST_CHECK(engine.GetChannelQueueItem(ch, 2, q2) && q2.find("/t1.mp3") != std::string::npos);
+        TEST_CHECK(engine.GetChannelQueueItemLabel(ch, 2, l2) && l2 == "Label One");
+
+        TEST_CHECK(engine.MoveChannelQueueItem(ch, 0, 2));
+        TEST_CHECK(engine.GetChannelQueueItem(ch, 0, q0) && q0.find("/t0.mp3") != std::string::npos);
+        TEST_CHECK(engine.GetChannelQueueItem(ch, 2, q2) && q2.find("/t2.mp3") != std::string::npos);
+        TEST_CHECK(engine.GetChannelQueueItemLabel(ch, 2, l2) && l2 == "Label \xE6\x97\xA5\xE6\x9C\xAC");
+
+        // Personal stream: Set/GetStreamLiveTitle & NotLive stops future polls
+        StreamId sid = engine.PlayAudioStreamForPlayer(1, base + "/vod.wav", StreamOptions{});
+        TEST_CHECK(sid != INVALID_STREAM_ID);
+        TEST_CHECK(wait_until([&]() {
+            TrackMetadata m;
+            StreamState st = StreamState::Idle;
+            return engine.GetStreamInfo(sid, m, st) && st == StreamState::Playing && vod_icy_probe_count.load() >= 1;
+        }));
+        const int probes_after_first = vod_icy_probe_count.load();
+        engine.PollLiveTitlesAtForTesting(std::chrono::steady_clock::now() + std::chrono::seconds(120));
+        PumpEngineTicks(engine, 8);
+        TEST_CHECK(vod_icy_probe_count.load() == probes_after_first);
+
+        const std::size_t stream_cbs_before = [&]() {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            return host.live_title_events.size();
+        }();
+        TEST_CHECK(engine.SetStreamLiveTitle(sid, "Custom Personal Title\n"));
+        std::string st_live;
+        TEST_CHECK(engine.GetStreamLiveTitle(sid, st_live) && st_live == "Custom Personal Title");
+        PumpEngineTicks(engine, 4);
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            TEST_CHECK(host.live_title_events.size() == stream_cbs_before);
+        }
+        TEST_CHECK(engine.SetStreamLiveTitle(sid, ""));
+        TEST_CHECK(engine.GetStreamLiveTitle(sid, st_live) && st_live.empty());
+        TEST_CHECK(!engine.SetStreamLiveTitle(99999, "Bad"));
+
+        engine.DestroyChannel(ch);
+        engine.StopAudioStreamForPlayer(1);
+        TEST_CHECK(!engine.SetChannelLiveTitle(ch, "Destroyed"));
+        TEST_CHECK(!engine.SetStreamLiveTitle(sid, "Stopped"));
+
+        engine.Shutdown();
+        stop.store(true);
+        StopTestAcceptor(acc, port);
+        if (thr.joinable()) thr.join();
+        CloseTestSockets(srv_sockets, srv_mtx);
+        std::vector<std::thread> to_join;
+        {
+            std::lock_guard<std::mutex> lk(srv_mtx);
+            to_join.swap(srv_workers);
+        }
+        for (auto& w : to_join) {
+            if (w.joinable()) w.join();
+        }
+    }
+
+    std::filesystem::remove_all(r63_dir, fec);
+    std::cout << "[PASS] TestRound63Features\n";
+}
+
 #define RUN_TEST(fn)                                                                          \
     do {                                                                                      \
         g_current_test.store(#fn, std::memory_order_release);                                 \
@@ -14390,6 +15307,8 @@ int main(int argc, char** argv) {
     RUN_TEST(TestAudioEngineArbitrationAndDisconnect);
     RUN_TEST(TestTranscoderWaveAndBadMp4);
     RUN_TEST(TestSpatialPerformanceBenchmark);
+    RUN_TEST(TestRound60Features);
+    RUN_TEST(TestRound63Features);
     g_tests_done.store(true, std::memory_order_release);
     if (watchdog_thread.joinable()) watchdog_thread.join();
     std::cout << "All core unit tests passed!\n";

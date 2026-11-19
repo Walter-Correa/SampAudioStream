@@ -43,6 +43,7 @@ struct PlaylistExtractionResult {
     ErrorCode error{ErrorCode::None};
     std::string error_message;
     std::vector<std::string> urls;
+    std::vector<std::string> titles;
 };
 
 class StreamResolver {

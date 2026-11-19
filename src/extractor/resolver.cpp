@@ -1753,6 +1753,7 @@ PlaylistExtractionResult StreamResolver::ExtractPlaylist(
                 }
                 if (LooksLikeUrl(entry_url)) {
                     res.urls.push_back(std::move(entry_url));
+                    res.titles.push_back(JsonStr(entry, "title"));
                 }
             }
         } else if (json.is_object()) {
@@ -1761,6 +1762,7 @@ PlaylistExtractionResult StreamResolver::ExtractPlaylist(
             if (!LooksLikeUrl(single_url)) single_url = url;
             if (LooksLikeUrl(single_url)) {
                 res.urls.push_back(std::move(single_url));
+                res.titles.push_back(JsonStr(json, "title"));
             }
         }
 

@@ -74,6 +74,8 @@ constexpr ConfigFieldSpec kConfigSchema[] = {
     UintSpec("audio", "max_concurrent_streams", "audio.max_concurrent_streams", 1, 256, false, &PluginConfig::max_concurrent_streams),
     UintSpec("audio", "spatial_update_interval_ms", "audio.spatial_update_interval_ms", 50, 5000, false, &PluginConfig::spatial_update_interval_ms),
     StrSpec("audio", "player_priority_order", "audio.player_priority_order", &PluginConfig::player_priority_order),
+    BoolSpec("audio", "normalize_volume", "audio.normalize_volume", &PluginConfig::normalize_volume),
+    UintSpec("audio", "live_title_poll_seconds", "audio.live_title_poll_seconds", 0, 300, true, &PluginConfig::live_title_poll_seconds),
 
     // channels
     UintSpec("channels", "max_channels", "channels.max_channels", 1, 1000, false, &PluginConfig::max_channels),
@@ -444,6 +446,20 @@ void ConfigManager::Sanitize(PluginConfig& cfg) {
     if (cfg.base_dir.empty()) cfg.base_dir = "scriptfiles/SampAudioStream";
     if (cfg.bin_dir.empty()) cfg.bin_dir = "scriptfiles/SampAudioStream/bin";
     if (cfg.player_priority_order.empty()) cfg.player_priority_order = "personal,channel,global";
+
+    if (cfg.live_title_poll_seconds > 300) {
+        Logger::Instance().Warn(
+            "Config key 'audio.live_title_poll_seconds' value " +
+            std::to_string(cfg.live_title_poll_seconds) +
+            " exceeds maximum (300); clamped to 300.");
+        cfg.live_title_poll_seconds = 300;
+    } else if (cfg.live_title_poll_seconds > 0 && cfg.live_title_poll_seconds < 10) {
+        Logger::Instance().Warn(
+            "Config key 'audio.live_title_poll_seconds' value " +
+            std::to_string(cfg.live_title_poll_seconds) +
+            " is below minimum active interval (10); clamped to 10.");
+        cfg.live_title_poll_seconds = 10;
+    }
 
     for (char& ch : cfg.pawn_text_encoding) {
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));

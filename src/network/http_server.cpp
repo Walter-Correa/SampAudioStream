@@ -356,7 +356,9 @@ private:
 
     void BuildIcyMetaFrame(const StreamEndpointInfo& ep) {
         std::string raw;
-        if (!ep.artist.empty() && !ep.title.empty()) {
+        if (!ep.live_title.empty()) {
+            raw = ep.live_title;
+        } else if (!ep.artist.empty() && !ep.title.empty()) {
             std::string lt = ep.title;
             std::string la = ep.artist;
             std::transform(lt.begin(), lt.end(), lt.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -402,13 +404,16 @@ private:
             if (lookup_fn_ && lookup_fn_(bound_token_, latest)) {
                 endpoint_.title = latest.title;
                 endpoint_.artist = latest.artist;
+                endpoint_.live_title = latest.live_title;
             }
             if (!sent_initial_icy_meta_ ||
                 endpoint_.title != last_icy_title_ ||
-                endpoint_.artist != last_icy_artist_) {
+                endpoint_.artist != last_icy_artist_ ||
+                endpoint_.live_title != last_icy_live_title_) {
                 BuildIcyMetaFrame(endpoint_);
                 last_icy_title_ = endpoint_.title;
                 last_icy_artist_ = endpoint_.artist;
+                last_icy_live_title_ = endpoint_.live_title;
                 sent_initial_icy_meta_ = true;
             } else {
                 icy_meta_buf_.assign(1, 0);
@@ -557,6 +562,7 @@ private:
     static constexpr std::size_t kIcyMetaInterval = 16000;
     std::string last_icy_title_;
     std::string last_icy_artist_;
+    std::string last_icy_live_title_;
     std::vector<std::uint8_t> icy_meta_buf_;
 };
 
@@ -982,9 +988,18 @@ void HttpStreamingServer::UpdateEndpointMetadata(
     if (it != impl_->endpoints.end()) {
         it->second.title = title;
         it->second.artist = artist;
+        it->second.live_title.clear();
         if (new_buffer) {
             it->second.buffer = std::move(new_buffer);
         }
+    }
+}
+
+void HttpStreamingServer::UpdateEndpointLiveTitle(const std::string& token, const std::string& live_title) {
+    std::lock_guard<std::mutex> lock(impl_->endpoints_mutex);
+    auto it = impl_->endpoints.find(token);
+    if (it != impl_->endpoints.end()) {
+        it->second.live_title = live_title;
     }
 }
 

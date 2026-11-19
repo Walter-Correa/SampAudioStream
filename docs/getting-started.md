@@ -168,14 +168,14 @@ When you start the server, SampAudioStream waits up to **1.5 seconds (`1500 ms`)
    * SA-MP:
      ```text
      [SampAudioStream] HTTP audio streaming server listening on 0.0.0.0:7778
-     [SampAudioStream] SampAudioStream v2.0.0 [SA-MP] loaded (config: scriptfiles/SampAudioStream/config.json, HTTP port: 7778)
+     [SampAudioStream] SampAudioStream v2.1.0 [SA-MP] loaded (config: scriptfiles/SampAudioStream/config.json, HTTP port: 7778)
      [SampAudioStream] Audio extractor subsystem ready.
      [SampAudioStream] Detected public server IPv4: 203.0.113.10
      ```
    * open.mp:
      ```text
      [SampAudioStream] HTTP audio streaming server listening on 0.0.0.0:7778
-     [SampAudioStream] SampAudioStream v2.0.0 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: 7778)
+     [SampAudioStream] SampAudioStream v2.1.0 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: 7778)
      [SampAudioStream] Audio extractor subsystem ready.
      [SampAudioStream] Detected public server IPv4: 203.0.113.10
      ```
@@ -222,6 +222,8 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
 | `audio.max_concurrent_streams` | `64` | `1..256` max concurrent stream sessions |
 | `audio.spatial_update_interval_ms` | `200` | `50..5000` ms radius/attachment tick interval |
 | `audio.player_priority_order` | `"personal,channel,global"` | Overlap arbitration order across scopes |
+| `audio.normalize_volume` | `false` | Optional track loudness equalization (`-16 dBFS` RMS target with `[-12, +9] dB` AGC gain and peak limiter at `0.98`). Applies only to server-transcoded/proxied streams (global, channel, live, and transcoded personal streams); direct passthrough streams are not normalized. Minimal CPU cost (one multiply and sum-of-squares per sample) |
+| `audio.live_title_poll_seconds` | `30` | `0` (disabled) or `10..300` s interval for polling Shoutcast/Icecast ICY `StreamTitle` updates on live radios. Each poll opens a short HTTP connection up to 64 KB (so the radio briefly sees one extra listener at that interval) |
 | `channels.max_channels` | `100` | `1..1000` max simultaneous synchronized channels |
 | `channels.max_queue_per_channel` | `50` | `1..1000` max queued tracks per synchronized channel |
 | `channels.persist_channels` | `true` | Save/restore channels across restarts & keep channels alive across GMX |
@@ -269,7 +271,9 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
           "transcoder_burst_ms": 6000,
           "max_concurrent_streams": 64,
           "spatial_update_interval_ms": 200,
-          "player_priority_order": "personal,channel,global"
+          "player_priority_order": "personal,channel,global",
+          "normalize_volume": false,
+          "live_title_poll_seconds": 30
       },
       "channels":
       {
@@ -335,7 +339,9 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
               "transcoder_burst_ms": 6000,
               "max_concurrent_streams": 64,
               "spatial_update_interval_ms": 200,
-              "player_priority_order": "personal,channel,global"
+              "player_priority_order": "personal,channel,global",
+              "normalize_volume": false,
+              "live_title_poll_seconds": 30
           },
           "channels":
           {

@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.0.0`), covering all **66 `SA_*` natives**, **2 hooked standard natives**, **16 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.1.0`), covering all **73 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -197,9 +197,9 @@ Immediately starts playing `url` (or search query) on `channelid`, replacing any
 
 ### `SA_QueueChannelAudioStream`
 ```pawn
-native SA_QueueChannelAudioStream(channelid, const url[]);
+native SA_QueueChannelAudioStream(channelid, const url[], const label[] = "");
 ```
-Appends `url` (or search query) to `channelid`'s playback queue. If the channel is idle, starts playing immediately.
+Appends `url` (or search query) to `channelid`'s playback queue, optionally associating a friendly display `label` (tabs/CR/LF replaced with spaces, truncated cleanly on UTF-8 codepoint boundaries to 128 bytes; persisted with the channel). If the channel is idle, starts playing immediately.
 
 ### `SA_SkipChannelAudioStream`
 ```pawn
@@ -311,6 +311,13 @@ native SA_GetAudioStreamChannelQueue(channelid, index, item[], item_len = sizeof
 Reads the `0`-based `index` entry from `channelid`'s queued URL/query list.
 * **Returns:** `1` if found, `0` if invalid channel or out of range.
 
+### `SA_GetAudioStreamChannelQueueLabel`
+```pawn
+native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len = sizeof(label));
+```
+Reads the friendly display label for the `0`-based `index` queue entry on `channelid` (for example, `Artist - Title` from scripts or the entry title populated by `SA_QueueChannelAudioStreamPlaylist`). `label` may be empty (`""`) if no label was supplied or if the channel was restored from an older JSON without `label_hex`.
+* **Returns:** `1` if the channel and index are valid (even when `label` is empty), `0` if `channelid` does not exist or `index` is out of range.
+
 ### `SA_ClearAudioStreamChannelQueue`
 ```pawn
 native SA_ClearAudioStreamChannelQueue(channelid);
@@ -352,9 +359,23 @@ Removes the `0`-based `index` entry from `channelid`'s queue. Returns `0` if the
 
 ### `SA_InsertAudioStreamChannelQueue`
 ```pawn
-native SA_InsertAudioStreamChannelQueue(channelid, index, const url[]);
+native SA_InsertAudioStreamChannelQueue(channelid, index, const url[], const label[] = "");
 ```
-Inserts `url` at `0`-based `index` (`0` = play next, `queue_count` = append at end; values above `queue_count` return `0`). Respects `channels.max_queue_per_channel`, starts immediately if the channel is stopped, and pre-resolves into cache if inserted at index `0` while active.
+Inserts `url` (with optional friendly display `label`) at `0`-based `index` (`0` = play next, `queue_count` = append at end; values above `queue_count` return `0`). Respects `channels.max_queue_per_channel`, starts immediately if the channel is stopped, and pre-resolves into cache if inserted at index `0` while active.
+
+### `SA_MoveAudioStreamChannelQueue`
+```pawn
+native SA_MoveAudioStreamChannelQueue(channelid, from_index, to_index);
+```
+Moves the queue entry at `from_index` to `to_index` (both `0`-based) while preserving both its URL and original UTF-8/Pawn display label intact without charset re-conversion (keeping non-cp1252 characters such as Japanese or emoji from imported playlists undamaged). Marks the channel dirty for persistence and pre-resolves the new first item if `channelid` has an active run and queue index `0` changed.
+* **Returns:** `1` on success (including valid `from_index == to_index` no-op), `0` if `channelid` is invalid or either index is negative / `>= queue_count`.
+
+### `SA_ShuffleAudioStreamChannelQueue`
+```pawn
+native SA_ShuffleAudioStreamChannelQueue(channelid);
+```
+Performs a one-time in-place random shuffle (`std::shuffle` seeded with `std::random_device`) on the queued items of `channelid` without interrupting or changing the currently playing track, and marks the channel dirty for persistence. If the channel is actively playing and index `0` changed after shuffling, pre-resolves the new next track asynchronously into cache.
+* **Returns:** `1` if `channelid` exists (even if the queue has `0` or `1` items, which is a no-op), `0` if `channelid` is invalid.
 
 ### `SA_QueueChannelAudioStreamPlaylist`
 ```pawn
@@ -399,6 +420,39 @@ Returns the `playerid` of the `0`-based `index` explicitly subscribed (`SA_JoinA
 native SA_SetAudioStreamChannelName(channelid, const name[]);
 ```
 Renames `channelid` (reflected in `SA_GetAudioStreamChannelInfo`, `icy-name` for new HTTP connections, and persisted state). Returns `0` if `name` is empty or `channelid` does not exist.
+
+### `SA_GetAudioStreamChannelLiveTitle`
+```pawn
+native SA_GetAudioStreamChannelLiveTitle(channelid, title[], title_len = sizeof(title));
+```
+Copies the current live radio ICY `live_title` for `channelid` (converted using `scripting.pawn_text_encoding`) into `title`. This value is separate from both the channel name (`SA_GetAudioStreamChannelInfo`) and the track title/artist (`SA_GetAudioStreamChannelTrack`) and never alters either. May be empty if nothing has been received yet, the source is not a live internet radio, or a new track just started.
+* **Returns:** `1` if `channelid` exists, `0` otherwise.
+
+### `SA_SetAudioStreamChannelLiveTitle`
+```pawn
+native SA_SetAudioStreamChannelLiveTitle(channelid, const title[]);
+```
+Replaces or clears the stored `live_title` of the active track on `channelid` and updates the embedded HTTP server's outgoing ICY `StreamTitle` frame so connected clients display it cleanly (for example, after filtering out a station prefix inside `OnAudioStreamChannelLiveTitleChange`). Passing `""` clears `live_title` so the bottom-corner HUD reverts to the regular track title.
+* Stripped of control characters and truncated cleanly to 256 UTF-8 bytes without splitting multibyte characters.
+* Does **not** modify the channel name, the track's metadata title, or the internal last-received radio title used for poll deduplication, and does **not** re-fire `OnAudioStreamChannelLiveTitleChange`. Remains active for the current track (even finite tracks) until the next track begins.
+* **Returns:** `1` on success, `0` if `channelid` does not exist or has no active playing/resolving track.
+
+```pawn
+public OnAudioStreamChannelLiveTitleChange(channelid, const title[])
+{
+    // Strip fixed station prefix or ignore station-only jingles
+    if (!strcmp(title, "Radio Example FM", true))
+    {
+        SA_SetAudioStreamChannelLiveTitle(channelid, "");
+        return 1;
+    }
+    if (!strncmp(title, "Radio Example - ", 16, true))
+    {
+        SA_SetAudioStreamChannelLiveTitle(channelid, title[16]);
+    }
+    return 1;
+}
+```
 
 ---
 
@@ -453,6 +507,21 @@ native SA_GetAudioStreamInfo(streamid, title[], title_len = sizeof(title), artis
 ```
 Retrieves current metadata (`title`, `artist`, `duration` in seconds, and `stream_state`) for `streamid`.
 * **Returns:** `1` if `streamid` exists, `0` otherwise.
+
+### `SA_GetAudioStreamLiveTitle`
+```pawn
+native SA_GetAudioStreamLiveTitle(streamid, title[], title_len = sizeof(title));
+```
+Copies the current live radio `live_title` for personal or global `streamid` (converted via `scripting.pawn_text_encoding`) into `title`. Separate from `SA_GetAudioStreamInfo`'s track `title` and `artist` (never alters them). May be empty before the first ICY title arrives or for non-radio streams.
+* **Returns:** `1` if `streamid` exists, `0` otherwise.
+
+### `SA_SetAudioStreamLiveTitle`
+```pawn
+native SA_SetAudioStreamLiveTitle(streamid, const title[]);
+```
+Replaces or clears the stored `live_title` on active `streamid` and updates the embedded HTTP server's outgoing ICY `StreamTitle` without firing `OnAudioStreamLiveTitleChange`, altering `SA_GetAudioStreamInfo`, or changing the poll deduplication state. Passing `""` clears `live_title`.
+* **Passthrough note:** For direct passthrough streams (where the SA-MP/open.mp client connects directly to the upstream radio server), the upstream station controls what the client draws in the bottom-corner HUD; this native still updates the stored `live_title` returned by `SA_GetAudioStreamLiveTitle`.
+* **Returns:** `1` on success, `0` if `streamid` does not exist or has already stopped/finished/errored.
 
 ### `SA_IsAudioStreamExtractorReady`
 ```pawn
@@ -551,6 +620,24 @@ forward OnPlayerAudioStreamSourceChange(playerid, E_SA_AUDIO_STREAM_SOURCE:sourc
 ```
 Fired after arbitration updates a connected player's client source type (`SA_SOURCE_*`) or `source_id` (including transitions to `SA_SOURCE_NONE` / `-1` on stop, mute, stream completion, or leaving spatial range). Not fired for same-source updates such as track changes inside the same channel, distance adjustments, or seeking. *Note: Near the edge of a spatial radius, transitions follow `spatial_update_interval_ms`, so scripts can debounce rapid edge crossings if desired.*
 
+### `OnPlayerAudioStreamNoConnect`
+```pawn
+forward OnPlayerAudioStreamNoConnect(playerid, E_SA_AUDIO_STREAM_SOURCE:source_type, source_id);
+```
+Fired on the main thread when a connected player does not open an HTTP connection to the plugin's streaming server within `connect_warn_timeout_ms` (~15 s by default) for a server-transcoded/proxied stream or synchronized channel (`SA_SOURCE_PERSONAL`, `SA_SOURCE_CHANNEL`, `SA_SOURCE_GLOBAL`, `SA_SOURCE_CHANNEL_RANGE`).
+* **Never fires for direct passthrough streams:** When the GTA client connects directly to an upstream HTTP(S) origin, the plugin does not observe client HTTP connections. Also suppressed if the player disconnects or playback is stopped, paused, or replaced before timeout.
+* **Limitation:** This callback only reports that the client did not open a connection. If the client connects but the audio is inaudible on the player's side (for example, muted in-game), the plugin cannot detect it.
+
+```pawn
+public OnPlayerAudioStreamNoConnect(playerid, E_SA_AUDIO_STREAM_SOURCE:source_type, source_id)
+{
+    #pragma unused source_type, source_id
+    SendClientMessage(playerid, 0xFFAA00FF,
+        "[Audio] Could not hear audio? Make sure your GTA SA radio volume is above 0 (Options > Audio).");
+    return 1;
+}
+```
+
 ### `OnAudioStreamSearchResults`
 ```pawn
 forward OnAudioStreamSearchResults(playerid, search_id, total_found, E_SA_ERROR_CODE:error_code, const error_message[]);
@@ -625,6 +712,40 @@ forward OnAudioStreamChannelPlaylistQueued(channelid, added, E_SA_ERROR_CODE:err
 ```
 Fired on the main thread when a `SA_QueueChannelAudioStreamPlaylist` operation finishes. On success, `added > 0` indicates how many tracks were started/queued, `error_code == SA_ERR_NONE`, and `error_message` is empty. If extraction fails, the queue was already full (`"Channel queue is full"`), or a stopped channel could not start its first track because the concurrency limit was reached (`"Maximum concurrent transcoders reached"`), `added == 0` and `error_code` / `error_message` (`SA_ERR_INTERNAL_ERROR` for queue/limit failures) describe the reason. Not fired if `channelid` is destroyed while extraction is running.
 
+### `OnAudioStreamLiveTitleChange`
+```pawn
+forward OnAudioStreamLiveTitleChange(playerid, streamid, const title[]);
+```
+Fired when a live internet radio (Shoutcast/Icecast) played via `streamid` reports a new ICY `StreamTitle` (`playerid` is the owner for personal streams, or `INVALID_PLAYER_ID` / `65535` for global streams).
+
+### `OnAudioStreamChannelLiveTitleChange`
+```pawn
+forward OnAudioStreamChannelLiveTitleChange(channelid, const title[]);
+```
+Fired when a live internet radio (Shoutcast/Icecast) playing on synchronized channel `channelid` reports a new ICY `StreamTitle`.
+
+**Live Radio Text Notes (both callbacks):**
+* **Separate metadata:** Live radio text is kept completely separate from the channel name and the track title/artist metadata, and never overwrites either.
+* **Eligible sources only:** Fires **only** for direct internet radios (Shoutcast/Icecast streams emitting ICY `StreamTitle`, including mount URLs ending in extensions like `.mp3`). Never fires for finite audio files, YouTube (including YouTube Live), other `yt-dlp` platforms, or `.m3u8` HLS streams.
+* **Update latency:** Title updates can arrive up to `audio.live_title_poll_seconds` (default `30s`) after the station switches songs.
+* **Raw content:** `title` is the `StreamTitle` text sent by the station (control characters removed, truncated cleanly to 256 UTF-8 bytes). Many radios send `Artist - Title`, while some include station names, ads, or jingles; the plugin does **not** attempt to split artist/song/station because stations follow no uniform format. Your gamemode can ignore or rewrite undesirable strings using `SA_SetAudioStreamChannelLiveTitle` / `SA_SetAudioStreamLiveTitle`.
+
+```pawn
+public OnAudioStreamChannelLiveTitleChange(channelid, const title[])
+{
+    new msg[144];
+    format(msg, sizeof(msg), "[Radio] Now playing: %s", title);
+    for (new i = 0; i < MAX_PLAYERS; i++)
+    {
+        if (IsPlayerConnected(i) && SA_IsPlayerInAudioStreamChannel(i, channelid))
+        {
+            SendClientMessage(i, 0x00CCFFFF, msg);
+        }
+    }
+    return 1;
+}
+```
+
 ---
 
 ## 8. Constants & Enums
@@ -632,9 +753,9 @@ Fired on the main thread when a `SA_QueueChannelAudioStreamPlaylist` operation f
 ### Constants
 ```pawn
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
-#define SAMPAUDIOSTREAM_VERSION_MINOR  (0)
+#define SAMPAUDIOSTREAM_VERSION_MINOR  (1)
 #define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.0.0"
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.1.0"
 
 #define INVALID_AUDIO_STREAM_ID  (-1)
 #define INVALID_AUDIO_CHANNEL_ID (-1)

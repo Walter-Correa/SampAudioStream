@@ -374,44 +374,52 @@ public:
         float vol = std::clamp(volume_percent_.load() / 100.0f, 0.0f, 2.0f);
         stereo_scratch_.resize(frame_count * 2);
 
-        if (channels == 1) {
-            for (std::size_t i = 0; i < frame_count; ++i) {
-                std::int16_t s = ScaleSample(samples[i], vol);
-                stereo_scratch_[i * 2] = s;
-                stereo_scratch_[i * 2 + 1] = s;
-            }
-        } else if (channels == 2) {
-            for (std::size_t i = 0; i < frame_count; ++i) {
-                stereo_scratch_[i * 2] = ScaleSample(samples[i * 2], vol);
-                stereo_scratch_[i * 2 + 1] = ScaleSample(samples[i * 2 + 1], vol);
+        if (!cfg_.normalize_volume) {
+            if (channels == 1) {
+                for (std::size_t i = 0; i < frame_count; ++i) {
+                    std::int16_t s = ScaleSample(samples[i], vol);
+                    stereo_scratch_[i * 2] = s;
+                    stereo_scratch_[i * 2 + 1] = s;
+                }
+            } else if (channels == 2) {
+                for (std::size_t i = 0; i < frame_count; ++i) {
+                    stereo_scratch_[i * 2] = ScaleSample(samples[i * 2], vol);
+                    stereo_scratch_[i * 2 + 1] = ScaleSample(samples[i * 2 + 1], vol);
+                }
+            } else {
+                for (std::size_t i = 0; i < frame_count; ++i) {
+                    const std::int16_t* f = samples + i * static_cast<std::size_t>(channels);
+                    float l = static_cast<float>(f[0]);
+                    float r = static_cast<float>(f[1]);
+                    if (channels == 3) {
+                        l += 0.707f * static_cast<float>(f[1]);
+                        r = static_cast<float>(f[2]) + 0.707f * static_cast<float>(f[1]);
+                    } else if (channels >= 5) {
+                        float fc = 0.707f * static_cast<float>(f[1]);
+                        float fr = static_cast<float>(f[2]);
+                        float rl = 0.707f * static_cast<float>(f[3]);
+                        float rr = 0.707f * static_cast<float>(f[4]);
+                        l = static_cast<float>(f[0]) + fc + rl;
+                        r = fr + fc + rr;
+                        if (channels >= 6) {
+                            float lfe = 0.5f * static_cast<float>(f[5]);
+                            l += lfe;
+                            r += lfe;
+                        }
+                    } else if (channels == 4) {
+                        l += 0.707f * static_cast<float>(f[2]);
+                        r += 0.707f * static_cast<float>(f[3]);
+                    }
+                    stereo_scratch_[i * 2] = static_cast<std::int16_t>(std::clamp(l * vol, -32768.0f, 32767.0f));
+                    stereo_scratch_[i * 2 + 1] = static_cast<std::int16_t>(std::clamp(r * vol, -32768.0f, 32767.0f));
+                }
             }
         } else {
-            for (std::size_t i = 0; i < frame_count; ++i) {
-                const std::int16_t* f = samples + i * static_cast<std::size_t>(channels);
-                float l = static_cast<float>(f[0]);
-                float r = static_cast<float>(f[1]);
-                if (channels == 3) {
-                    l += 0.707f * static_cast<float>(f[1]);
-                    r = static_cast<float>(f[2]) + 0.707f * static_cast<float>(f[1]);
-                } else if (channels >= 5) {
-                    float fc = 0.707f * static_cast<float>(f[1]);
-                    float fr = static_cast<float>(f[2]);
-                    float rl = 0.707f * static_cast<float>(f[3]);
-                    float rr = 0.707f * static_cast<float>(f[4]);
-                    l = static_cast<float>(f[0]) + fc + rl;
-                    r = fr + fc + rr;
-                    if (channels >= 6) {
-                        float lfe = 0.5f * static_cast<float>(f[5]);
-                        l += lfe;
-                        r += lfe;
-                    }
-                } else if (channels == 4) {
-                    l += 0.707f * static_cast<float>(f[2]);
-                    r += 0.707f * static_cast<float>(f[3]);
-                }
-                stereo_scratch_[i * 2] = static_cast<std::int16_t>(std::clamp(l * vol, -32768.0f, 32767.0f));
-                stereo_scratch_[i * 2 + 1] = static_cast<std::int16_t>(std::clamp(r * vol, -32768.0f, 32767.0f));
-            }
+            ConvertAndNormalizeStereo(samples, frame_count, sample_rate, channels, vol);
+        }
+
+        if (capture_stereo_pcm_) {
+            capture_stereo_pcm_->insert(capture_stereo_pcm_->end(), stereo_scratch_.begin(), stereo_scratch_.end());
         }
 
         if (!EncodeStereo(stereo_scratch_.data(), frame_count)) return false;
@@ -433,6 +441,8 @@ public:
     }
 
     std::uint64_t TotalPcmFrames() const { return total_pcm_frames_ + decoded_only_frames_; }
+    float CurrentNormGainDb() const { return norm_gain_db_; }
+    void SetCaptureStereoPcmForTesting(std::vector<std::int16_t>* capture) { capture_stereo_pcm_ = capture; }
 
     void FlushAndClose() {
         if (cancel_flag_.load()) {
@@ -466,6 +476,157 @@ private:
         if (std::abs(vol - 1.0f) < 0.001f) return s;
         float v = static_cast<float>(s) * vol;
         return static_cast<std::int16_t>(std::clamp(v, -32768.0f, 32767.0f));
+    }
+
+    void ConvertAndNormalizeStereo(
+        const std::int16_t* samples,
+        std::size_t frame_count,
+        int sample_rate,
+        int channels,
+        float vol) {
+        static constexpr float kNormTargetDb = -16.0f;
+        static constexpr float kNormMinGainDb = -12.0f;
+        static constexpr float kNormMaxGainDb = 9.0f;
+        static constexpr float kNormSilenceDb = -50.0f;
+        static constexpr double kNormWindowSeconds = 3.0;
+        static constexpr double kNormFastPhaseSeconds = 3.0;
+        static constexpr float kNormFastRateDbPerSec = 6.0f;
+        static constexpr float kNormSlowRateDbPerSec = 1.0f;
+        static constexpr float kLimiterCeiling = 0.98f * (32767.0f / 32768.0f);
+        static constexpr float kLimiterReleaseSeconds = 0.200f;
+        static constexpr float kInvInt16Scale = 1.0f / 32768.0f;
+
+        const std::size_t sub_block_max = std::max<std::size_t>(1, static_cast<std::size_t>(sample_rate / 50));
+        const std::size_t max_window_frames = std::max<std::size_t>(
+            1, static_cast<std::size_t>(kNormWindowSeconds * static_cast<double>(sample_rate)));
+        const float release_coeff = std::exp(
+            -1.0f / (kLimiterReleaseSeconds * static_cast<float>(sample_rate)));
+
+        for (std::size_t offset = 0; offset < frame_count; offset += sub_block_max) {
+            const std::size_t sub_frames = std::min(sub_block_max, frame_count - offset);
+            float_stereo_scratch_.resize(sub_frames * 2);
+
+            double blk_sum_sq = 0.0;
+            if (channels == 1) {
+                for (std::size_t i = 0; i < sub_frames; ++i) {
+                    const float s = static_cast<float>(samples[offset + i]) * kInvInt16Scale;
+                    float_stereo_scratch_[i * 2] = s;
+                    float_stereo_scratch_[i * 2 + 1] = s;
+                    blk_sum_sq += static_cast<double>(s) * static_cast<double>(s);
+                }
+            } else if (channels == 2) {
+                for (std::size_t i = 0; i < sub_frames; ++i) {
+                    const std::size_t idx = (offset + i) * 2;
+                    const float l = static_cast<float>(samples[idx]) * kInvInt16Scale;
+                    const float r = static_cast<float>(samples[idx + 1]) * kInvInt16Scale;
+                    float_stereo_scratch_[i * 2] = l;
+                    float_stereo_scratch_[i * 2 + 1] = r;
+                    blk_sum_sq += 0.5 * (static_cast<double>(l) * static_cast<double>(l) +
+                                         static_cast<double>(r) * static_cast<double>(r));
+                }
+            } else {
+                for (std::size_t i = 0; i < sub_frames; ++i) {
+                    const std::int16_t* f = samples + (offset + i) * static_cast<std::size_t>(channels);
+                    float l = static_cast<float>(f[0]);
+                    float r = static_cast<float>(f[1]);
+                    if (channels == 3) {
+                        l += 0.707f * static_cast<float>(f[1]);
+                        r = static_cast<float>(f[2]) + 0.707f * static_cast<float>(f[1]);
+                    } else if (channels >= 5) {
+                        float fc = 0.707f * static_cast<float>(f[1]);
+                        float fr = static_cast<float>(f[2]);
+                        float rl = 0.707f * static_cast<float>(f[3]);
+                        float rr = 0.707f * static_cast<float>(f[4]);
+                        l = static_cast<float>(f[0]) + fc + rl;
+                        r = fr + fc + rr;
+                        if (channels >= 6) {
+                            float lfe = 0.5f * static_cast<float>(f[5]);
+                            l += lfe;
+                            r += lfe;
+                        }
+                    } else if (channels == 4) {
+                        l += 0.707f * static_cast<float>(f[2]);
+                        r += 0.707f * static_cast<float>(f[3]);
+                    }
+                    l *= kInvInt16Scale;
+                    r *= kInvInt16Scale;
+                    float_stereo_scratch_[i * 2] = l;
+                    float_stereo_scratch_[i * 2 + 1] = r;
+                    blk_sum_sq += 0.5 * (static_cast<double>(l) * static_cast<double>(l) +
+                                         static_cast<double>(r) * static_cast<double>(r));
+                }
+            }
+
+            const double blk_mean_sq = blk_sum_sq / static_cast<double>(sub_frames);
+            const float blk_rms_db = (blk_mean_sq > 1e-12)
+                ? (10.0f * std::log10(static_cast<float>(blk_mean_sq)))
+                : -120.0f;
+
+            norm_blocks_.push_back(RmsBlock{blk_sum_sq, sub_frames});
+            norm_window_sum_sq_ += blk_sum_sq;
+            norm_window_frames_ += sub_frames;
+            while (norm_blocks_.size() > 1 &&
+                   (norm_window_frames_ - norm_blocks_.front().frames) >= max_window_frames) {
+                norm_window_sum_sq_ -= norm_blocks_.front().sum_sq;
+                norm_window_frames_ -= norm_blocks_.front().frames;
+                norm_blocks_.pop_front();
+            }
+            if (norm_window_sum_sq_ < 0.0) {
+                norm_window_sum_sq_ = 0.0;
+            }
+
+            const double win_mean_sq = (norm_window_frames_ > 0)
+                ? (norm_window_sum_sq_ / static_cast<double>(norm_window_frames_))
+                : 0.0;
+            const float win_rms_db = (win_mean_sq > 1e-12)
+                ? (10.0f * std::log10(static_cast<float>(win_mean_sq)))
+                : -120.0f;
+
+            const double dt = static_cast<double>(sub_frames) / static_cast<double>(sample_rate);
+            if (blk_rms_db >= kNormSilenceDb && win_rms_db >= kNormSilenceDb) {
+                const float desired_db = std::clamp(kNormTargetDb - win_rms_db, kNormMinGainDb, kNormMaxGainDb);
+                const float delta = desired_db - norm_gain_db_;
+                // Drop gain rapidly (6 dB/s) in all phases to prevent loud transitions from pumping;
+                // increase gain quickly only during the initial 3 s active-audio phase, then slowly (1 dB/s).
+                const float max_rate = (delta < 0.0f)
+                    ? kNormFastRateDbPerSec
+                    : ((norm_elapsed_seconds_ < kNormFastPhaseSeconds)
+                        ? kNormFastRateDbPerSec
+                        : kNormSlowRateDbPerSec);
+                const float max_step = max_rate * static_cast<float>(dt);
+                if (std::abs(delta) <= max_step) {
+                    norm_gain_db_ = desired_db;
+                } else {
+                    norm_gain_db_ += (delta > 0.0f) ? max_step : -max_step;
+                }
+                norm_elapsed_seconds_ += dt;
+            }
+
+            const float combined_gain = std::pow(10.0f, norm_gain_db_ / 20.0f) * vol;
+            for (std::size_t i = 0; i < sub_frames; ++i) {
+                float l = float_stereo_scratch_[i * 2] * combined_gain;
+                float r = float_stereo_scratch_[i * 2 + 1] * combined_gain;
+                const float peak = std::max(std::abs(l), std::abs(r));
+                const float desired_lim = (peak > kLimiterCeiling && peak > 0.0f)
+                    ? (kLimiterCeiling / peak)
+                    : 1.0f;
+                if (desired_lim < limiter_gain_) {
+                    limiter_gain_ = desired_lim;
+                } else {
+                    limiter_gain_ = 1.0f - (1.0f - limiter_gain_) * release_coeff;
+                    if (limiter_gain_ > 0.9999f) {
+                        limiter_gain_ = 1.0f;
+                    }
+                }
+                l *= limiter_gain_;
+                r *= limiter_gain_;
+                const std::size_t out_idx = (offset + i) * 2;
+                stereo_scratch_[out_idx] = static_cast<std::int16_t>(
+                    std::clamp(std::lrintf(l * 32768.0f), -32768L, 32767L));
+                stereo_scratch_[out_idx + 1] = static_cast<std::int16_t>(
+                    std::clamp(std::lrintf(r * 32768.0f), -32768L, 32767L));
+            }
+        }
     }
 
     bool EncodeStereo(const std::int16_t* interleaved, std::size_t frames) {
@@ -525,7 +686,19 @@ private:
     int output_rate_{48000};
 
     std::vector<std::int16_t> stereo_scratch_;
+    std::vector<float> float_stereo_scratch_;
     std::vector<std::uint8_t> mp3_out_;
+    struct RmsBlock {
+        double sum_sq{0.0};
+        std::size_t frames{0};
+    };
+    std::deque<RmsBlock> norm_blocks_;
+    double norm_window_sum_sq_{0.0};
+    std::size_t norm_window_frames_{0};
+    double norm_elapsed_seconds_{0.0};
+    float norm_gain_db_{0.0f};
+    float limiter_gain_{1.0f};
+    std::vector<std::int16_t>* capture_stereo_pcm_{nullptr};
     std::uint64_t total_pcm_frames_{0};
     std::uint64_t decoded_only_frames_{0};
     double skip_remaining_seconds_{0.0};
@@ -3082,6 +3255,55 @@ bool AudioTranscoder::Run(
         }
     }
     return ok || cancel_flag.load();
+}
+
+bool RunNormalizedPipelineForTesting(
+    const TranscoderConfig& config,
+    float volume_percent,
+    int sample_rate,
+    int channels,
+    const std::vector<std::vector<std::int16_t>>& chunks,
+    std::vector<std::uint8_t>& out_mp3_bytes,
+    std::vector<std::int16_t>* out_pre_encode_pcm,
+    float* out_final_gain_db) {
+    out_mp3_bytes.clear();
+    if (out_pre_encode_pcm) {
+        out_pre_encode_pcm->clear();
+    }
+    if (sample_rate <= 0 || channels <= 0) {
+        return false;
+    }
+
+    auto out_buf = std::make_shared<AudioStreamBuffer>(2 * 1024 * 1024);
+    std::atomic<bool> cancel{false};
+    std::atomic<bool> pause{false};
+    std::atomic<float> vol{volume_percent};
+    const auto now = std::chrono::steady_clock::now();
+
+    Mp3OutputPipeline pipeline(config, out_buf, cancel, pause, vol, now, nullptr);
+    pipeline.SetCaptureStereoPcmForTesting(out_pre_encode_pcm);
+
+    for (const auto& chunk : chunks) {
+        if (chunk.empty()) continue;
+        const std::size_t frames = chunk.size() / static_cast<std::size_t>(channels);
+        if (frames == 0) continue;
+        if (!pipeline.PushPcmInterleaved(chunk.data(), frames, sample_rate, channels)) {
+            return false;
+        }
+    }
+    pipeline.FlushAndClose();
+    if (out_final_gain_db) {
+        *out_final_gain_db = pipeline.CurrentNormGainDb();
+    }
+    out_buf->MarkEof(config.buffer_generation);
+
+    const std::uint64_t total = out_buf->TotalWritten();
+    out_mp3_bytes.resize(static_cast<std::size_t>(total));
+    if (total > 0) {
+        const std::size_t copied = out_buf->PeekAt(0, out_mp3_bytes.data(), out_mp3_bytes.size());
+        out_mp3_bytes.resize(copied);
+    }
+    return true;
 }
 
 } // namespace sampaudiostream

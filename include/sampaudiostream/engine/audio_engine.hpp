@@ -7,6 +7,7 @@
 #include "sampaudiostream/extractor/binary_manager.hpp"
 #include "sampaudiostream/extractor/metadata_cache.hpp"
 #include "sampaudiostream/extractor/resolver.hpp"
+#include "sampaudiostream/network/http_client.hpp"
 #include "sampaudiostream/network/http_server.hpp"
 #include "sampaudiostream/runtime/platform_host.hpp"
 
@@ -21,6 +22,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -32,6 +34,14 @@ namespace sampaudiostream {
 struct StreamRunState {
     std::atomic<bool> cancel_flag{false};
     std::uint64_t start_offset_ms{0};
+};
+
+struct LiveTitlePollState {
+    bool in_flight{false};
+    bool stopped_permanently{false};
+    std::int32_t consecutive_no_metadata{0};
+    std::string last_received_title;
+    std::chrono::steady_clock::time_point next_poll_at{};
 };
 
 struct ActiveStreamSession {
@@ -65,6 +75,8 @@ struct ActiveStreamSession {
     std::chrono::steady_clock::time_point paused_since{};
     std::chrono::steady_clock::duration paused_accumulated{};
     std::chrono::seconds seek_base_offset{0};
+    std::string live_title;
+    LiveTitlePollState live_poll{};
 };
 
 struct ChannelRunState {
@@ -118,6 +130,8 @@ struct PlayerAudioCommand {
 struct ChannelQueueEntry {
     std::string utf8_url;
     std::string pawn_url;
+    std::string utf8_label;
+    std::string pawn_label;
 };
 
 struct SyncChannel {
@@ -152,6 +166,8 @@ struct SyncChannel {
     std::chrono::steady_clock::time_point paused_since{};
     std::chrono::steady_clock::duration paused_accumulated{};
     std::chrono::seconds seek_base_offset{0};
+    std::string live_title;
+    LiveTitlePollState live_poll{};
     std::int32_t consecutive_errors{0};
     bool playlist_import_in_flight{false};
     std::shared_ptr<std::atomic<bool>> playlist_cancel{std::make_shared<std::atomic<bool>>(false)};
@@ -284,7 +300,11 @@ public:
         std::int32_t destroy_timeout_seconds = 0);
     bool DestroyChannel(ChannelId channel_id);
     bool PlayChannel(ChannelId channel_id, const std::string& url_or_query, const std::string& original_input_pawn = "");
-    bool QueueChannel(ChannelId channel_id, const std::string& url_or_query, const std::string& original_input_pawn = "");
+    bool QueueChannel(
+        ChannelId channel_id,
+        const std::string& url_or_query,
+        const std::string& original_input_pawn = "",
+        const std::string& utf8_label = "");
     bool QueueChannelPlaylist(ChannelId channel_id, const std::string& url, std::int32_t max_items = 25);
     bool SeekChannelAudioStream(ChannelId channel_id, std::int32_t seconds);
     bool SkipChannel(ChannelId channel_id);
@@ -317,7 +337,14 @@ public:
         ChannelId channel_id,
         std::size_t index,
         const std::string& url_or_query,
-        const std::string& original_input_pawn = "");
+        const std::string& original_input_pawn = "",
+        const std::string& utf8_label = "");
+    bool MoveChannelQueueItem(ChannelId channel_id, std::size_t from_index, std::size_t to_index);
+    bool ShuffleChannelQueue(ChannelId channel_id);
+    bool GetChannelLiveTitle(ChannelId channel_id, std::string& out_title) const;
+    bool GetStreamLiveTitle(StreamId stream_id, std::string& out_title) const;
+    bool SetChannelLiveTitle(ChannelId channel_id, const std::string& utf8_title);
+    bool SetStreamLiveTitle(StreamId stream_id, const std::string& utf8_title);
     bool SetChannelLoopMode(ChannelId channel_id, ChannelLoopMode mode);
     ChannelLoopMode GetChannelLoopMode(ChannelId channel_id) const;
     std::int32_t GetChannelElapsedSeconds(ChannelId channel_id) const;
@@ -327,6 +354,7 @@ public:
     ChannelId GetChannelIdAt(std::size_t index) const;
     bool GetChannelInfo(ChannelId channel_id, ChannelInfo& out_info) const;
     bool GetChannelQueueItem(ChannelId channel_id, std::size_t index, std::string& out_item) const;
+    bool GetChannelQueueItemLabel(ChannelId channel_id, std::size_t index, std::string& out_label) const;
 
     // Diagnostics & Queries
     bool GetStreamInfo(StreamId stream_id, TrackMetadata& out_meta, StreamState& out_state) const;
@@ -347,6 +375,9 @@ public:
     BinaryManager& BinariesForTesting() { return binary_manager_; }
     void SetConnectTimeoutWarningMsForTesting(std::int64_t timeout_ms) {
         connect_warn_timeout_ms_.store(timeout_ms, std::memory_order_relaxed);
+    }
+    void PollLiveTitlesAtForTesting(std::chrono::steady_clock::time_point now) {
+        PollLiveTitles(now);
     }
 
     // LAN interface discovery & per-player host IP resolution (exposed for unit tests)
@@ -374,7 +405,8 @@ private:
         const std::string& url_or_query,
         const std::string& original_input_pawn,
         std::shared_ptr<SyncChannel>& out_ch,
-        std::shared_ptr<ChannelRunState>& out_run);
+        std::shared_ptr<ChannelRunState>& out_run,
+        const std::string& utf8_label = "");
     void HandleChannelTrackError(
         const std::shared_ptr<SyncChannel>& channel,
         const std::shared_ptr<ChannelRunState>& run,
@@ -395,7 +427,17 @@ private:
         std::uint64_t start_offset_ms);
     void StartChannelWorker(std::shared_ptr<SyncChannel> channel, std::shared_ptr<ChannelRunState> run, const std::string& url_or_query);
     void PreResolveNextChannelTrack(const std::shared_ptr<SyncChannel>& channel, const std::string& url_or_query);
-    void ProbeIcyTitleAsync(const std::shared_ptr<ActiveStreamSession>& session);
+    void PollLiveTitles(std::chrono::steady_clock::time_point now);
+    void LaunchSessionLiveTitlePoll(
+        const std::shared_ptr<ActiveStreamSession>& session,
+        const std::shared_ptr<StreamRunState>& run_snapshot,
+        const std::string& url,
+        const HttpClient::HeaderMap& headers);
+    void LaunchChannelLiveTitlePoll(
+        const std::shared_ptr<SyncChannel>& channel,
+        const std::shared_ptr<ChannelRunState>& run_snapshot,
+        const std::string& url,
+        const HttpClient::HeaderMap& headers);
     void DispatchAudioCallback(const std::string& name, std::vector<CallbackArg> args);
     void DispatchProcessingNotification(PlayerId player_id, StreamId stream_id, const std::string& original_url, bool from_cache);
     bool RefreshActiveSessionSpatialLocked(
@@ -557,6 +599,24 @@ private:
         AudioSourcePriority::Channel,
         AudioSourcePriority::Global
     };
+    std::mt19937 queue_shuffle_rng_;
+    std::atomic<std::int32_t> active_live_title_polls_{0};
 };
+
+enum class IcyPollResult {
+    Title,       // Marker found and cleaned title is non-empty
+    EmptyTitle,  // Marker found but cleaned title is empty
+    NotLive,     // 2xx HTTP response with Content-Length > 0 (finite file)
+    NoMetadata,  // Live response without StreamTitle within 64 KB
+    Failed       // Network error, HTTP >= 400, deadline expired, or cancelled
+};
+
+bool ExtractIcyStreamTitle(const std::string& raw_bytes, std::string& out_title_utf8);
+IcyPollResult FetchIcyStreamTitle(
+    const std::string& url,
+    const HttpClient::HeaderMap& headers,
+    const std::atomic<bool>& cancel_flag,
+    std::string& out_title_utf8);
+bool IsLiveTitlePollCandidate(const TrackMetadata& meta, std::uint32_t live_title_poll_seconds = 30);
 
 } // namespace sampaudiostream
