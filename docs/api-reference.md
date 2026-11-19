@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.1.0`), covering all **73 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.1.1`), covering all **73 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -754,8 +754,8 @@ public OnAudioStreamChannelLiveTitleChange(channelid, const title[])
 ```pawn
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
 #define SAMPAUDIOSTREAM_VERSION_MINOR  (1)
-#define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.1.0"
+#define SAMPAUDIOSTREAM_VERSION_PATCH  (1)
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.1.1"
 
 #define INVALID_AUDIO_STREAM_ID  (-1)
 #define INVALID_AUDIO_CHANNEL_ID (-1)

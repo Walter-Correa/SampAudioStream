@@ -628,9 +628,11 @@ public:
     mutable std::atomic<bool> get_ip_off_main_thread{false};
     mutable std::atomic<bool> spatial_query_off_main_thread{false};
 
+    std::int32_t max_players_override{50};
     void Log(LogSeverity, const std::string&) override {}
     std::int32_t GetServerPort() const override { return 7777; }
     std::string GetServerBindIp() const override { return "127.0.0.1"; }
+    std::int32_t GetMaxPlayers() const override { return max_players_override; }
     bool TracksDisconnectEvents() const override { return false; }
 
     bool IsPlayerConnected(PlayerId player_id) const override {
@@ -13296,7 +13298,6 @@ void TestRound52PartBUnifiedConfig() {
         "        \"http_port\": 0,\n"
         "        \"lan_aware_urls\": true,\n"
         "        \"allow_private_network_urls\": false,\n"
-        "        \"max_http_connections\": 1024,\n"
         "        \"max_connections_per_ip\": 64\n"
         "    },\n"
         "    \"audio\":\n"
@@ -13373,7 +13374,6 @@ void TestRound52PartBUnifiedConfig() {
         TEST_CHECK(reloaded.bind_ip == created.bind_ip);
         TEST_CHECK(reloaded.http_port == created.http_port);
         TEST_CHECK(reloaded.max_channels == 100);
-        TEST_CHECK(reloaded.max_http_connections == 1024);
         TEST_CHECK(reloaded.max_connections_per_ip == 64);
         TEST_CHECK(reloaded.max_search_results == 10);
         TEST_CHECK(reloaded.debug_logging == false);
@@ -13390,7 +13390,6 @@ void TestRound52PartBUnifiedConfig() {
         custom.http_port = 8123;
         custom.lan_aware_urls = false;
         custom.allow_private_network_urls = true;
-        custom.max_http_connections = 2048;
         custom.max_connections_per_ip = 128;
         custom.mp3_bitrate_kbps = 256;
         custom.mp3_sample_rate = 44100;
@@ -13433,7 +13432,6 @@ void TestRound52PartBUnifiedConfig() {
         TEST_CHECK(read_back.http_port == 8123);
         TEST_CHECK(!read_back.lan_aware_urls);
         TEST_CHECK(read_back.allow_private_network_urls);
-        TEST_CHECK(read_back.max_http_connections == 2048);
         TEST_CHECK(read_back.max_connections_per_ip == 128);
         TEST_CHECK(read_back.mp3_bitrate_kbps == 256);
         TEST_CHECK(read_back.mp3_sample_rate == 44100);
@@ -13473,16 +13471,14 @@ void TestRound52PartBUnifiedConfig() {
         const std::filesystem::path bad_path = temp_root / "bad_values.json";
         {
             std::ofstream ofs(bad_path, std::ios::binary | std::ios::trunc);
-            ofs << R"({"network":{"max_http_connections":16,"max_connections_per_ip":9999},"channels":{"max_channels":5000},"extractor":{"max_search_results":99},"logging":{"debug":"bad_bool"},"scripting":{"pawn_text_encoding":"latin9"}})";
+            ofs << R"({"network":{"max_connections_per_ip":9999},"channels":{"max_channels":5000},"extractor":{"max_search_results":99},"logging":{"debug":"bad_bool"},"scripting":{"pawn_text_encoding":"latin9"}})";
         }
         const PluginConfig bad_cfg = ConfigManager::LoadOrCreate(bad_path.string());
-        TEST_CHECK(bad_cfg.max_http_connections == 1024);
         TEST_CHECK(bad_cfg.max_connections_per_ip == 64);
         TEST_CHECK(bad_cfg.max_channels == 100);
         TEST_CHECK(bad_cfg.max_search_results == 10);
         TEST_CHECK(bad_cfg.debug_logging == false);
         TEST_CHECK(bad_cfg.pawn_text_encoding == "cp1252");
-        TEST_CHECK(has_log(LogSeverity::Warning, "Config key 'network.max_http_connections'"));
         TEST_CHECK(has_log(LogSeverity::Warning, "Config key 'network.max_connections_per_ip'"));
         TEST_CHECK(has_log(LogSeverity::Warning, "Config key 'channels.max_channels'"));
         TEST_CHECK(has_log(LogSeverity::Warning, "Config key 'extractor.max_search_results'"));
@@ -13515,7 +13511,7 @@ void TestRound52PartBUnifiedConfig() {
         ConfigManager::ProvideOmpDefaults(writer);
 
         const std::vector<ConfigSchemaFieldInfo> schema = ConfigManager::GetUnifiedSchemaFields();
-        TEST_CHECK(schema.size() == 40);
+        TEST_CHECK(schema.size() == 39);
         TEST_CHECK(registered_omp_keys.size() == schema.size());
         for (std::size_t i = 0; i < schema.size(); ++i) {
             TEST_CHECK(registered_omp_keys[i] == ("sampaudiostream." + schema[i].full_key));
@@ -13540,7 +13536,6 @@ void TestRound52PartBUnifiedConfig() {
         omp_ints["sampaudiostream.network.http_port"] = 7999;
         omp_bools["sampaudiostream.network.lan_aware_urls"] = false;
         omp_bools["sampaudiostream.network.allow_private_network_urls"] = true;
-        omp_ints["sampaudiostream.network.max_http_connections"] = 4096;
         omp_ints["sampaudiostream.network.max_connections_per_ip"] = 256;
         omp_ints["sampaudiostream.audio.mp3_bitrate_kbps"] = 192;
         omp_ints["sampaudiostream.audio.mp3_sample_rate"] = 44100;
@@ -13602,7 +13597,6 @@ void TestRound52PartBUnifiedConfig() {
         TEST_CHECK(omp_loaded.http_port == 7999);
         TEST_CHECK(!omp_loaded.lan_aware_urls);
         TEST_CHECK(omp_loaded.allow_private_network_urls);
-        TEST_CHECK(omp_loaded.max_http_connections == 4096);
         TEST_CHECK(omp_loaded.max_connections_per_ip == 256);
         TEST_CHECK(omp_loaded.mp3_bitrate_kbps == 192);
         TEST_CHECK(omp_loaded.mp3_sample_rate == 44100);
@@ -14514,30 +14508,23 @@ void TestRound54HttpConnectionLimits() {
     };
 
     // 1. Defaults & out-of-range fallback warnings
-    TEST_PHASE("1. Config defaults (1024 / 64) and out-of-range validation warnings");
+    TEST_PHASE("1. Config default (64 per IP) and out-of-range validation warnings");
     {
         PluginConfig def;
-        TEST_CHECK(def.max_http_connections == 1024);
         TEST_CHECK(def.max_connections_per_ip == 64);
 
         clear_logs();
         PluginConfig c_low = def;
-        c_low.max_http_connections = 63;
         c_low.max_connections_per_ip = 0;
         ConfigManager::Sanitize(c_low);
-        TEST_CHECK(c_low.max_http_connections == 1024);
         TEST_CHECK(c_low.max_connections_per_ip == 64);
-        TEST_CHECK(count_logs(LogSeverity::Warning, "Config key 'network.max_http_connections'") == 1);
         TEST_CHECK(count_logs(LogSeverity::Warning, "Config key 'network.max_connections_per_ip'") == 1);
 
         clear_logs();
         PluginConfig c_high = def;
-        c_high.max_http_connections = 8193;
         c_high.max_connections_per_ip = 4097;
         ConfigManager::Sanitize(c_high);
-        TEST_CHECK(c_high.max_http_connections == 1024);
         TEST_CHECK(c_high.max_connections_per_ip == 64);
-        TEST_CHECK(count_logs(LogSeverity::Warning, "Config key 'network.max_http_connections'") == 1);
         TEST_CHECK(count_logs(LogSeverity::Warning, "Config key 'network.max_connections_per_ip'") == 1);
     }
 
@@ -14613,7 +14600,7 @@ void TestRound54HttpConnectionLimits() {
         Logger::Instance().SetDebugEnabled(false);
 
         HttpStreamingServer srv;
-        srv.SetConnectionLimits(3, 64);
+        srv.SetConnectionLimits(3, 64, 50);
         std::string err;
         TEST_CHECK(srv.Start("127.0.0.1", 0, err, false));
 
@@ -14632,8 +14619,8 @@ void TestRound54HttpConnectionLimits() {
 
         TEST_CHECK(!open_streaming_client(io, srv.BoundPort(), "/stream/secret_tok_tot.mp3", c4));
         const std::string expected_warn =
-            "HTTP audio connection rejected: total connection limit reached (3/3); "
-            "raise 'network.max_http_connections' if more simultaneous listeners are expected.";
+            "HTTP audio connection rejected: total connection limit reached (3/3, derived from 50 player slots); "
+            "this usually means connections are not coming from players.";
         TEST_CHECK(wait_until([&]() { return count_logs(LogSeverity::Warning, expected_warn) == 1; }));
         TEST_CHECK(!any_log_contains("secret_tok_tot"));
 
@@ -14700,7 +14687,6 @@ void TestRound54HttpConnectionLimits() {
         cfg.allow_private_network_urls = true;
         cfg.persist_channels = false;
         cfg.debug_logging = false;
-        cfg.max_http_connections = 3;
         cfg.max_connections_per_ip = 2;
 
         AudioEngine engine(host, cfg);
@@ -15195,6 +15181,166 @@ void TestRound63Features() {
     std::cout << "[PASS] TestRound63Features\n";
 }
 
+void TestRound65AutoConnectionLimits() {
+    std::error_code fec;
+    const std::filesystem::path r65_dir =
+        std::filesystem::temp_directory_path() / "sampaudiostream_r65_tests";
+    std::filesystem::remove_all(r65_dir, fec);
+    std::filesystem::create_directories(r65_dir, fec);
+
+    // 1. ComputeHttpConnectionLimit
+    TEST_PHASE("1. ComputeHttpConnectionLimit slot clamping and formula");
+    {
+        TEST_CHECK(ComputeHttpConnectionLimit(0) == 2064);
+        TEST_CHECK(ComputeHttpConnectionLimit(-5) == 2064);
+        TEST_CHECK(ComputeHttpConnectionLimit(10) == 128);
+        TEST_CHECK(ComputeHttpConnectionLimit(50) == 164);
+        TEST_CHECK(ComputeHttpConnectionLimit(200) == 464);
+        TEST_CHECK(ComputeHttpConnectionLimit(1000) == 2064);
+        TEST_CHECK(ComputeHttpConnectionLimit(5000) == 2064);
+    }
+
+    // 2. LoadServerCfg reads maxplayers / config.json max_players with 1..1000 validation
+    TEST_PHASE("2. LoadServerCfg maxplayers and open.mp config.json max_players");
+    {
+        const auto scfg_valid = r65_dir / "server_50.cfg";
+        {
+            std::ofstream ofs(scfg_valid, std::ios::binary | std::ios::trunc);
+            ofs << "port 7777\nmaxplayers 50\n";
+        }
+        const ServerCfgInfo info_50 = ConfigManager::LoadServerCfg(scfg_valid.string());
+        TEST_CHECK(info_50.has_max_players && info_50.max_players == 50);
+
+        const auto scfg_bad_low = r65_dir / "server_0.cfg";
+        {
+            std::ofstream ofs(scfg_bad_low, std::ios::binary | std::ios::trunc);
+            ofs << "maxplayers 0\n";
+        }
+        const ServerCfgInfo info_0 = ConfigManager::LoadServerCfg(scfg_bad_low.string());
+        TEST_CHECK(!info_0.has_max_players && info_0.max_players == 0);
+
+        const auto scfg_bad_high = r65_dir / "server_5000.cfg";
+        {
+            std::ofstream ofs(scfg_bad_high, std::ios::binary | std::ios::trunc);
+            ofs << "maxplayers 5000\n";
+        }
+        const ServerCfgInfo info_5000 = ConfigManager::LoadServerCfg(scfg_bad_high.string());
+        TEST_CHECK(!info_5000.has_max_players && info_5000.max_players == 0);
+
+        const std::filesystem::path prev_cwd = std::filesystem::current_path();
+        {
+            std::filesystem::create_directories(r65_dir / "omp_fb");
+            std::filesystem::current_path(r65_dir / "omp_fb");
+            {
+                std::ofstream ofs(r65_dir / "omp_fb" / "config.json", std::ios::binary | std::ios::trunc);
+                ofs << R"({"max_players": 200, "network": {"port": 7777}})";
+            }
+            const ServerCfgInfo info_omp = ConfigManager::LoadServerCfg("missing_server.cfg");
+            std::filesystem::current_path(prev_cwd);
+            TEST_CHECK(info_omp.has_max_players && info_omp.max_players == 200);
+        }
+    }
+
+    // 3. PlanFileDescriptorLimit
+    TEST_PHASE("3. PlanFileDescriptorLimit matrix");
+    {
+        constexpr std::uint64_t kInf = std::numeric_limits<std::uint64_t>::max();
+        {
+            const auto p = PlanFileDescriptorLimit(1024, 524288, 1280);
+            TEST_CHECK(p.raise && p.new_soft == 1280 && !p.warn);
+        }
+        {
+            const auto p = PlanFileDescriptorLimit(1024, 1024, 1280);
+            TEST_CHECK(!p.raise && p.new_soft == 1024 && p.warn);
+        }
+        {
+            const auto p = PlanFileDescriptorLimit(1024, 1100, 1280);
+            TEST_CHECK(p.raise && p.new_soft == 1100 && p.warn);
+        }
+        {
+            const auto p = PlanFileDescriptorLimit(4096, 524288, 1280);
+            TEST_CHECK(!p.raise && !p.warn);
+        }
+        {
+            const auto p = PlanFileDescriptorLimit(kInf, kInf, 1280);
+            TEST_CHECK(!p.raise && !p.warn);
+        }
+        {
+            const auto p = PlanFileDescriptorLimit(1024, kInf, 1280);
+            TEST_CHECK(p.raise && p.new_soft == 1280 && !p.warn);
+        }
+    }
+
+    // 4. Legacy config with removed network connection cap key loads silently + startup listening logs
+    TEST_PHASE("4. Legacy config key ignored without warnings and startup listening log format");
+    {
+        Logger::Instance().Flush();
+        std::mutex log_mtx;
+        std::vector<std::pair<LogSeverity, std::string>> logs;
+        Logger::Instance().SetSink([&](LogSeverity sev, const std::string& msg) {
+            std::lock_guard<std::mutex> lk(log_mtx);
+            logs.emplace_back(sev, msg);
+        });
+
+        const auto legacy_cfg_path = r65_dir / "legacy_config.json";
+        {
+            std::ofstream ofs(legacy_cfg_path, std::ios::binary | std::ios::trunc);
+            ofs << "{\"network\":{\"max_http_" "connections\":1024,\"max_connections_per_ip\":32}}";
+        }
+        const PluginConfig loaded = ConfigManager::LoadOrCreate(legacy_cfg_path.string());
+        TEST_CHECK(loaded.max_connections_per_ip == 32);
+
+        Logger::Instance().Flush();
+        {
+            std::lock_guard<std::mutex> lk(log_mtx);
+            for (const auto& entry : logs) {
+                TEST_CHECK(entry.first != LogSeverity::Warning);
+            }
+            logs.clear();
+        }
+
+        // Known slots (50 -> limit 164)
+        {
+            HttpStreamingServer srv;
+            srv.SetConnectionLimits(ComputeHttpConnectionLimit(50), 64, 50);
+            std::string err;
+            TEST_CHECK(srv.Start("127.0.0.1", 0, err, true));
+            srv.Stop();
+        }
+        // Unknown slots (0 -> limit 2064)
+        {
+            HttpStreamingServer srv;
+            srv.SetConnectionLimits(ComputeHttpConnectionLimit(0), 64, 0);
+            std::string err;
+            TEST_CHECK(srv.Start("127.0.0.1", 0, err, true));
+            srv.Stop();
+        }
+
+        Logger::Instance().Flush();
+        Logger::Instance().SetSink(nullptr);
+        bool saw_known_slots = false;
+        bool saw_unknown_slots = false;
+        {
+            std::lock_guard<std::mutex> lk(log_mtx);
+            for (const auto& entry : logs) {
+                if (entry.first == LogSeverity::Info &&
+                    entry.second.find("(connection limit 164 for 50 player slots)") != std::string::npos) {
+                    saw_known_slots = true;
+                }
+                if (entry.first == LogSeverity::Info &&
+                    entry.second.find("(connection limit 2064, player slots unknown)") != std::string::npos) {
+                    saw_unknown_slots = true;
+                }
+            }
+        }
+        TEST_CHECK(saw_known_slots);
+        TEST_CHECK(saw_unknown_slots);
+    }
+
+    std::filesystem::remove_all(r65_dir, fec);
+    std::cout << "[PASS] TestRound65AutoConnectionLimits\n";
+}
+
 #define RUN_TEST(fn)                                                                          \
     do {                                                                                      \
         g_current_test.store(#fn, std::memory_order_release);                                 \
@@ -15309,6 +15455,7 @@ int main(int argc, char** argv) {
     RUN_TEST(TestSpatialPerformanceBenchmark);
     RUN_TEST(TestRound60Features);
     RUN_TEST(TestRound63Features);
+    RUN_TEST(TestRound65AutoConnectionLimits);
     g_tests_done.store(true, std::memory_order_release);
     if (watchdog_thread.joinable()) watchdog_thread.join();
     std::cout << "All core unit tests passed!\n";

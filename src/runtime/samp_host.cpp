@@ -187,22 +187,32 @@ void SampHost::Log(LogSeverity severity, const std::string& message) {
     logprintf_("[SampAudioStream] [%s] %s", tag, message.c_str());
 }
 
-std::int32_t SampHost::GetServerPort() const {
+std::int32_t SampHost::ReadServerVarInt(const char* name, std::int32_t fallback) const {
     AMX* amx = GetPrimaryAmx();
     if (!amx || !fn_get_server_var_int_) {
-        return server_cfg_.port > 0 ? server_cfg_.port : 7777;
+        return fallback;
     }
 
     cell amx_addr = 0;
     cell* phys_addr = nullptr;
-    if (amx_Allot(amx, 8, &amx_addr, &phys_addr) != AMX_ERR_NONE) {
-        return server_cfg_.port > 0 ? server_cfg_.port : 7777;
+    if (amx_Allot(amx, 16, &amx_addr, &phys_addr) != AMX_ERR_NONE) {
+        return fallback;
     }
-    amx_SetString(phys_addr, "port", 0, 0, 8);
+    amx_SetString(phys_addr, name, 0, 0, 16);
     cell params[2] = {sizeof(cell), amx_addr};
     cell ret = fn_get_server_var_int_(amx, params);
     amx_Release(amx, amx_addr);
-    return ret > 0 ? static_cast<std::int32_t>(ret) : (server_cfg_.port > 0 ? server_cfg_.port : 7777);
+    return ret > 0 ? static_cast<std::int32_t>(ret) : fallback;
+}
+
+std::int32_t SampHost::GetServerPort() const {
+    const std::int32_t fallback = server_cfg_.port > 0 ? server_cfg_.port : 7777;
+    return ReadServerVarInt("port", fallback);
+}
+
+std::int32_t SampHost::GetMaxPlayers() const {
+    const std::int32_t fallback = server_cfg_.has_max_players ? server_cfg_.max_players : 0;
+    return ReadServerVarInt("maxplayers", fallback);
 }
 
 std::string SampHost::GetServerBindIp() const {

@@ -88,7 +88,7 @@ void OmpHost::onInit(IComponentList* components) {
         engine_->WaitForStartupReadinessAndLog([this, &cfg]() {
             if (cfg.log_startup_banner) {
                 Logger::Instance().Info(
-                    "SampAudioStream v2.1.0 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: " +
+                    "SampAudioStream v2.1.1 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: " +
                     std::to_string(engine_->GetHttpPort()) + ")");
             }
         });
@@ -340,6 +340,14 @@ std::string OmpHost::GetServerBindIp() const {
     if (!core_) return "0.0.0.0";
     StringView bind = core_->getConfig().getString("network.bind");
     return bind.empty() ? "0.0.0.0" : std::string(bind.data(), bind.size());
+}
+
+std::int32_t OmpHost::GetMaxPlayers() const {
+    if (!core_) return 0;
+    if (int* mp = core_->getConfig().getInt("max_players")) {
+        return (*mp > 0) ? *mp : 0;
+    }
+    return 0;
 }
 
 bool OmpHost::IsPlayerConnected(PlayerId player_id) const {

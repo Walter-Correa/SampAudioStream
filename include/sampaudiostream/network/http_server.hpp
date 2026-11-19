@@ -26,6 +26,18 @@ struct StreamEndpointInfo {
     std::string live_title;
 };
 
+struct FileLimitPlan {
+    bool raise{false};
+    std::uint64_t new_soft{0};
+    bool warn{false};
+};
+
+// Total simultaneous HTTP audio connections derived from the server's player slots.
+std::size_t ComputeHttpConnectionLimit(std::int32_t max_players);
+
+// Decides whether to raise the RLIMIT_NOFILE soft limit up to needed without lowering or raising to full hard cap.
+FileLimitPlan PlanFileDescriptorLimit(std::uint64_t soft, std::uint64_t hard, std::uint64_t needed);
+
 class HttpStreamingServer {
 public:
     HttpStreamingServer();
@@ -34,7 +46,10 @@ public:
     HttpStreamingServer(const HttpStreamingServer&) = delete;
     HttpStreamingServer& operator=(const HttpStreamingServer&) = delete;
 
-    void SetConnectionLimits(std::size_t max_total_connections, std::size_t max_connections_per_ip);
+    void SetConnectionLimits(
+        std::size_t max_total_connections,
+        std::size_t max_connections_per_ip,
+        std::int32_t player_slots = 0);
     bool Start(const std::string& bind_ip, std::uint16_t port, std::string& out_error, bool log_listen = true);
     void Stop();
 

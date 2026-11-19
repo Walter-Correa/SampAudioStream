@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -590,6 +591,7 @@ struct HttpStreamingServer::Impl {
 
     std::size_t max_total_connections{1024};
     std::size_t max_connections_per_ip{64};
+    std::int32_t player_slots{0};
     mutable std::mutex connections_mutex;
     std::condition_variable connections_cv;
     bool warned_total_limit{false};
@@ -612,6 +614,7 @@ struct HttpStreamingServer::Impl {
         RejectReason reason{RejectReason::None};
         std::size_t current{0};
         std::size_t limit{0};
+        std::int32_t player_slots{0};
     };
 
     bool TryAcquireConnectionSlot(const std::string& ip, RejectWarnInfo& out_warn) {
@@ -625,6 +628,7 @@ struct HttpStreamingServer::Impl {
                 out_warn.reason = RejectReason::TotalLimit;
                 out_warn.current = total_connections;
                 out_warn.limit = max_total_connections;
+                out_warn.player_slots = player_slots;
             }
             return false;
         }
@@ -735,11 +739,15 @@ struct HttpStreamingServer::Impl {
                             "). Players sharing this IP (mobile carrier CGNAT, LAN house) beyond this limit hear nothing; "
                             "raise 'network.max_connections_per_ip' if needed.");
                     } else if (reject_warn.reason == Impl::RejectReason::TotalLimit) {
+                        const std::string slots_desc = (reject_warn.player_slots > 0)
+                            ? (", derived from " + std::to_string(reject_warn.player_slots) + " player slots")
+                            : ", player slots unknown";
                         Logger::Instance().Warn(
                             "HTTP audio connection rejected: total connection limit reached (" +
                             std::to_string(reject_warn.current) + "/" +
                             std::to_string(reject_warn.limit) +
-                            "); raise 'network.max_http_connections' if more simultaneous listeners are expected.");
+                            slots_desc +
+                            "); this usually means connections are not coming from players.");
                     }
                 } else {
                     std::error_code opt_ec;
@@ -775,6 +783,22 @@ struct HttpStreamingServer::Impl {
     }
 };
 
+std::size_t ComputeHttpConnectionLimit(std::int32_t max_players) {
+    const std::int32_t clamped_slots =
+        (max_players <= 0) ? 1000 : std::clamp<std::int32_t>(max_players, 1, 1000);
+    return std::max<std::size_t>(128u, static_cast<std::size_t>(clamped_slots) * 2u + 64u);
+}
+
+FileLimitPlan PlanFileDescriptorLimit(std::uint64_t soft, std::uint64_t hard, std::uint64_t needed) {
+    constexpr std::uint64_t kInf = std::numeric_limits<std::uint64_t>::max();
+    if (soft == kInf || soft >= needed) {
+        return FileLimitPlan{false, soft, false};
+    }
+    const std::uint64_t capped_target = (hard == kInf) ? needed : std::min(needed, hard);
+    const std::uint64_t new_soft = std::max(soft, capped_target);
+    return FileLimitPlan{new_soft > soft, new_soft, new_soft < needed};
+}
+
 HttpStreamingServer::HttpStreamingServer()
     : impl_(std::make_unique<Impl>()) {}
 
@@ -784,10 +808,12 @@ HttpStreamingServer::~HttpStreamingServer() {
 
 void HttpStreamingServer::SetConnectionLimits(
     std::size_t max_total_connections,
-    std::size_t max_connections_per_ip) {
+    std::size_t max_connections_per_ip,
+    std::int32_t player_slots) {
     std::lock_guard<std::mutex> lock(impl_->connections_mutex);
     impl_->max_total_connections = std::max<std::size_t>(1, max_total_connections);
     impl_->max_connections_per_ip = std::max<std::size_t>(1, max_connections_per_ip);
+    impl_->player_slots = (player_slots > 0) ? player_slots : 0;
 }
 
 bool HttpStreamingServer::Start(const std::string& bind_ip, std::uint16_t port, std::string& out_error, bool log_listen) {
@@ -796,32 +822,58 @@ bool HttpStreamingServer::Start(const std::string& bind_ip, std::uint16_t port, 
     }
 
     std::size_t configured_max_total = 1024;
+    std::int32_t configured_player_slots = 0;
     {
         std::lock_guard<std::mutex> lock(impl_->connections_mutex);
         impl_->warned_total_limit = false;
         impl_->warned_per_ip_limit = false;
         configured_max_total = impl_->max_total_connections;
+        configured_player_slots = impl_->player_slots;
     }
 
 #ifndef _WIN32
     {
+        constexpr std::uint64_t kInf = std::numeric_limits<std::uint64_t>::max();
         struct rlimit rl{};
-        if (::getrlimit(RLIMIT_NOFILE, &rl) == 0 &&
-            rl.rlim_cur != RLIM_INFINITY &&
-            rl.rlim_cur < static_cast<rlim_t>(configured_max_total + 256)) {
-            Logger::Instance().Warn(
-                "Process open file descriptor limit (RLIMIT_NOFILE=" +
-                std::to_string(static_cast<unsigned long long>(rl.rlim_cur)) +
-                ") is lower than recommended (" +
-                std::to_string(configured_max_total + 256) +
-                " for network.max_http_connections=" +
-                std::to_string(configured_max_total) +
-                "): Linux may reject HTTP audio connections before reaching the configured limit. "
-                "Raise it with 'ulimit -n <N>', 'LimitNOFILE=' in systemd, or /etc/security/limits.conf.");
+        if (::getrlimit(RLIMIT_NOFILE, &rl) == 0) {
+            const std::uint64_t soft = (rl.rlim_cur == RLIM_INFINITY)
+                ? kInf : static_cast<std::uint64_t>(rl.rlim_cur);
+            const std::uint64_t hard = (rl.rlim_max == RLIM_INFINITY)
+                ? kInf : static_cast<std::uint64_t>(rl.rlim_max);
+            const std::uint64_t needed = static_cast<std::uint64_t>(configured_max_total) + 256u;
+            const FileLimitPlan plan = PlanFileDescriptorLimit(soft, hard, needed);
+
+            std::uint64_t final_soft = soft;
+            bool setrlimit_failed = false;
+            if (plan.raise) {
+                struct rlimit next_rl = rl;
+                next_rl.rlim_cur = static_cast<rlim_t>(plan.new_soft);
+                if (::setrlimit(RLIMIT_NOFILE, &next_rl) == 0) {
+                    final_soft = plan.new_soft;
+                    if (!plan.warn) {
+                        Logger::Instance().Debug(
+                            "Raised open file descriptor limit from " + std::to_string(soft) +
+                            " to " + std::to_string(final_soft) +
+                            " for " + std::to_string(configured_max_total) + " HTTP audio connections.");
+                    }
+                } else {
+                    setrlimit_failed = true;
+                }
+            }
+            if (plan.warn || setrlimit_failed) {
+                const std::string hard_str = (hard == kInf) ? "unlimited" : std::to_string(hard);
+                const std::string slots_note = (configured_player_slots > 0)
+                    ? (" (" + std::to_string(configured_player_slots) + " player slots)")
+                    : "";
+                Logger::Instance().Warn(
+                    "Process open file descriptor limit is " + std::to_string(final_soft) +
+                    " (hard limit " + hard_str + "), lower than the " + std::to_string(needed) +
+                    " needed for " + std::to_string(configured_max_total) +
+                    " HTTP audio connections" + slots_note +
+                    ": Linux may reject audio connections. Raise the hard limit with 'LimitNOFILE=' in systemd or 'nofile' in /etc/security/limits.conf.");
+            }
         }
     }
-#else
-    (void)configured_max_total;
 #endif
 
     try {
@@ -870,7 +922,13 @@ bool HttpStreamingServer::Start(const std::string& bind_ip, std::uint16_t port, 
         }
 
         if (log_listen) {
-            Logger::Instance().Info("HTTP audio streaming server listening on " + addr.to_string() + ":" + std::to_string(impl_->bound_port));
+            const std::string limit_note = (configured_player_slots > 0)
+                ? (" (connection limit " + std::to_string(configured_max_total) +
+                   " for " + std::to_string(configured_player_slots) + " player slots)")
+                : (" (connection limit " + std::to_string(configured_max_total) + ", player slots unknown)");
+            Logger::Instance().Info(
+                "HTTP audio streaming server listening on " + addr.to_string() + ":" +
+                std::to_string(impl_->bound_port) + limit_note);
         }
         return true;
     } catch (const std::exception& ex) {

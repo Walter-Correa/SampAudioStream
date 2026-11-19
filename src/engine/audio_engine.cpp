@@ -418,9 +418,11 @@ bool AudioEngine::Initialize() {
         port = static_cast<std::uint16_t>(samp_port > 0 ? samp_port + 1 : 7778);
     }
 
+    const std::int32_t max_players = host_.GetMaxPlayers();
     http_server_.SetConnectionLimits(
-        config_.max_http_connections > 0 ? config_.max_http_connections : 1024,
-        config_.max_connections_per_ip > 0 ? config_.max_connections_per_ip : 64);
+        ComputeHttpConnectionLimit(max_players),
+        config_.max_connections_per_ip > 0 ? config_.max_connections_per_ip : 64,
+        max_players);
 
     std::string err;
     if (!http_server_.Start(config_.bind_ip, port, err, config_.log_http_listen)) {

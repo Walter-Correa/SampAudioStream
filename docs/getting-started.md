@@ -167,15 +167,15 @@ When you start the server, SampAudioStream waits up to **1.5 seconds (`1500 ms`)
 1. **Plugin / Component, Extractor & Public IPv4 grouped output:**
    * SA-MP:
      ```text
-     [SampAudioStream] HTTP audio streaming server listening on 0.0.0.0:7778
-     [SampAudioStream] SampAudioStream v2.1.0 [SA-MP] loaded (config: scriptfiles/SampAudioStream/config.json, HTTP port: 7778)
+     [SampAudioStream] HTTP audio streaming server listening on 0.0.0.0:7778 (connection limit 264 for 100 player slots)
+     [SampAudioStream] SampAudioStream v2.1.1 [SA-MP] loaded (config: scriptfiles/SampAudioStream/config.json, HTTP port: 7778)
      [SampAudioStream] Audio extractor subsystem ready.
      [SampAudioStream] Detected public server IPv4: 203.0.113.10
      ```
    * open.mp:
      ```text
-     [SampAudioStream] HTTP audio streaming server listening on 0.0.0.0:7778
-     [SampAudioStream] SampAudioStream v2.1.0 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: 7778)
+     [SampAudioStream] HTTP audio streaming server listening on 0.0.0.0:7778 (connection limit 264 for 100 player slots)
+     [SampAudioStream] SampAudioStream v2.1.1 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: 7778)
      [SampAudioStream] Audio extractor subsystem ready.
      [SampAudioStream] Detected public server IPv4: 203.0.113.10
      ```
@@ -214,8 +214,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
 | `network.http_port` | `0` | `0` (`server_port + 1`) or `1..65535` |
 | `network.lan_aware_urls` | `true` | Serve local NIC/`127.0.0.1` URLs to LAN players |
 | `network.allow_private_network_urls` | `false` | Anti-SSRF block on private/loopback/metadata IPs |
-| `network.max_http_connections` | `1024` | `64..8192` simultaneous open HTTP audio connections *(if your firewall has a per-IP rule such as `iptables connlimit`, set it >= `network.max_connections_per_ip`)* |
-| `network.max_connections_per_ip` | `64` | `1..4096` simultaneous open HTTP audio connections per IP *(raise on CGNAT/mobile/LAN-heavy servers)* |
+| `network.max_connections_per_ip` | `64` | `1..4096` simultaneous open HTTP audio connections per IP *(raise on CGNAT/mobile/LAN-heavy servers; if your firewall has a per-IP rule such as `iptables connlimit`, set it >= this value)* |
 | `audio.mp3_bitrate_kbps` | `128` | `64`, `96`, `128`, `160`, `192`, `256`, `320` |
 | `audio.mp3_sample_rate` | `48000` | `32000`, `44100`, `48000` Hz |
 | `audio.transcoder_burst_ms` | `6000` | `2000..15000` ms initial burst lead buffer |
@@ -250,6 +249,8 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
 | `logging.public_ip_detected` | `true` | Log auto-detected public IPv4 |
 | `logging.extractor_status` | `true` | Log `yt-dlp` / JS runtime (`QuickJS-ng` / `Deno`) provisioning progress |
 
+> The total number of HTTP audio connections is managed automatically: `player slots × 2 + 64` (minimum 128, up to 2064), read from `maxplayers` (SA-MP) or `max_players` (open.mp). On Linux, the plugin raises the process open file limit by itself when needed; it only warns if the system hard limit is too low.
+
 ### Complete Config Examples
 * **SA-MP:** `scriptfiles/SampAudioStream/config.json` (auto-created on first launch):
   ```json
@@ -261,7 +262,6 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
           "http_port": 0,
           "lan_aware_urls": true,
           "allow_private_network_urls": false,
-          "max_http_connections": 1024,
           "max_connections_per_ip": 64
       },
       "audio":
@@ -329,7 +329,6 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
               "http_port": 0,
               "lan_aware_urls": true,
               "allow_private_network_urls": false,
-              "max_http_connections": 1024,
               "max_connections_per_ip": 64
           },
           "audio":
@@ -395,7 +394,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
 | :--- | :--- | :--- |
 | Log shows `32-bit libcurl (libcurl.so.4) not found` | Linux host is missing 32-bit `libcurl` | Run the exact install command printed in the log, or pick your distro in [1. Requirements](#1-requirements), then restart the server |
 | Players hear nothing and no error appears *(log shows `Player <id> did not connect to the audio stream within 15 s (HTTP port <port>/TCP)`)* | The plugin's HTTP TCP port is blocked in the server firewall or `network.public_ip` is wrong | Open TCP `network.http_port` (by default `server_port + 1`, e.g. `7778`) in your host firewall/control panel — e.g. `sudo ufw allow 7778/tcp` or `sudo iptables -A INPUT -p tcp --dport 7778 -j ACCEPT` followed by `sudo netfilter-persistent save` (TCP and UDP are separate ports, so another service using the same port on **UDP** such as sampvoice does **not** conflict) |
-| Some players hear nothing on busy servers / mobile players *(log shows `HTTP audio connection ... rejected: per-IP limit reached` or `total connection limit reached`)* | The server hit `network.max_connections_per_ip` (CGNAT/mobile carriers, LAN houses) or `network.max_http_connections`, or a firewall per-IP limit is lower | Raise `network.max_connections_per_ip` (`1..4096`) and/or `network.max_http_connections` (`64..8192`) in config, ensure any firewall per-IP cap (e.g. `iptables connlimit`) is **>= `network.max_connections_per_ip`**, and on Linux raise `RLIMIT_NOFILE` if warned at startup (`ulimit -n`, systemd `LimitNOFILE=`, or `/etc/security/limits.conf`) |
+| Some players hear nothing on busy servers / mobile players *(log shows `HTTP audio connection ... rejected: per-IP limit reached` or `total connection limit reached`)* | The server hit `network.max_connections_per_ip` (CGNAT/mobile carriers, LAN houses), a firewall per-IP limit is lower, or non-player connections exhausted the automatic slot-derived total limit (`player slots × 2 + 64`) | Raise `network.max_connections_per_ip` (`1..4096`) in config and ensure any firewall per-IP cap (e.g. `iptables connlimit`) is **>= `network.max_connections_per_ip`**. If `total connection limit reached` appears, inspect incoming traffic for non-player connections. On Linux, if the startup log warns about the open file limit, raise the hard limit (`LimitNOFILE=` in systemd or `nofile` in `/etc/security/limits.conf`) |
 | Only you (on the server machine) hear audio | `network.http_port` is blocked externally / not port-forwarded | Keep `network.lan_aware_urls: true` for LAN testing, and open + port-forward TCP `network.http_port` externally so remote players can reach `network.public_ip` |
 | Error code `6` (`SA_ERR_EXTRACTOR_NOT_READY`) | `yt-dlp` / `qjs` is still downloading or blocked | Wait a few seconds after startup and check the console log; ensure outbound HTTPS access is allowed |
 | Error code `1` (`"URL not allowed"`) | Target resolves to loopback/private IP (anti-SSRF) | Use a public URL, or set `allow_private_network_urls` to `true` only for trusted internal audio servers |

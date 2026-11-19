@@ -64,7 +64,6 @@ constexpr ConfigFieldSpec kConfigSchema[] = {
     PortSpec("network", "http_port", "network.http_port", &PluginConfig::http_port),
     BoolSpec("network", "lan_aware_urls", "network.lan_aware_urls", &PluginConfig::lan_aware_urls),
     BoolSpec("network", "allow_private_network_urls", "network.allow_private_network_urls", &PluginConfig::allow_private_network_urls),
-    UintSpec("network", "max_http_connections", "network.max_http_connections", 64, 8192, false, &PluginConfig::max_http_connections),
     UintSpec("network", "max_connections_per_ip", "network.max_connections_per_ip", 1, 4096, false, &PluginConfig::max_connections_per_ip),
 
     // audio
@@ -775,6 +774,13 @@ ServerCfgInfo ConfigManager::LoadServerCfg(const std::string& path) {
                         }
                     }
                 }
+                if (j.contains("max_players") && j["max_players"].is_number_integer()) {
+                    long mp = j["max_players"].get<long>();
+                    if (mp >= 1 && mp <= 1000) {
+                        info.max_players = static_cast<std::int32_t>(mp);
+                        info.has_max_players = true;
+                    }
+                }
             } catch (...) {
             }
         }
@@ -809,6 +815,12 @@ ServerCfgInfo ConfigManager::LoadServerCfg(const std::string& path) {
         } else if (key == "bind") {
             info.bind_ip = val;
             info.has_bind = true;
+        } else if (key == "maxplayers") {
+            long mp = std::strtol(val.c_str(), nullptr, 10);
+            if (mp >= 1 && mp <= 1000) {
+                info.max_players = static_cast<std::int32_t>(mp);
+                info.has_max_players = true;
+            }
         }
     }
     return info;

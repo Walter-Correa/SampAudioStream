@@ -30,7 +30,7 @@ public:
 
     // IComponent
     StringView componentName() const override { return "SampAudioStream"; }
-    SemanticVersion componentVersion() const override { return SemanticVersion(2, 1, 0, 0); }
+    SemanticVersion componentVersion() const override { return SemanticVersion(2, 1, 1, 0); }
     void onLoad(ICore* c) override;
     void onInit(IComponentList* components) override;
     void onReady() override;
@@ -57,6 +57,7 @@ public:
     void Log(LogSeverity severity, const std::string& message) override;
     std::int32_t GetServerPort() const override;
     std::string GetServerBindIp() const override;
+    std::int32_t GetMaxPlayers() const override;
 
     bool TracksDisconnectEvents() const override { return true; }
     bool UsesComponentLifecycleEvents() const override { return true; }

@@ -37,6 +37,7 @@ public:
 
     std::int32_t GetServerPort() const override;
     std::string GetServerBindIp() const override;
+    std::int32_t GetMaxPlayers() const override;
 
     bool TracksDisconnectEvents() const override { return disconnect_event_seen_.load(); }
     bool TracksGameModeLifecycle() const override { return true; }
@@ -65,6 +66,7 @@ private:
     AMX_NATIVE FindNativeFunc(AMX* amx, const char* name) const;
     bool PatchNative(AMX* amx, const char* name, AMX_NATIVE replacement, AMX_NATIVE* out_original);
     void CaptureServerNatives(AMX* amx);
+    std::int32_t ReadServerVarInt(const char* name, std::int32_t fallback) const;
 
     LogPrintfFn logprintf_{nullptr};
     AudioEngine* engine_{nullptr};

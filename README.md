@@ -148,6 +148,12 @@ ctest --test-dir build -R core_tests --output-on-failure
 <details>
 <summary>Show the version history</summary>
 
+### 2.1.1 — 19/11/2026
+- **Automatic HTTP Connection Limits (`network.max_http_connections` removed)**:
+  - The total number of simultaneous HTTP audio connections is now derived from the server's player slots (`player slots × 2 + 64`, minimum `128`, up to `2064`), read from `maxplayers` (SA-MP `server.cfg`) or `max_players` (open.mp `config.json`). Existing config files that still contain `network.max_http_connections` keep loading without warnings; the key is simply ignored.
+  - On Linux, the plugin now raises the process open file descriptor soft limit (`RLIMIT_NOFILE`) by itself, only up to what the connection limit needs, and warns only when the system hard limit is too low.
+  - The startup listening log now shows the computed limit and player slots, and the total connection limit warning no longer points to a config key.
+
 ### 2.1.0 — 19/11/2026
 - **Live Internet Radio Text & Script Overrides (`73 SA_*` Natives, `19` Callbacks)**:
   - Added periodic ICY `StreamTitle` polling (`audio.live_title_poll_seconds`, default `30s`, `0` to disable or `10..300s`, capped at 2 concurrent `64 KB` probes) for direct Shoutcast/Icecast radio streams (including extension mounts like `.mp3`), while permanently skipping finite files (`Content-Length`), HLS playlists, and `yt-dlp` extractors.

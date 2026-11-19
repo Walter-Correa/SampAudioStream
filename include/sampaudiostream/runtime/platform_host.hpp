@@ -27,6 +27,7 @@ public:
 
     virtual std::int32_t GetServerPort() const = 0;
     virtual std::string GetServerBindIp() const = 0;
+    virtual std::int32_t GetMaxPlayers() const = 0;
 
     virtual bool TracksDisconnectEvents() const { return false; }
     virtual bool UsesComponentLifecycleEvents() const { return false; }

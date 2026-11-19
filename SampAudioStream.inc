@@ -1,6 +1,6 @@
 /*
  * SampAudioStream - Universal Audio Streaming Plugin/Component for SA-MP & open.mp
- * Version: 2.1.0
+ * Version: 2.1.1
  *
  * Features:
  *  - YouTube, SoundCloud, Twitch, Vimeo, TikTok, Direct MP3/OGG/WAV/FLAC & HLS streams
@@ -26,8 +26,8 @@
 
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
 #define SAMPAUDIOSTREAM_VERSION_MINOR  (1)
-#define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.1.0"
+#define SAMPAUDIOSTREAM_VERSION_PATCH  (1)
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.1.1"
 
 // -----------------------------------------------------------------------------
 // Constants & Enums

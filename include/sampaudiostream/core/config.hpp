@@ -13,7 +13,6 @@ struct PluginConfig {
     std::uint16_t http_port{0}; // 0 = server_port + 1
     bool allow_private_network_urls{false};
     bool lan_aware_urls{true};
-    std::uint32_t max_http_connections{1024};
     std::uint32_t max_connections_per_ip{64};
     std::uint32_t max_concurrent_streams{64};
     std::uint32_t max_queue_per_channel{50};
@@ -54,8 +53,10 @@ struct PluginConfig {
 struct ServerCfgInfo {
     std::int32_t port{7777};
     std::string bind_ip{"0.0.0.0"};
+    std::int32_t max_players{0};
     bool has_port{false};
     bool has_bind{false};
+    bool has_max_players{false};
 };
 
 struct OmpConfigReader {
