@@ -1405,6 +1405,7 @@ ResolveResult StreamResolver::ResolveUncached(const std::string& url_or_query, c
         "--ignore-config",
         "--dump-single-json",
         "--no-playlist",
+        "--playlist-items", "1",
         "-f", "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio[ext=ogg]/bestaudio/best"
     };
     if (config_.debug_logging) {

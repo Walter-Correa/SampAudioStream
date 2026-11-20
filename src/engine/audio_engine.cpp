@@ -450,9 +450,7 @@ bool AudioEngine::Initialize() {
     local_interfaces_ = DiscoverLocalIpv4Interfaces(config_.bind_ip);
     resolver_.MaybePruneYtDlpCache(true);
 
-    if (config_.persist_channels) {
-        LoadPersistedChannelsOnInit();
-    }
+    LoadPersistedChannelsOnInit();
 
     {
         std::lock_guard<std::mutex> slk(startup_log_mutex_);
@@ -764,9 +762,7 @@ void AudioEngine::Shutdown() {
     lifecycle_stopping_.store(true);
     shutting_down_.store(true);
     alive_token_->store(false);
-    if (config_.persist_channels) {
-        FlushDirtyChannels(/*sync_all=*/true, /*bypass_debounce=*/true);
-    }
+    FlushDirtyChannels(/*sync_all=*/true, /*bypass_debounce=*/true);
     {
         std::lock_guard<std::mutex> slk(startup_log_mutex_);
         startup_wait_active_ = false;
@@ -865,9 +861,25 @@ void AudioEngine::Reset() {
         }
         active_searches_.clear();
 
-        if (!config_.persist_channels) {
-            destroyed_channel_ids = sorted_channel_ids_;
-            for (auto& [id, ch] : channels_) {
+        std::unordered_set<PlayerId> affected_set;
+        affected_set.reserve(player_arbitration_.size());
+
+        std::unordered_set<ChannelId> destroyed_set;
+        for (ChannelId cid : sorted_channel_ids_) {
+            auto cit = channels_.find(cid);
+            if (cit == channels_.end() || !cit->second || !cit->second->persistent) {
+                destroyed_channel_ids.push_back(cid);
+                destroyed_set.insert(cid);
+            }
+        }
+
+        for (ChannelId cid : destroyed_channel_ids) {
+            auto cit = channels_.find(cid);
+            if (cit != channels_.end() && cit->second) {
+                auto& ch = cit->second;
+                if (ch->persist_cancelled) {
+                    ch->persist_cancelled->store(true);
+                }
                 if (ch->active_run) {
                     ch->active_run->cancel_flag.store(true);
                 }
@@ -877,88 +889,107 @@ void AudioEngine::Reset() {
                 ch->state.store(StreamState::Stopped);
                 if (ch->buffer) ch->buffer->Close();
                 http_server_.UnregisterEndpoint(ch->token);
+                for (PlayerId pid : ch->listeners) {
+                    player_channels_.erase(pid);
+                    affected_set.insert(pid);
+                }
+                for (PlayerId pid : ch->range_listeners) {
+                    affected_set.insert(pid);
+                }
                 old_channels.push_back(ch);
+                channels_.erase(cit);
             }
-            channels_.clear();
-            sorted_channel_ids_.clear();
-            player_channels_.clear();
-            // Keep connected players' mute flags across GMX even when channels do not persist.
-            for (auto it = player_arbitration_.begin(); it != player_arbitration_.end();) {
-                if (!it->second.muted) {
-                    it = player_arbitration_.erase(it);
-                } else {
-                    it->second.personal_stream_id = INVALID_STREAM_ID;
-                    it->second.channel_id = INVALID_CHANNEL_ID;
-                    it->second.global_sources.clear();
-                    it->second.client_source_kind = AudioSourcePriority::None;
-                    it->second.client_source_id = 0;
-                    it->second.client_generation = 0;
-                    it->second.client_options_version = 0;
-                    it->second.client_distance = 0.0f;
-                    it->second.client_url.clear();
-                    ++it;
-                }
+            RemoveSortedChannelIdLocked(cid);
+        }
+
+        if (!destroyed_set.empty()) {
+            pending_channel_completions_.erase(
+                std::remove_if(pending_channel_completions_.begin(), pending_channel_completions_.end(),
+                    [&](const PendingChannelCompletion& item) {
+                        return !item.channel || destroyed_set.count(item.channel->id) > 0;
+                    }),
+                pending_channel_completions_.end());
+            pending_delayed_channel_starts_.erase(
+                std::remove_if(pending_delayed_channel_starts_.begin(), pending_delayed_channel_starts_.end(),
+                    [&](const PendingDelayedChannelStart& item) {
+                        return !item.channel || destroyed_set.count(item.channel->id) > 0;
+                    }),
+                pending_delayed_channel_starts_.end());
+        }
+
+        for (auto& [pid, arb] : player_arbitration_) {
+            bool changed = (arb.personal_stream_id != INVALID_STREAM_ID);
+            arb.personal_stream_id = INVALID_STREAM_ID;
+            if (arb.channel_id != INVALID_CHANNEL_ID && destroyed_set.count(arb.channel_id) > 0) {
+                arb.channel_id = INVALID_CHANNEL_ID;
+                changed = true;
             }
-            pending_channel_completions_.clear();
-            pending_delayed_channel_starts_.clear();
-        } else {
-            std::unordered_set<PlayerId> affected_set;
-            affected_set.reserve(player_arbitration_.size());
-            for (auto& [pid, arb] : player_arbitration_) {
-                bool had_non_channel = (arb.personal_stream_id != INVALID_STREAM_ID);
-                arb.personal_stream_id = INVALID_STREAM_ID;
-                auto before_sz = arb.global_sources.size();
-                arb.global_sources.erase(
-                    std::remove_if(arb.global_sources.begin(), arb.global_sources.end(),
-                        [](const GlobalAudioSourceRef& ref) { return !ref.is_channel; }),
-                    arb.global_sources.end());
-                if (arb.global_sources.size() != before_sz) {
-                    had_non_channel = true;
+            auto before_sz = arb.global_sources.size();
+            arb.global_sources.erase(
+                std::remove_if(arb.global_sources.begin(), arb.global_sources.end(),
+                    [](const GlobalAudioSourceRef& ref) { return !ref.is_channel; }),
+                arb.global_sources.end());
+            if (arb.global_sources.size() != before_sz) {
+                changed = true;
+            }
+            if (changed) {
+                affected_set.insert(pid);
+            }
+        }
+
+        for (auto& [cid, ch] : channels_) {
+            (void)cid;
+            if (!ch) continue;
+            if (ch->spatial.attach_player_id != INVALID_PLAYER_ID || ch->spatial.attach_vehicle_id > 0) {
+                // Vehicles and player IDs do not survive GMX; keep last coordinates as fixed position
+                ch->spatial.attach_player_id = INVALID_PLAYER_ID;
+                ch->spatial.attach_vehicle_id = 0;
+                ch->spatial.use_position = true;
+                ++ch->spatial_version;
+                MarkChannelDirtyLocked(*ch);
+                for (PlayerId pid : ch->listeners) {
+                    affected_set.insert(pid);
                 }
-                if (had_non_channel) {
+                for (PlayerId pid : ch->range_listeners) {
                     affected_set.insert(pid);
                 }
             }
-            for (auto& [cid, ch] : channels_) {
-                (void)cid;
-                if (!ch) continue;
-                if (ch->spatial.attach_player_id != INVALID_PLAYER_ID || ch->spatial.attach_vehicle_id > 0) {
-                    // Vehicles and player IDs do not survive GMX; keep last coordinates as fixed position
-                    ch->spatial.attach_player_id = INVALID_PLAYER_ID;
-                    ch->spatial.attach_vehicle_id = 0;
-                    ch->spatial.use_position = true;
-                    ++ch->spatial_version;
-                    MarkChannelDirtyLocked(*ch);
-                    for (PlayerId pid : ch->listeners) {
-                        affected_set.insert(pid);
-                    }
-                    for (PlayerId pid : ch->range_listeners) {
-                        affected_set.insert(pid);
-                    }
-                }
+        }
+
+        for (PlayerId pid : affected_set) {
+            ReconcilePlayerLocked(pid, nullptr, cmds);
+        }
+
+        // Keep connected players' mute flags across GMX; prune idle unmuted entries.
+        for (auto it = player_arbitration_.begin(); it != player_arbitration_.end();) {
+            if (!it->second.muted &&
+                it->second.personal_stream_id == INVALID_STREAM_ID &&
+                it->second.channel_id == INVALID_CHANNEL_ID &&
+                it->second.global_sources.empty() &&
+                it->second.client_source_kind == AudioSourcePriority::None) {
+                it = player_arbitration_.erase(it);
+            } else {
+                ++it;
             }
-            for (PlayerId pid : affected_set) {
-                ReconcilePlayerLocked(pid, nullptr, cmds);
-            }
-            pending_restored_channel_ids_ = sorted_channel_ids_;
-            pending_restore_notifications_ = !pending_restored_channel_ids_.empty();
-            if (host_.TracksGameModeLifecycle()) {
-                gamemode_loaded_ = false;
-            }
+        }
+
+        pending_restored_channel_ids_ = sorted_channel_ids_;
+        pending_restore_notifications_ = !pending_restored_channel_ids_.empty();
+        if (host_.TracksGameModeLifecycle()) {
+            gamemode_loaded_ = false;
         }
     }
 
     resolver_.PollCancellations();
-    if (!config_.persist_channels) {
+    if (pending_restored_channel_ids_.empty()) {
         MainThreadDispatcher::Instance().Clear();
-        for (ChannelId cid : destroyed_channel_ids) {
-            host_.DispatchPawnCallback("OnAudioStreamChannelDestroyed", {
-                cid,
-                static_cast<std::int32_t>(ChannelDestroyReason::Manual)
-            });
-        }
-    } else {
-        ApplyPlayerAudioCommands(cmds);
+    }
+    ApplyPlayerAudioCommands(cmds);
+    for (ChannelId cid : destroyed_channel_ids) {
+        host_.DispatchPawnCallback("OnAudioStreamChannelDestroyed", {
+            cid,
+            static_cast<std::int32_t>(ChannelDestroyReason::Manual)
+        });
     }
 }
 
@@ -1053,7 +1084,7 @@ void AudioEngine::Tick() {
     if (!ran_unconnected_check && warn_timeout_ms < 1000) {
         CheckUnconnectedClients(now);
     }
-    if (config_.persist_channels && has_dirty_channels_) {
+    if (has_dirty_channels_) {
         FlushDirtyChannels(/*sync_all=*/false, /*bypass_debounce=*/false);
     }
 
@@ -4459,9 +4490,11 @@ ChannelId AudioEngine::CreateChannel(
     PlayerId creator_player_id,
     const std::string& password,
     ChannelDestroyMode destroy_mode,
-    std::int32_t destroy_timeout_seconds) {
+    std::int32_t destroy_timeout_seconds,
+    bool persistent) {
     auto ch = std::make_shared<SyncChannel>();
     ch->name = name;
+    ch->persistent = persistent;
     ch->token = "ch_" + GenerateToken();
     if (!password.empty()) {
         ch->password_salt = GenerateToken();
@@ -4559,7 +4592,7 @@ bool AudioEngine::DestroyChannelInternal(ChannelId channel_id, ChannelDestroyRea
     if (old_run) old_run->cancel_flag.store(true);
     if (ch->buffer) ch->buffer->Close();
     http_server_.UnregisterEndpoint(ch->token);
-    if (config_.persist_channels) {
+    if (ch->persistent) {
         DeleteChannelPersistFile(channel_id);
     }
 
@@ -6511,13 +6544,14 @@ AudioEngine::ChannelPersistSnapshot AudioEngine::CaptureChannelPersistSnapshotLo
     snap.spatial.attach_player_id = INVALID_PLAYER_ID; // Player/vehicle IDs do not survive server restarts
     snap.spatial.attach_vehicle_id = 0;
     snap.auto_listen = ch.auto_listen;
+    snap.persistent = ch.persistent;
     snap.revision = ch.persist_revision;
     snap.cancelled = ch.persist_cancelled;
     return snap;
 }
 
 void AudioEngine::MarkChannelDirtyLocked(SyncChannel& ch) {
-    if (!config_.persist_channels) return;
+    if (!ch.persistent) return;
     if (ch.persist_cancelled && ch.persist_cancelled->load()) return;
     ++ch.persist_revision;
     ch.persist_dirty = true;
@@ -6552,6 +6586,7 @@ bool AudioEngine::WriteChannelPersistFile(const ChannelPersistSnapshot& snap, st
 
     nlohmann::json doc = {
         {"format_version", 1},
+        {"persistent", snap.persistent},
         {"id", snap.id},
         {"name", snap.name},
         {"password_salt", snap.password_salt},
@@ -6621,8 +6656,6 @@ void AudioEngine::DeleteChannelPersistFile(ChannelId id) {
 }
 
 void AudioEngine::FlushDirtyChannels(bool sync_all, bool bypass_debounce) {
-    if (!config_.persist_channels) return;
-
     std::vector<ChannelPersistSnapshot> to_write;
     auto now = std::chrono::steady_clock::now();
     {
@@ -6630,7 +6663,7 @@ void AudioEngine::FlushDirtyChannels(bool sync_all, bool bypass_debounce) {
         bool any_remaining_dirty = false;
         for (const auto& [cid, ch] : channels_) {
             (void)cid;
-            if (!ch) continue;
+            if (!ch || !ch->persistent) continue;
             bool needs_flush = ch->persist_dirty || (sync_all && ch->persist_write_in_flight);
             if (!needs_flush) continue;
             if (ch->persist_cancelled && ch->persist_cancelled->load()) {
@@ -6949,6 +6982,9 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
         return a.snap.id < b.snap.id;
     });
 
+    // Reserve all disk IDs (even those skipped above max_channels) so new channels cannot reuse them.
+    ChannelId max_disk_id = sorted.empty() ? 0 : sorted.back().snap.id;
+
     const std::size_t max_ch = std::max<std::uint32_t>(1, config_.max_channels);
     if (sorted.size() > max_ch) {
         std::size_t skipped = sorted.size() - max_ch;
@@ -6960,15 +6996,11 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
     }
 
     auto boot_now = std::chrono::steady_clock::now();
-    ChannelId max_restored_id = 0;
-    for (const auto& rec : sorted) {
-        if (rec.snap.id > max_restored_id) max_restored_id = rec.snap.id;
-    }
 
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        if (next_channel_id_.load() <= max_restored_id) {
-            next_channel_id_.store(max_restored_id + 1);
+        if (next_channel_id_.load() <= max_disk_id) {
+            next_channel_id_.store(max_disk_id + 1);
         }
 
         for (const auto& rec : sorted) {
@@ -6985,6 +7017,7 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
             auto ch = std::make_shared<SyncChannel>();
             ch->id = s.id;
             ch->name = s.name;
+            ch->persistent = true;
             ch->token = "ch_" + GenerateToken();
             ch->password_salt = s.password_salt;
             ch->password_hash = s.password_hash;

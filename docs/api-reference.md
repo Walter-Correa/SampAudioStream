@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.1.1`), covering all **73 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.2.0`), covering all **73 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -177,10 +177,16 @@ Cancels any pending asynchronous search for `playerid` so its callbacks will not
 
 ### `SA_CreateAudioStreamChannel`
 ```pawn
-native SA_CreateAudioStreamChannel(const name[], creator_playerid = INVALID_PLAYER_ID, const password[] = "", E_SA_CHANNEL_DESTROY_MODE:destroy_mode = SA_CHANNEL_DESTROY_MANUAL, destroy_timeout_sec = 0);
+native SA_CreateAudioStreamChannel(const name[], creator_playerid = INVALID_PLAYER_ID, const password[] = "", E_SA_CHANNEL_DESTROY_MODE:destroy_mode = SA_CHANNEL_DESTROY_MANUAL, destroy_timeout_sec = 0, bool:persistent = true);
 ```
-Creates a new persistent synchronized audio channel with a unique HTTP live endpoint. If `creator_playerid` is a connected player, their name is stored as the creator; otherwise `"Server"` is stored. Optional password protection (`""` = public) and automatic destruction mode (`Manual`, `OnDisconnect`, or `Timeout` when creator is offline) can be configured on creation. Automatic destruction modes (`ON_DISCONNECT` and `ON_TIMEOUT`) require a valid connected creator; server-owned channels (`INVALID_PLAYER_ID`) stay in `SA_CHANNEL_DESTROY_MANUAL`.
+Creates a new synchronized audio channel with a unique HTTP live endpoint. If `creator_playerid` is a connected player, their name is stored as the creator; otherwise `"Server"` is stored. Optional password protection (`""` = public) and automatic destruction mode (`Manual`, `OnDisconnect`, or `Timeout` when creator is offline) can be configured on creation. Automatic destruction modes (`ON_DISCONNECT` and `ON_TIMEOUT`) require a valid connected creator; server-owned channels (`INVALID_PLAYER_ID`) stay in `SA_CHANNEL_DESTROY_MANUAL`.
+* **`persistent`:** `true` (default) = saved to disk (`scriptfiles/SampAudioStream/channels/`), restored across server restarts, and kept alive across GMX (`OnAudioStreamChannelRestored`); `false` = in-memory only, never written to disk, not restored after restart, and destroyed on GMX (`OnAudioStreamChannelDestroyed`).
 * **Returns:** Valid `channelid` (`>= 1`), or `INVALID_AUDIO_CHANNEL_ID` (`-1`).
+
+```pawn
+// Temporary boombox channel for a player: lives only in RAM and disappears on GMX/restart
+new boombox_ch = SA_CreateAudioStreamChannel("Boombox", playerid, "", SA_CHANNEL_DESTROY_ON_DISCONNECT, 0, .persistent = false);
+```
 
 ### `SA_DestroyAudioStreamChannel`
 ```pawn
@@ -654,7 +660,7 @@ Fired once per search result before `OnAudioStreamSearchResults`. Build the YouT
 ```pawn
 forward OnAudioStreamChannelDestroyed(channelid, E_SA_CHANNEL_DESTROY_REASON:reason);
 ```
-Fired asynchronously on the **next server tick** (after `SA_DestroyAudioStreamChannel` or the triggering lifecycle hook/event returns) whenever a synchronized radio channel is genuinely destroyed (manually via `SA_DestroyAudioStreamChannel`, automatically on creator disconnect / boot grace expiration, or upon offline creator timeout expiration). When `channels.persist_channels` is `false`, GMX destroys all channels and notifies remaining loaded filterscripts directly during reset; when `channels.persist_channels` is `true`, channels survive GMX and receive `OnAudioStreamChannelRestored` instead.
+Fired asynchronously on the **next server tick** (after `SA_DestroyAudioStreamChannel` or the triggering lifecycle hook/event returns) whenever a synchronized radio channel is genuinely destroyed (manually via `SA_DestroyAudioStreamChannel`, automatically on creator disconnect / boot grace expiration, or upon offline creator timeout expiration). During GMX (`OnGameModeExit` / `Reset`), non-persistent channels (`persistent = false`) are destroyed immediately and notify remaining loaded filterscripts directly, whereas persistent channels (`persistent = true`) stay alive and receive `OnAudioStreamChannelRestored`.
 
 ### `OnAudioStreamChannelTrackWaiting`
 ```pawn
@@ -704,7 +710,7 @@ Fired when a track on `channelid` fails to resolve or transcode (or when a resto
 ```pawn
 forward OnAudioStreamChannelRestored(channelid, const name[], const creator_name[]);
 ```
-Fired on the first tick after the gamemode loads (`OnGameModeInit` completes) for each channel restored from disk on server startup or kept alive across GMX when `channels.persist_channels` is `true`.
+Fired on the first tick after the gamemode loads (`OnGameModeInit` completes) for each persistent channel (`persistent = true`) restored from disk on server startup or kept alive across GMX.
 
 ### `OnAudioStreamChannelPlaylistQueued`
 ```pawn
@@ -753,9 +759,9 @@ public OnAudioStreamChannelLiveTitleChange(channelid, const title[])
 ### Constants
 ```pawn
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
-#define SAMPAUDIOSTREAM_VERSION_MINOR  (1)
-#define SAMPAUDIOSTREAM_VERSION_PATCH  (1)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.1.1"
+#define SAMPAUDIOSTREAM_VERSION_MINOR  (2)
+#define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.2.0"
 
 #define INVALID_AUDIO_STREAM_ID  (-1)
 #define INVALID_AUDIO_CHANNEL_ID (-1)

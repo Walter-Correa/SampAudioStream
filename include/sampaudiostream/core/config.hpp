@@ -17,7 +17,6 @@ struct PluginConfig {
     std::uint32_t max_concurrent_streams{64};
     std::uint32_t max_queue_per_channel{50};
     std::uint32_t max_channels{100};
-    bool persist_channels{true};
     std::uint32_t channel_restore_grace_seconds{300};
     std::uint32_t max_search_results{10};
     std::uint32_t mp3_bitrate_kbps{128};

@@ -148,7 +148,11 @@ ctest --test-dir build -R core_tests --output-on-failure
 <details>
 <summary>Show the version history</summary>
 
-### 2.1.1 — 19/11/2026
+### 2.2.0 — 20/11/2026
+- **Per-Channel Persistence**:
+  - `SA_CreateAudioStreamChannel` gained a trailing `bool:persistent = true` parameter. Persistent channels are saved and restored as before; non-persistent channels live only in memory, are never written to disk, and are destroyed on GMX. The global `channels.persist_channels` option was removed (old config files keep loading; the key is ignored).
+- **Single-Track Playlist Link Handling**:
+  - Playlist-only YouTube links passed to single-track playback (`SA_PlayAudioStreamForPlayer`, `SA_PlayAudioStream`, hooked `PlayAudioStreamForPlayer`, channel tracks) now resolve only their first entry instead of extracting the whole playlist.
 - **Automatic HTTP Connection Limits (`network.max_http_connections` removed)**:
   - The total number of simultaneous HTTP audio connections is now derived from the server's player slots (`player slots × 2 + 64`, minimum `128`, up to `2064`), read from `maxplayers` (SA-MP `server.cfg`) or `max_players` (open.mp `config.json`). Existing config files that still contain `network.max_http_connections` keep loading without warnings; the key is simply ignored.
   - On Linux, the plugin now raises the process open file descriptor soft limit (`RLIMIT_NOFILE`) by itself, only up to what the connection limit needs, and warns only when the system hard limit is too low.

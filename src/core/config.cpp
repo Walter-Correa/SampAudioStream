@@ -79,7 +79,6 @@ constexpr ConfigFieldSpec kConfigSchema[] = {
     // channels
     UintSpec("channels", "max_channels", "channels.max_channels", 1, 1000, false, &PluginConfig::max_channels),
     UintSpec("channels", "max_queue_per_channel", "channels.max_queue_per_channel", 1, 1000, false, &PluginConfig::max_queue_per_channel),
-    BoolSpec("channels", "persist_channels", "channels.persist_channels", &PluginConfig::persist_channels),
     UintSpec("channels", "channel_restore_grace_seconds", "channels.channel_restore_grace_seconds", 0, 3600, false, &PluginConfig::channel_restore_grace_seconds),
 
     // extractor

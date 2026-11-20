@@ -15,6 +15,7 @@ SampAudioStream supports both **per-player streams** and **world-wide/radius-bas
 | **Replaces Previous Audio** | Automatically stops player's prior personal stream or channel | Multiple global streams can run concurrently across the map |
 
 * **LAN & Loopback Testing (`lan_aware_urls`)**: When enabled (default), local/LAN players automatically receive `127.0.0.1` or the server's matching private LAN IPv4 while remote players receive `public_ip`, without requiring manual config switching.
+* **Playlist links:** a video link that also carries a playlist (`watch?v=...&list=...`) plays only that video. A playlist-only link (`youtube.com/playlist?list=...`) plays only its first entry; to play a whole playlist in sequence, use a synchronized channel with `SA_QueueChannelAudioStreamPlaylist`.
 
 ---
 

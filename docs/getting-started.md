@@ -168,14 +168,14 @@ When you start the server, SampAudioStream waits up to **1.5 seconds (`1500 ms`)
    * SA-MP:
      ```text
      [SampAudioStream] HTTP audio streaming server listening on 0.0.0.0:7778 (connection limit 264 for 100 player slots)
-     [SampAudioStream] SampAudioStream v2.1.1 [SA-MP] loaded (config: scriptfiles/SampAudioStream/config.json, HTTP port: 7778)
+     [SampAudioStream] SampAudioStream v2.2.0 [SA-MP] loaded (config: scriptfiles/SampAudioStream/config.json, HTTP port: 7778)
      [SampAudioStream] Audio extractor subsystem ready.
      [SampAudioStream] Detected public server IPv4: 203.0.113.10
      ```
    * open.mp:
      ```text
      [SampAudioStream] HTTP audio streaming server listening on 0.0.0.0:7778 (connection limit 264 for 100 player slots)
-     [SampAudioStream] SampAudioStream v2.1.1 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: 7778)
+     [SampAudioStream] SampAudioStream v2.2.0 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: 7778)
      [SampAudioStream] Audio extractor subsystem ready.
      [SampAudioStream] Detected public server IPv4: 203.0.113.10
      ```
@@ -225,7 +225,6 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
 | `audio.live_title_poll_seconds` | `30` | `0` (disabled) or `10..300` s interval for polling Shoutcast/Icecast ICY `StreamTitle` updates on live radios. Each poll opens a short HTTP connection up to 64 KB (so the radio briefly sees one extra listener at that interval) |
 | `channels.max_channels` | `100` | `1..1000` max simultaneous synchronized channels |
 | `channels.max_queue_per_channel` | `50` | `1..1000` max queued tracks per synchronized channel |
-| `channels.persist_channels` | `true` | Save/restore channels across restarts & keep channels alive across GMX |
 | `channels.channel_restore_grace_seconds` | `300` | `0..3600` s grace window after boot for restored `OnDisconnect` channels (`0` = remove on boot) |
 | `extractor.bin_dir` | `"scriptfiles/SampAudioStream/bin"` | Directory for `yt-dlp`, `qjs`, and extractor cache |
 | `extractor.auto_download` | `true` | Auto-download `yt-dlp` and `qjs` on startup |
@@ -279,7 +278,6 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
       {
           "max_channels": 100,
           "max_queue_per_channel": 50,
-          "persist_channels": true,
           "channel_restore_grace_seconds": 300
       },
       "extractor":
@@ -346,7 +344,6 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
           {
               "max_channels": 100,
               "max_queue_per_channel": 50,
-              "persist_channels": true,
               "channel_restore_grace_seconds": 300
           },
           "extractor":
@@ -404,7 +401,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
 | Log shows `already active in this process` | Both `plugins/` and `components/` binaries were loaded | Remove the extra copy so only `plugins/` **or** `components/` is loaded (never both) |
 | Pawn compile error on `SampAudioStream.inc` | Included before `<a_samp>` / `<open.mp>`, or wrong folder | Place `SampAudioStream.inc` in `pawno/include/` (or `qawno/include/`) and include it **after** `<a_samp>` or `<open.mp>` |
 | Platform links (e.g. YouTube) suddenly fail for everyone with error code `2` (`SA_ERR_EXTRACTION_FAILED`), while direct MP3/radio URLs still work | The platform changed and the installed `yt-dlp` is outdated | Wait for the automatic update (`extractor.auto_update`), or force it: stop the server, delete `scriptfiles/SampAudioStream/bin/`, and start again so the latest `yt-dlp` is downloaded |
-| Saved channels come back after a restart even though you expected them gone | Channel persistence (`channels.persist_channels`) is enabled | Destroy the channel with `SA_DestroyAudioStreamChannel` (this also deletes its saved file), or set `channels.persist_channels` to `false` |
+| Saved channels come back after a restart even though you expected them gone | The channel was created with persistence enabled (`persistent = true`, default) | Destroy the channel explicitly with `SA_DestroyAudioStreamChannel` (this also deletes its saved file), or pass `persistent = false` to `SA_CreateAudioStreamChannel` for temporary channels |
 | Want lower disk/RAM usage or Deno fails on an older host (`glibc` mismatch) | Deno `v2.9.8` uses ~98 MB on disk and may require newer glibc on legacy Linux distros | Set `"js_runtime": "quickjs"` under `"extractor"` in `scriptfiles/SampAudioStream/config.json` (or `"sampaudiostream"` -> `"extractor"` in open.mp `config.json`) and restart to force `qjs` (~1.8 MB) without downloading Deno |
 
 ### Error Codes (`E_SA_ERROR_CODE`)

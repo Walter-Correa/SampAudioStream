@@ -88,7 +88,7 @@ void OmpHost::onInit(IComponentList* components) {
         engine_->WaitForStartupReadinessAndLog([this, &cfg]() {
             if (cfg.log_startup_banner) {
                 Logger::Instance().Info(
-                    "SampAudioStream v2.1.1 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: " +
+                    "SampAudioStream v2.2.0 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: " +
                     std::to_string(engine_->GetHttpPort()) + ")");
             }
         });

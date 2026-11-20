@@ -266,7 +266,7 @@ cell AMX_NATIVE_CALL n_SA_CancelAudioStreamSearch(AMX*, cell* params) {
     return g_engine->CancelSearch(static_cast<PlayerId>(params[1])) ? 1 : 0;
 }
 
-// SA_CreateAudioStreamChannel(const name[], creator_playerid = INVALID_PLAYER_ID, const password[] = "", E_SA_CHANNEL_DESTROY_MODE:destroy_mode = SA_CHANNEL_DESTROY_MANUAL, destroy_timeout_sec = 0)
+// SA_CreateAudioStreamChannel(const name[], creator_playerid = INVALID_PLAYER_ID, const password[] = "", E_SA_CHANNEL_DESTROY_MODE:destroy_mode = SA_CHANNEL_DESTROY_MANUAL, destroy_timeout_sec = 0, bool:persistent = true)
 cell AMX_NATIVE_CALL n_SA_CreateAudioStreamChannel(AMX* amx, cell* params) {
     if (!g_engine) return INVALID_CHANNEL_ID;
     std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
@@ -278,13 +278,15 @@ cell AMX_NATIVE_CALL n_SA_CreateAudioStreamChannel(AMX* amx, cell* params) {
     std::int32_t mode_raw = (argc >= 4) ? static_cast<std::int32_t>(params[4]) : 0;
     if (mode_raw < 0 || mode_raw > 2) mode_raw = 0;
     std::int32_t timeout_sec = (argc >= 5) ? static_cast<std::int32_t>(params[5]) : 0;
+    bool persistent = (argc >= 6) ? (params[6] != 0) : true;
 
     return static_cast<cell>(g_engine->CreateChannel(
         name,
         creator_pid,
         password,
         static_cast<ChannelDestroyMode>(mode_raw),
-        timeout_sec));
+        timeout_sec,
+        persistent));
 }
 
 // SA_DestroyAudioStreamChannel(channelid)

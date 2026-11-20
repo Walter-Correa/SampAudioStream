@@ -1,6 +1,6 @@
 /*
  * SampAudioStream - Universal Audio Streaming Plugin/Component for SA-MP & open.mp
- * Version: 2.1.1
+ * Version: 2.2.0
  *
  * Features:
  *  - YouTube, SoundCloud, Twitch, Vimeo, TikTok, Direct MP3/OGG/WAV/FLAC & HLS streams
@@ -25,9 +25,9 @@
 #endif
 
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
-#define SAMPAUDIOSTREAM_VERSION_MINOR  (1)
-#define SAMPAUDIOSTREAM_VERSION_PATCH  (1)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.1.1"
+#define SAMPAUDIOSTREAM_VERSION_MINOR  (2)
+#define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.2.0"
 
 // -----------------------------------------------------------------------------
 // Constants & Enums
@@ -133,7 +133,7 @@ native SA_CancelAudioStreamSearch(playerid);
 // Synchronized Channel / Radio Natives
 // -----------------------------------------------------------------------------
 
-native SA_CreateAudioStreamChannel(const name[], creator_playerid = INVALID_PLAYER_ID, const password[] = "", E_SA_CHANNEL_DESTROY_MODE:destroy_mode = SA_CHANNEL_DESTROY_MANUAL, destroy_timeout_sec = 0);
+native SA_CreateAudioStreamChannel(const name[], creator_playerid = INVALID_PLAYER_ID, const password[] = "", E_SA_CHANNEL_DESTROY_MODE:destroy_mode = SA_CHANNEL_DESTROY_MANUAL, destroy_timeout_sec = 0, bool:persistent = true);
 native SA_DestroyAudioStreamChannel(channelid);
 native SA_PlayChannelAudioStream(channelid, const url[]);
 native SA_QueueChannelAudioStream(channelid, const url[], const label[] = "");

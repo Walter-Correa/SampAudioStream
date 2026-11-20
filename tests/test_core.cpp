@@ -950,7 +950,6 @@ void TestAudioEngineArbitrationAndDisconnect() {
     cfg.auto_update_extractor = false;
     cfg.allow_private_network_urls = true;
     cfg.spatial_update_interval_ms = 10;
-    cfg.persist_channels = false;
 
     AudioEngine engine(host, cfg);
     TEST_CHECK(engine.Initialize());
@@ -976,7 +975,7 @@ void TestAudioEngineArbitrationAndDisconnect() {
     }
 
     // 2. Join Radio Channel (Channel > Global): overrides Global cleanly
-    ChannelId ch = engine.CreateChannel("Rock");
+    ChannelId ch = engine.CreateChannel("Rock", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(ch != INVALID_CHANNEL_ID);
     TEST_CHECK(engine.PlayChannel(ch, channel_wav_url));
     PumpEngineTicks(engine, 15);
@@ -1165,7 +1164,6 @@ void TestRound60Features() {
         c.auto_update_extractor = false;
         c.enable_js_runtime = false;
         c.allow_private_network_urls = true;
-        c.persist_channels = true;
         c.pawn_text_encoding = "utf8";
         c.max_queue_per_channel = 50;
         return c;
@@ -1775,11 +1773,10 @@ void TestRound2EngineChecks() {
     ok_cfg.public_ip = "127.0.0.1";
     ok_cfg.http_port = 0;
     ok_cfg.auto_download_extractor = false;
-    ok_cfg.persist_channels = false;
 
     AudioEngine engine(host, ok_cfg);
     TEST_CHECK(engine.Initialize());
-    ChannelId ch = engine.CreateChannel("test-ch");
+    ChannelId ch = engine.CreateChannel("test-ch", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(ch != INVALID_CHANNEL_ID);
     TEST_CHECK(!engine.PauseChannel(ch, false));
     TEST_CHECK(engine.GetChannelState(ch) == StreamState::Idle);
@@ -1802,12 +1799,11 @@ void TestRound2EngineChecks() {
         lim_cfg.auto_download_extractor = false;
         lim_cfg.max_concurrent_streams = 10;
         lim_cfg.max_concurrent_transcoders = 1;
-        lim_cfg.persist_channels = false;
 
         AudioEngine lim_engine(host, lim_cfg);
         TEST_CHECK(lim_engine.Initialize());
-        ChannelId ch1 = lim_engine.CreateChannel("ch-lim-1");
-        ChannelId ch2 = lim_engine.CreateChannel("ch-lim-2");
+        ChannelId ch1 = lim_engine.CreateChannel("ch-lim-1", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
+        ChannelId ch2 = lim_engine.CreateChannel("ch-lim-2", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
         TEST_CHECK(lim_engine.PlayChannel(ch1, "https://example.com/slow.mp3"));
         // Active channel holds the sole transcoder slot -> second play & extra personal stream rejected
         TEST_CHECK(!lim_engine.PlayChannel(ch2, "https://example.com/slow2.mp3"));
@@ -2075,7 +2071,6 @@ void TestRound5ConcurrencyReplacementAndPreResolvePause() {
     cfg.allow_private_network_urls = true;
     cfg.max_concurrent_streams = 2;
     cfg.max_concurrent_transcoders = 2;
-    cfg.persist_channels = false;
 
     AudioEngine engine(host, cfg);
     TEST_CHECK(engine.Initialize());
@@ -2122,7 +2117,7 @@ void TestRound5ConcurrencyReplacementAndPreResolvePause() {
     // failed SkipChannel when over limit preserves queued front track.
     TEST_CHECK(engine.StopAudioStreamForPlayer(0));
 
-    ChannelId ch1 = engine.CreateChannel("r5-ch1");
+    ChannelId ch1 = engine.CreateChannel("r5-ch1", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(ch1 != INVALID_CHANNEL_ID);
     // Pump Tick() so StopAudioStreamForPlayer(0)'s cancelled transcoder exits its worker slot cleanly
     TEST_CHECK(pump_until([&]() {
@@ -2163,7 +2158,7 @@ void TestRound5ConcurrencyReplacementAndPreResolvePause() {
                engine.GetStreamInfo(s1, m1, st1) && st1 == StreamState::Playing;
     }, 2000));
 
-    ChannelId ch2 = engine.CreateChannel("r5-ch2");
+    ChannelId ch2 = engine.CreateChannel("r5-ch2", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(ch2 != INVALID_CHANNEL_ID);
     TEST_CHECK(!engine.QueueChannel(ch2, base + "/keep.wav"));
     TEST_CHECK(engine.StopAudioStreamForPlayer(0));
@@ -5426,13 +5421,12 @@ void TestV200CompleteChannelSystem() {
     cfg.public_ip = "127.0.0.1";
     cfg.http_port = 0;
     cfg.auto_download_extractor = false;
-    cfg.persist_channels = false;
 
     AudioEngine engine(host, cfg);
     TEST_CHECK(engine.Initialize());
 
     // 1. Server-owned Manual channel + password + queue + enumeration
-    ChannelId ch_srv = engine.CreateChannel("Main Lobby FM");
+    ChannelId ch_srv = engine.CreateChannel("Main Lobby FM", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(ch_srv != INVALID_CHANNEL_ID);
     TEST_CHECK(engine.GetChannelCount() == 1);
     TEST_CHECK(engine.GetChannelIdAt(0) == ch_srv);
@@ -5478,7 +5472,7 @@ void TestV200CompleteChannelSystem() {
     TEST_CHECK(engine.GetChannelInfo(ch_srv, info) && info.listener_count == 2 && !info.has_password);
 
     // 2. Creator disconnect immediate destroy (OnDisconnect)
-    ChannelId ch_disc = engine.CreateChannel("Walter Live", 1, "dj99", ChannelDestroyMode::OnDisconnect, 0);
+    ChannelId ch_disc = engine.CreateChannel("Walter Live", 1, "dj99", ChannelDestroyMode::OnDisconnect, 0, false);
     TEST_CHECK(ch_disc != INVALID_CHANNEL_ID);
     TEST_CHECK(engine.GetChannelInfo(ch_disc, info));
     TEST_CHECK(info.creator_name == "Walter");
@@ -5514,7 +5508,7 @@ void TestV200CompleteChannelSystem() {
         std::lock_guard<std::mutex> lk(host.mtx);
         host.players.push_back({1, {0.0f, 0.0f, 0.0f}, 0, 0});
     }
-    ChannelId ch_to = engine.CreateChannel("Walter Timeout Room", 1, "", ChannelDestroyMode::Timeout, 2);
+    ChannelId ch_to = engine.CreateChannel("Walter Timeout Room", 1, "", ChannelDestroyMode::Timeout, 2, false);
     TEST_CHECK(ch_to != INVALID_CHANNEL_ID);
     TEST_CHECK(engine.GetChannelInfo(ch_to, info));
     TEST_CHECK(info.creator_name == "Walter");
@@ -5608,7 +5602,6 @@ static void TestV200CreatorReconnectRenameAndPolicyGuards() {
     cfg.public_ip = "127.0.0.1";
     cfg.http_port = 0;
     cfg.auto_download_extractor = false;
-    cfg.persist_channels = false;
 
     AudioEngine engine(host, cfg);
     TEST_PHASE("Initialize");
@@ -5617,7 +5610,7 @@ static void TestV200CreatorReconnectRenameAndPolicyGuards() {
 
     // Problem 4: server-owned channel (INVALID_PLAYER_ID) refuses Timeout/OnDisconnect & stays alive
     TEST_PHASE("server-owned & revert");
-    ChannelId ch_srv_req = engine.CreateChannel("Server Timeout Try", INVALID_PLAYER_ID, "", ChannelDestroyMode::Timeout, 1);
+    ChannelId ch_srv_req = engine.CreateChannel("Server Timeout Try", INVALID_PLAYER_ID, "", ChannelDestroyMode::Timeout, 1, false);
     TEST_CHECK(ch_srv_req != INVALID_CHANNEL_ID);
     TEST_CHECK(engine.GetChannelInfo(ch_srv_req, info));
     TEST_CHECK(info.destroy_mode == ChannelDestroyMode::Manual);
@@ -5628,7 +5621,7 @@ static void TestV200CreatorReconnectRenameAndPolicyGuards() {
     TEST_CHECK(engine.GetChannelInfo(ch_srv_req, info)); // Still alive!
 
     // Removing creator via SetChannelCreator(INVALID_PLAYER_ID) reverts Timeout back to Manual
-    ChannelId ch_revert = engine.CreateChannel("Revert Room", 1, "", ChannelDestroyMode::Timeout, 1);
+    ChannelId ch_revert = engine.CreateChannel("Revert Room", 1, "", ChannelDestroyMode::Timeout, 1, false);
     TEST_CHECK(ch_revert != INVALID_CHANNEL_ID);
     TEST_CHECK(engine.SetChannelCreator(ch_revert, INVALID_PLAYER_ID));
     TEST_CHECK(engine.GetChannelInfo(ch_revert, info));
@@ -5646,7 +5639,7 @@ static void TestV200CreatorReconnectRenameAndPolicyGuards() {
 
     // (a) Creator stays online on Timeout (2s) -> countdown stays reset at 2s even past 2s
     TEST_PHASE("creator online timeout");
-    ChannelId ch_to = engine.CreateChannel("Walter Timeout", 1, "", ChannelDestroyMode::Timeout, 2);
+    ChannelId ch_to = engine.CreateChannel("Walter Timeout", 1, "", ChannelDestroyMode::Timeout, 2, false);
     TEST_CHECK(ch_to != INVALID_CHANNEL_ID);
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     engine.Tick();
@@ -5681,7 +5674,7 @@ static void TestV200CreatorReconnectRenameAndPolicyGuards() {
         std::lock_guard<std::mutex> lk(host.mtx);
         host.player_names[1] = "Walter";
     }
-    ChannelId ch_rejoin = engine.CreateChannel("Rejoin Room", 1, "", ChannelDestroyMode::Timeout, 2);
+    ChannelId ch_rejoin = engine.CreateChannel("Rejoin Room", 1, "", ChannelDestroyMode::Timeout, 2, false);
     TEST_CHECK(ch_rejoin != INVALID_CHANNEL_ID);
     {
         std::lock_guard<std::mutex> lk(host.mtx);
@@ -5726,7 +5719,7 @@ static void TestV200CreatorReconnectRenameAndPolicyGuards() {
         host.players.push_back({3, {0.0f, 0.0f, 0.0f}, 0, 0});
         host.player_names[3] = "Carlos";
     }
-    ChannelId ch_manual_to_disc = engine.CreateChannel("Manual->Disc", 3, "", ChannelDestroyMode::Manual, 0);
+    ChannelId ch_manual_to_disc = engine.CreateChannel("Manual->Disc", 3, "", ChannelDestroyMode::Manual, 0, false);
     {
         std::lock_guard<std::mutex> lk(host.mtx);
         host.players.erase(std::remove_if(host.players.begin(), host.players.end(),
@@ -5758,7 +5751,7 @@ static void TestV200CreatorReconnectRenameAndPolicyGuards() {
         host.players.push_back({4, {0.0f, 0.0f, 0.0f}, 0, 0});
         host.player_names[4] = "Walter";
     }
-    ChannelId ch_tag = engine.CreateChannel("Tag Room", 4, "", ChannelDestroyMode::Timeout, 2);
+    ChannelId ch_tag = engine.CreateChannel("Tag Room", 4, "", ChannelDestroyMode::Timeout, 2, false);
     // (g) Temporary numeric name "12345" keeps online link, then "[DKS]Walter" updates creator_name cleanly
     engine.OnPlayerNameChanged(4, "12345");
     TEST_CHECK(engine.GetChannelInfo(ch_tag, info) && info.creator_online && info.creator_name == "12345");
@@ -5971,7 +5964,6 @@ static void TestV200EncodingPassthroughVolumeAndChannelOps() {
     cfg.http_port = 0;
     cfg.auto_download_extractor = false;
     cfg.pawn_text_encoding = "cp1252";
-    cfg.persist_channels = false;
 
     AudioEngine engine(host, cfg);
     TEST_CHECK(engine.Initialize());
@@ -6011,7 +6003,7 @@ static void TestV200EncodingPassthroughVolumeAndChannelOps() {
     engine.StopAudioStreamForPlayer(1);
 
     // Problem 3 & 1 queue echo: QueueChannel on idle starts playback; SkipChannel on empty queue stops playback
-    ChannelId ch = engine.CreateChannel("M\xC3\xBAsica Mix", 1); // UTF-8 stored (converted from Pawn on boundary)
+    ChannelId ch = engine.CreateChannel("M\xC3\xBAsica Mix", 1, "", ChannelDestroyMode::Manual, 0, false); // UTF-8 stored (converted from Pawn on boundary)
     TEST_CHECK(ch != INVALID_CHANNEL_ID);
     ChannelInfo cinfo{};
     TEST_CHECK(engine.GetChannelInfo(ch, cinfo));
@@ -6218,12 +6210,11 @@ static void TestRound31SkipChannelConcurrencyPreservesQueue() {
     cfg.max_concurrent_streams = 1;
     cfg.max_concurrent_transcoders = 2;
     cfg.pawn_text_encoding = "cp1252";
-    cfg.persist_channels = false;
 
     AudioEngine engine(host, cfg);
     TEST_CHECK(engine.Initialize());
 
-    ChannelId ch = engine.CreateChannel("SkipLimitTest", 1);
+    ChannelId ch = engine.CreateChannel("SkipLimitTest", 1, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(ch != INVALID_CHANNEL_ID);
     TEST_CHECK(engine.JoinChannel(1, ch));
     TEST_CHECK(engine.PlayChannel(ch, base + "/ch1.wav"));
@@ -6378,7 +6369,6 @@ static void TestRound32CallbacksLimitsAndOptionals() {
     cfg.http_port = 0;
     cfg.auto_download_extractor = false;
     cfg.allow_private_network_urls = true;
-    cfg.persist_channels = false;
     cfg.transcoder_burst_ms = 2000;
     cfg.max_channels = 2;
     cfg.max_queue_per_channel = 2;
@@ -6390,10 +6380,10 @@ static void TestRound32CallbacksLimitsAndOptionals() {
 
     // Part 2: max_channels limit (2 allowed, 3rd refused) & max_queue_per_channel limit (idle play doesn't count)
     TEST_PHASE("limits & listeners");
-    ChannelId ch1 = engine.CreateChannel("Club One");
-    ChannelId ch2 = engine.CreateChannel("Club Two");
+    ChannelId ch1 = engine.CreateChannel("Club One", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
+    ChannelId ch2 = engine.CreateChannel("Club Two", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(ch1 != INVALID_CHANNEL_ID && ch2 != INVALID_CHANNEL_ID);
-    TEST_CHECK(engine.CreateChannel("Club Three") == INVALID_CHANNEL_ID);
+    TEST_CHECK(engine.CreateChannel("Club Three", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false) == INVALID_CHANNEL_ID);
 
     // Part 5: Listeners ascending order (insert out of order: 8, 1, 3 -> expect 1, 3, 8)
     TEST_CHECK(engine.JoinChannel(8, ch1));
@@ -6596,7 +6586,6 @@ static void TestRound32PositionalChannelsQueueManipulationAndLoop() {
     cfg.http_port = 0;
     cfg.auto_download_extractor = false;
     cfg.allow_private_network_urls = true;
-    cfg.persist_channels = false;
     cfg.spatial_update_interval_ms = 20;
     cfg.transcoder_burst_ms = 2000;
 
@@ -6606,7 +6595,7 @@ static void TestRound32PositionalChannelsQueueManipulationAndLoop() {
 
     // --- Part 3: Positional channel + auto_listen + Clear + Vehicle attach ---
     TEST_PHASE("wait first play");
-    ChannelId ch_pos = engine.CreateChannel("Neon Club");
+    ChannelId ch_pos = engine.CreateChannel("Neon Club", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(ch_pos != INVALID_CHANNEL_ID);
     TEST_CHECK(!engine.SetChannelPos(ch_pos, 0.0f, 0.0f, 0.0f, 0.0f)); // distance <= 0 rejected
     TEST_CHECK(engine.SetChannelPos(ch_pos, 0.0f, 0.0f, 0.0f, 40.0f, -1, -1, true));
@@ -6714,7 +6703,7 @@ static void TestRound32PositionalChannelsQueueManipulationAndLoop() {
 
     // --- Part 4: Queue Insert/Remove, Loop Track, Loop Queue, Error Skip & 5-Error Auto-Stop ---
     TEST_PHASE("queue operations");
-    ChannelId ch_q = engine.CreateChannel("Loop Station");
+    ChannelId ch_q = engine.CreateChannel("Loop Station", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(engine.PlayChannel(ch_q, base + "/a.wav"));
     TEST_CHECK(engine.QueueChannel(ch_q, base + "/c.wav", base + "/c.wav"));
     TEST_CHECK(engine.InsertChannelQueueItem(ch_q, 0, base + "/b.wav", base + "/b.wav")); // [b, c]
@@ -6861,7 +6850,6 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         cfg.public_ip = "127.0.0.1";
         cfg.http_port = 0;
         cfg.auto_download_extractor = false;
-        cfg.persist_channels = true;
         cfg.base_dir = temp_base.string();
         cfg.pawn_text_encoding = "cp1252";
 
@@ -6907,7 +6895,6 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         cfg.public_ip = "127.0.0.1";
         cfg.http_port = 0;
         cfg.auto_download_extractor = false;
-        cfg.persist_channels = true;
         cfg.base_dir = temp_base.string();
         cfg.pawn_text_encoding = "cp1252";
 
@@ -6969,7 +6956,7 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         engine.Tick();
         TEST_CHECK(!std::filesystem::exists(temp_base / "channels" / ("channel_" + std::to_string(ch_next) + ".json")));
 
-        // GMX Reset with persist_channels=true preserves live channels & fires OnAudioStreamChannelRestored
+        // GMX Reset on persistent channels preserves them & fires OnAudioStreamChannelRestored
         {
             std::lock_guard<std::mutex> lk(host.mtx);
             host.restored_channels.clear();
@@ -7001,7 +6988,6 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         cfg.public_ip = "127.0.0.1";
         cfg.http_port = 0;
         cfg.auto_download_extractor = false;
-        cfg.persist_channels = true;
         cfg.base_dir = grace_dir.string();
 
         AudioEngine engine(host, cfg);
@@ -7022,7 +7008,6 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         cfg.public_ip = "127.0.0.1";
         cfg.http_port = 0;
         cfg.auto_download_extractor = false;
-        cfg.persist_channels = true;
         cfg.channel_restore_grace_seconds = 1;
         cfg.base_dir = grace_dir.string();
 
@@ -7038,7 +7023,7 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         engine.Shutdown();
     }
 
-    // 4. Corrupted JSON renamed to .bad, max_channels cap loads lowest IDs without deleting extras, persist_channels=false skips disk
+    // 4. Corrupted JSON renamed to .bad, max_channels cap loads lowest IDs without deleting extras, non-persistent channels skip disk
     const std::filesystem::path bad_dir = temp_base / "bad_and_cap";
     std::filesystem::create_directories(bad_dir / "channels", ec);
     {
@@ -7056,7 +7041,6 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         cfg.public_ip = "127.0.0.1";
         cfg.http_port = 0;
         cfg.auto_download_extractor = false;
-        cfg.persist_channels = true;
         cfg.max_channels = 2;
         cfg.base_dir = bad_dir.string();
 
@@ -7067,25 +7051,15 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         ChannelInfo ci{};
         TEST_CHECK(engine.GetChannelInfo(1, ci) && engine.GetChannelInfo(2, ci) && !engine.GetChannelInfo(3, ci));
         TEST_CHECK(std::filesystem::exists(bad_dir / "channels" / "channel_3.json")); // Untouched!
-        engine.Shutdown();
-    }
-    {
-        MockPlatformHost host;
-        PluginConfig cfg;
-        cfg.bind_ip = "127.0.0.1";
-        cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
-        cfg.auto_download_extractor = false;
-        cfg.persist_channels = false;
-        cfg.base_dir = bad_dir.string();
 
-        AudioEngine engine(host, cfg);
-        TEST_CHECK(engine.Initialize());
-        TEST_CHECK(engine.GetChannelCount() == 0);
-        ChannelId np = engine.CreateChannel("No Persist");
-        TEST_CHECK(np == 1);
+        // Even after freeing a slot below max_channels, a new non-persistent channel never reuses skipped ID 3 and never writes to disk
+        TEST_CHECK(engine.DestroyChannel(2));
+        ChannelId np = engine.CreateChannel("No Persist", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
+        TEST_CHECK(np == 4);
+        engine.FlushDirtyChannelsForTesting(true, true);
         engine.Shutdown();
-        TEST_CHECK(!std::filesystem::exists(bad_dir / "channels" / "channel_10.json"));
+        TEST_CHECK(!std::filesystem::exists(bad_dir / "channels" / "channel_4.json"));
+        TEST_CHECK(std::filesystem::exists(bad_dir / "channels" / "channel_3.json"));
     }
 
     std::filesystem::remove_all(temp_base, ec);
@@ -7146,7 +7120,7 @@ static void TestRound33AuditedFixes() {
 
     // 2. Problems 1, 3, 4 (via AudioEngine) and 5:
     //    - Problem 1: attached sound-car channel -> use_pos == false, stays audible past initial radius; fixed pos -> use_pos == true
-    //    - Problem 3: snapshot & disk JSON omit attach_vehicle_id; Reset() with persist_channels=true detaches vehicle & keeps fixed pos
+    //    - Problem 3: snapshot & disk JSON omit attach_vehicle_id; Reset() detaches vehicle & keeps fixed pos
     //    - Problem 4: SetChannelName during playback updates icy-name on endpoint without altering track metadata
     //    - Problem 5: GetChannelListenerAt returns listeners in ascending playerid order (7, 2, 5 -> 2, 5, 7)
     const std::string wav_track = BuildTestWavBytes(16000, 1200);
@@ -7208,7 +7182,6 @@ static void TestRound33AuditedFixes() {
         cfg.http_port = 0;
         cfg.auto_download_extractor = false;
         cfg.allow_private_network_urls = true;
-        cfg.persist_channels = true;
         cfg.base_dir = p1345_dir.string();
         cfg.spatial_update_interval_ms = 20;
         cfg.transcoder_burst_ms = 2000;
@@ -7309,7 +7282,7 @@ static void TestRound33AuditedFixes() {
             host.events.clear();
         }
 
-        // Problem 3: GMX Reset with persist_channels=true detaches vehicle, bumps spatial_version, keeps fixed pos (use_pos=true)
+        // Problem 3: GMX Reset detaches vehicle, bumps spatial_version, keeps fixed pos (use_pos=true)
         engine.Reset();
         engine.Tick();
         {
@@ -7355,7 +7328,6 @@ static void TestRound33AuditedFixes() {
         cfg.public_ip = "127.0.0.1";
         cfg.http_port = 0;
         cfg.auto_download_extractor = false;
-        cfg.persist_channels = true;
         cfg.base_dir = p2_dir.string();
 
         AudioEngine engine(host, cfg);
@@ -7429,7 +7401,6 @@ static void TestRound33AuditedFixes() {
         cfg.public_ip = "127.0.0.1";
         cfg.http_port = 0;
         cfg.auto_download_extractor = false;
-        cfg.persist_channels = true;
         cfg.base_dir = p6_dir.string();
 
         AudioEngine engine(host, cfg);
@@ -7551,7 +7522,6 @@ static void TestRound35FeaturesPart1To8() {
     cfg.enable_js_runtime = false;
     cfg.auto_update_extractor = false;
     cfg.allow_private_network_urls = true;
-    cfg.persist_channels = false;
     cfg.spatial_update_interval_ms = 20;
     cfg.transcoder_burst_ms = 2000;
     cfg.max_queue_per_channel = 50;
@@ -7619,7 +7589,7 @@ static void TestRound35FeaturesPart1To8() {
     });
 
     // --- Part 2: OnPlayerAudioStreamSourceChange & SA_GetPlayerAudioStreamSource ---
-    ChannelId ch_range = engine.CreateChannel("Club Range");
+    ChannelId ch_range = engine.CreateChannel("Club Range", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(engine.SetChannelPos(ch_range, 0.0f, 0.0f, 0.0f, 30.0f, -1, -1, true));
     TEST_CHECK(engine.PlayChannel(ch_range, base + "/long.wav"));
     {
@@ -7670,7 +7640,7 @@ static void TestRound35FeaturesPart1To8() {
         std::lock_guard<std::mutex> lk(host.mtx);
         host.players[0].pos = {0.0f, 0.0f, 0.0f};
     }
-    ChannelId ch_sub = engine.CreateChannel("Sub Radio");
+    ChannelId ch_sub = engine.CreateChannel("Sub Radio", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(engine.JoinChannel(1, ch_sub));
     TEST_CHECK(engine.PlayChannel(ch_sub, base + "/a.wav"));
     TEST_CHECK(engine.QueueChannel(ch_sub, base + "/b.wav", base + "/b.wav"));
@@ -8027,7 +7997,7 @@ static void TestRound35FeaturesPart1To8() {
 
     // --- Part 6: Channel playlist import ---
     TEST_PHASE("Part 6: Playlist import");
-    ChannelId ch_pl1 = engine.CreateChannel("Playlist Empty");
+    ChannelId ch_pl1 = engine.CreateChannel("Playlist Empty", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     {
         std::lock_guard<std::mutex> lk(host.mtx);
         host.playlist_queued_events.clear();
@@ -8081,7 +8051,7 @@ static void TestRound35FeaturesPart1To8() {
     TEST_CHECK(engine.GetChannelInfo(ch_pl1, pci) && pci.queue_count == 50);
 
     // Single video URL -> added = 1
-    ChannelId ch_pl_single = engine.CreateChannel("Playlist Single");
+    ChannelId ch_pl_single = engine.CreateChannel("Playlist Single", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(engine.QueueChannelPlaylist(ch_pl_single, "https://www.youtube.com/watch?v=single_vid"));
     {
         auto dl = std::chrono::steady_clock::now() + std::chrono::seconds(4);
@@ -8099,7 +8069,7 @@ static void TestRound35FeaturesPart1To8() {
     // Channel destroyed mid-extraction -> cancelled cleanly, NO callback emitted!
     block_destroy_playlist.store(true);
     destroy_playlist_entered.store(false);
-    ChannelId ch_pl_destroy = engine.CreateChannel("Playlist Destroyed");
+    ChannelId ch_pl_destroy = engine.CreateChannel("Playlist Destroyed", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(engine.QueueChannelPlaylist(ch_pl_destroy, "https://www.youtube.com/playlist?list=destroy_mid"));
     {
         auto dl = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -8249,7 +8219,6 @@ static void TestRound35SeekAndTranscoder() {
     cfg.enable_js_runtime = false;
     cfg.auto_update_extractor = false;
     cfg.allow_private_network_urls = true;
-    cfg.persist_channels = false;
     cfg.max_concurrent_streams = 1;
     cfg.max_concurrent_transcoders = 1; // Tight 1-slot limit!
     cfg.transcoder_burst_ms = 2000;
@@ -8338,7 +8307,7 @@ static void TestRound35SeekAndTranscoder() {
     }
 
     // Channel seek under full 1/1 transcoder limit -> TrackStart fires again, queue intact, NO QueueEnd, elapsed >= 4!
-    ChannelId ch_seek = engine.CreateChannel("Seek FM");
+    ChannelId ch_seek = engine.CreateChannel("Seek FM", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(engine.JoinChannel(1, ch_seek));
     TEST_CHECK(engine.PlayChannel(ch_seek, "https://www.youtube.com/watch?v=seek_ch"));
     TEST_CHECK(engine.QueueChannel(ch_seek, "https://www.youtube.com/watch?v=next_queued"));
@@ -8464,7 +8433,6 @@ static void TestRound36AuditedFixes() {
     cfg.enable_js_runtime = false;
     cfg.auto_update_extractor = false;
     cfg.allow_private_network_urls = true;
-    cfg.persist_channels = false;
     cfg.max_concurrent_streams = 1;
     cfg.max_concurrent_transcoders = 1; // Strictly 1 slot!
     cfg.transcoder_burst_ms = 2000;
@@ -8585,7 +8553,7 @@ static void TestRound36AuditedFixes() {
     // 2. Channel at limit 1: 3 consecutive seeks without waiting -> all 3 return 1,
     //    exactly 1 active run remains with final offset (4s -> >= 4s elapsed).
     TEST_PHASE("channel rapid seeks");
-    ChannelId ch_seek = engine.CreateChannel("Rapid Seek Channel");
+    ChannelId ch_seek = engine.CreateChannel("Rapid Seek Channel", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(engine.JoinChannel(1, ch_seek));
     TEST_CHECK(engine.PlayChannel(ch_seek, "https://www.youtube.com/watch?v=r36_ch"));
     {
@@ -8623,7 +8591,7 @@ static void TestRound36AuditedFixes() {
     // 3. Playlist into stopped channel while limit 1 is full -> added=0, SA_ERR_INTERNAL_ERROR,
     //    "Maximum concurrent transcoders reached", queue stays empty, channel stays stopped.
     TEST_PHASE("stopped playlist at limit");
-    ChannelId ch_stopped = engine.CreateChannel("Stopped Full Limit");
+    ChannelId ch_stopped = engine.CreateChannel("Stopped Full Limit", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
     TEST_CHECK(ch_stopped != INVALID_CHANNEL_ID);
     {
         std::lock_guard<std::mutex> lk(host.mtx);
@@ -8683,7 +8651,6 @@ static void TestRound37ExtractorSettledErrorMessage() {
     cfg.auto_download_extractor = false;
     cfg.enable_js_runtime = false;
     cfg.auto_update_extractor = false;
-    cfg.persist_channels = false;
 
     // 1. Before BinaryManager settles -> Resolve returns "Extractor is still initializing"
     {
@@ -9094,7 +9061,6 @@ void TestRound41ExtractorReResolveAndPersonalLog() {
     cfg.enable_js_runtime = false;
     cfg.auto_update_extractor = false;
     cfg.allow_private_network_urls = true;
-    cfg.persist_channels = false;
     cfg.transcoder_burst_ms = 2000;
 
     TEST_PHASE("Initialize & wait extractor");
@@ -11207,7 +11173,6 @@ void TestRound47AvailableAtAndEarly403Retry() {
     cfg.enable_js_runtime = false;
     cfg.auto_update_extractor = false;
     cfg.allow_private_network_urls = true;
-    cfg.persist_channels = false;
     cfg.worker_threads = 2;
     cfg.transcoder_burst_ms = 2000;
     cfg.debug_logging = true;
@@ -11408,7 +11373,7 @@ void TestRound47AvailableAtAndEarly403Retry() {
             host.error_events.clear();
         }
 
-        ChannelId cid = engine.CreateChannel("AvailChan", 1);
+        ChannelId cid = engine.CreateChannel("AvailChan", 1, "", ChannelDestroyMode::Manual, 0, false);
         TEST_CHECK(cid != INVALID_CHANNEL_ID);
         TEST_CHECK(engine.JoinChannel(1, cid));
 
@@ -11451,7 +11416,7 @@ void TestRound47AvailableAtAndEarly403Retry() {
         }
         StreamId sid_stop = engine.PlayAudioStreamForPlayer(2, "https://www.youtube.com/watch?v=yt_avail_cancel_1", StreamOptions{});
         TEST_CHECK(sid_stop != INVALID_STREAM_ID);
-        ChannelId cid_dest = engine.CreateChannel("CancelChan", 1);
+        ChannelId cid_dest = engine.CreateChannel("CancelChan", 1, "", ChannelDestroyMode::Manual, 0, false);
         TEST_CHECK(cid_dest != INVALID_CHANNEL_ID);
         TEST_CHECK(engine.PlayChannel(cid_dest, "https://www.youtube.com/watch?v=yt_avail_cancel_2"));
 
@@ -11552,7 +11517,7 @@ void TestRound47AvailableAtAndEarly403Retry() {
             host.callback_names.clear();
             host.error_events.clear();
         }
-        ChannelId cid = engine.CreateChannel("PreResChan", 1);
+        ChannelId cid = engine.CreateChannel("PreResChan", 1, "", ChannelDestroyMode::Manual, 0, false);
         TEST_CHECK(cid != INVALID_CHANNEL_ID);
         // Resolve into cache first via Resolve (simulating pre-resolution before track play).
         ResolveResult pre = engine.ResolverForTesting().Resolve("https://www.youtube.com/watch?v=yt_preresolve_past");
@@ -11922,7 +11887,6 @@ void TestRound49WaitingCallbacks() {
     cfg.enable_js_runtime = false;
     cfg.auto_update_extractor = false;
     cfg.allow_private_network_urls = true;
-    cfg.persist_channels = false;
     cfg.worker_threads = 2;
     cfg.transcoder_burst_ms = 2000;
     cfg.debug_logging = true;
@@ -12112,7 +12076,7 @@ void TestRound49WaitingCallbacks() {
     {
         clear_host_events();
         clear_logs();
-        ChannelId cid = engine.CreateChannel("R49Chan", 1);
+        ChannelId cid = engine.CreateChannel("R49Chan", 1, "", ChannelDestroyMode::Manual, 0, false);
         TEST_CHECK(cid != INVALID_CHANNEL_ID);
         TEST_CHECK(engine.JoinChannel(1, cid));
         TEST_CHECK(engine.PlayChannel(cid, "https://www.youtube.com/watch?v=yt_r49_channel"));
@@ -12182,7 +12146,7 @@ void TestRound49WaitingCallbacks() {
             TEST_CHECK(engine.StopAudioStreamForPlayer(1));
             PumpEngineTicks(engine, 3);
         }
-        ChannelId cid = engine.CreateChannel("R49NoWaitChan", 1);
+        ChannelId cid = engine.CreateChannel("R49NoWaitChan", 1, "", ChannelDestroyMode::Manual, 0, false);
         TEST_CHECK(cid != INVALID_CHANNEL_ID);
         for (const std::string& url : no_wait_urls) {
             clear_host_events();
@@ -12372,7 +12336,6 @@ void TestRound51YouTubeAutoCookies() {
         cfg.auto_update_extractor = false;
         cfg.enable_js_runtime = false;
         cfg.allow_private_network_urls = true;
-        cfg.persist_channels = false;
         cfg.debug_logging = false;
         return cfg;
     };
@@ -12932,7 +12895,6 @@ void TestRound52PartAFixes() {
         cfg.auto_update_extractor = false;
         cfg.enable_js_runtime = false;
         cfg.allow_private_network_urls = true;
-        cfg.persist_channels = false;
         cfg.debug_logging = false;
         return cfg;
     };
@@ -13315,7 +13277,6 @@ void TestRound52PartBUnifiedConfig() {
         "    {\n"
         "        \"max_channels\": 100,\n"
         "        \"max_queue_per_channel\": 50,\n"
-        "        \"persist_channels\": true,\n"
         "        \"channel_restore_grace_seconds\": 300\n"
         "    },\n"
         "    \"extractor\":\n"
@@ -13400,7 +13361,6 @@ void TestRound52PartBUnifiedConfig() {
         custom.live_title_poll_seconds = 45;
         custom.max_channels = 222;
         custom.max_queue_per_channel = 77;
-        custom.persist_channels = false;
         custom.channel_restore_grace_seconds = 90;
         custom.bin_dir = "custom\\bin\"dir\"\\sub";
         custom.auto_download_extractor = false;
@@ -13442,7 +13402,6 @@ void TestRound52PartBUnifiedConfig() {
         TEST_CHECK(read_back.live_title_poll_seconds == 45);
         TEST_CHECK(read_back.max_channels == 222);
         TEST_CHECK(read_back.max_queue_per_channel == 77);
-        TEST_CHECK(!read_back.persist_channels);
         TEST_CHECK(read_back.channel_restore_grace_seconds == 90);
         TEST_CHECK(read_back.bin_dir == custom.bin_dir);
         TEST_CHECK(!read_back.auto_download_extractor);
@@ -13511,7 +13470,7 @@ void TestRound52PartBUnifiedConfig() {
         ConfigManager::ProvideOmpDefaults(writer);
 
         const std::vector<ConfigSchemaFieldInfo> schema = ConfigManager::GetUnifiedSchemaFields();
-        TEST_CHECK(schema.size() == 39);
+        TEST_CHECK(schema.size() == 38);
         TEST_CHECK(registered_omp_keys.size() == schema.size());
         for (std::size_t i = 0; i < schema.size(); ++i) {
             TEST_CHECK(registered_omp_keys[i] == ("sampaudiostream." + schema[i].full_key));
@@ -13547,7 +13506,6 @@ void TestRound52PartBUnifiedConfig() {
         omp_ints["sampaudiostream.audio.live_title_poll_seconds"] = 75;
         omp_ints["sampaudiostream.channels.max_channels"] = 250;
         omp_ints["sampaudiostream.channels.max_queue_per_channel"] = 80;
-        omp_bools["sampaudiostream.channels.persist_channels"] = false;
         omp_ints["sampaudiostream.channels.channel_restore_grace_seconds"] = 60;
         omp_strings["sampaudiostream.extractor.bin_dir"] = "omp_bin";
         omp_bools["sampaudiostream.extractor.auto_download"] = false;
@@ -13608,7 +13566,6 @@ void TestRound52PartBUnifiedConfig() {
         TEST_CHECK(omp_loaded.live_title_poll_seconds == 75);
         TEST_CHECK(omp_loaded.max_channels == 250);
         TEST_CHECK(omp_loaded.max_queue_per_channel == 80);
-        TEST_CHECK(!omp_loaded.persist_channels);
         TEST_CHECK(omp_loaded.channel_restore_grace_seconds == 60);
         TEST_CHECK(omp_loaded.bin_dir == "omp_bin");
         TEST_CHECK(!omp_loaded.auto_download_extractor);
@@ -14079,7 +14036,6 @@ void TestRound53NetworkRetryAndPortWarn() {
         cfg.auto_update_extractor = false;
         cfg.enable_js_runtime = false;
         cfg.allow_private_network_urls = true;
-        cfg.persist_channels = false;
         cfg.debug_logging = true;
         AudioEngine engine(host, cfg);
         TEST_CHECK(engine.Initialize());
@@ -14218,7 +14174,6 @@ void TestRound53NetworkRetryAndPortWarn() {
             c.auto_update_extractor = false;
             c.enable_js_runtime = false;
             c.allow_private_network_urls = true;
-            c.persist_channels = false;
             c.debug_logging = false;
             return c;
         };
@@ -14685,13 +14640,12 @@ void TestRound54HttpConnectionLimits() {
         cfg.auto_update_extractor = false;
         cfg.enable_js_runtime = false;
         cfg.allow_private_network_urls = true;
-        cfg.persist_channels = false;
         cfg.debug_logging = false;
         cfg.max_connections_per_ip = 2;
 
         AudioEngine engine(host, cfg);
         TEST_CHECK(engine.Initialize());
-        ChannelId ch = engine.CreateChannel("LimitChan", 7);
+        ChannelId ch = engine.CreateChannel("LimitChan", 7, "", ChannelDestroyMode::Manual, 0, false);
         TEST_CHECK(ch != INVALID_CHANNEL_ID);
         TEST_CHECK(engine.SetChannelLoopMode(ch, ChannelLoopMode::Track));
         TEST_CHECK(engine.JoinChannel(7, ch));
@@ -15019,7 +14973,6 @@ void TestRound63Features() {
         PluginConfig cfg;
         cfg.base_dir = r63_dir.string();
         cfg.allow_private_network_urls = true;
-        cfg.persist_channels = false;
         cfg.hook_native_audio = true;
         cfg.pawn_text_encoding = "utf8";
         cfg.live_title_poll_seconds = 30;
@@ -15041,7 +14994,7 @@ void TestRound63Features() {
 
         // 5/6: Create channel with 1 active track + 3 queued items (with non-cp1252 UTF-8 label)
         const std::string base = "http://127.0.0.1:" + std::to_string(port);
-        ChannelId ch = engine.CreateChannel("ChannelFM", 0);
+        ChannelId ch = engine.CreateChannel("ChannelFM", 0, "", ChannelDestroyMode::Manual, 0, false);
         TEST_CHECK(ch != INVALID_CHANNEL_ID);
         TEST_CHECK(engine.JoinChannel(0, ch));
         TEST_CHECK(engine.PlayChannel(ch, base + "/radio"));
@@ -15341,6 +15294,259 @@ void TestRound65AutoConnectionLimits() {
     std::cout << "[PASS] TestRound65AutoConnectionLimits\n";
 }
 
+void TestRound67Features() {
+    std::error_code fec;
+    const auto r67_dir = std::filesystem::temp_directory_path() / "sampaudiostream_test_r67";
+    std::filesystem::remove_all(r67_dir, fec);
+    std::filesystem::create_directories(r67_dir, fec);
+
+    auto make_cfg = [&](const std::filesystem::path& dir) {
+        PluginConfig cfg;
+        cfg.bind_ip = "127.0.0.1";
+        cfg.public_ip = "127.0.0.1";
+        cfg.http_port = 0;
+        cfg.base_dir = dir.string();
+        cfg.bin_dir = (dir / "bin").string();
+        cfg.auto_download_extractor = false;
+        cfg.auto_update_extractor = false;
+        cfg.enable_js_runtime = false;
+        cfg.allow_private_network_urls = true;
+        cfg.debug_logging = false;
+        return cfg;
+    };
+
+    // 1. 5-arg default (persistent=true) persists JSON while explicit false writes nothing even on queue/flush/shutdown
+    TEST_PHASE("1. Non-persistent channel writes no JSON file while 5-arg default persists");
+    {
+        const auto d1 = r67_dir / "t1";
+        std::filesystem::create_directories(d1 / "bin", fec);
+        MockPlatformHost host;
+        AudioEngine engine(host, make_cfg(d1));
+        TEST_CHECK(engine.Initialize());
+
+        const ChannelId ch_def5 = engine.CreateChannel("Pers5Args", 1, "", ChannelDestroyMode::Manual, 0);
+        const ChannelId ch_np = engine.CreateChannel("TempRadio", 1, "", ChannelDestroyMode::Manual, 0, false);
+        TEST_CHECK(ch_def5 != INVALID_CHANNEL_ID);
+        TEST_CHECK(ch_np != INVALID_CHANNEL_ID);
+
+        for (ChannelId cid : {ch_def5, ch_np}) {
+            TEST_CHECK(engine.QueueChannel(cid, "http://127.0.0.1:9/seed.mp3"));
+            TEST_CHECK(engine.QueueChannel(cid, "http://127.0.0.1:9/next.mp3"));
+            TEST_CHECK(engine.SetChannelVolume(cid, 75.0f));
+            TEST_CHECK(engine.SetChannelLoopMode(cid, ChannelLoopMode::Queue));
+            TEST_CHECK(engine.SetChannelName(cid, cid == ch_def5 ? "PersRenamed" : "TempRenamed"));
+        }
+
+        engine.FlushDirtyChannelsForTesting(true, true);
+        const auto p_file = d1 / "channels" / ("channel_" + std::to_string(ch_def5) + ".json");
+        const auto np_file = d1 / "channels" / ("channel_" + std::to_string(ch_np) + ".json");
+        TEST_CHECK(std::filesystem::exists(p_file));
+        TEST_CHECK(!std::filesystem::exists(np_file));
+        {
+            std::ifstream ifs(p_file, std::ios::binary);
+            const std::string body((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+            TEST_CHECK(body.find("\"persistent\": true") != std::string::npos);
+        }
+
+        engine.Shutdown();
+        TEST_CHECK(std::filesystem::exists(p_file));
+        TEST_CHECK(!std::filesystem::exists(np_file));
+    }
+
+    // 2. GMX Reset destroys non-persistent channel (fires OnAudioStreamChannelDestroyed) and preserves persistent (restored)
+    TEST_PHASE("2. GMX Reset destroys non-persistent and keeps persistent");
+    {
+        const auto d2 = r67_dir / "t2";
+        std::filesystem::create_directories(d2 / "bin", fec);
+        MockPlatformHost host;
+        host.players = {{1, {0.0f, 0.0f, 0.0f}, 0, 0}};
+        host.player_names = {{1, "Alice"}};
+
+        AudioEngine engine(host, make_cfg(d2));
+        TEST_CHECK(engine.Initialize());
+
+        const ChannelId ch_keep = engine.CreateChannel("KeepRoom", 1, "", ChannelDestroyMode::Manual, 0, true);
+        const ChannelId ch_drop = engine.CreateChannel("DropRoom", 1, "", ChannelDestroyMode::Manual, 0, false);
+        TEST_CHECK(ch_keep != INVALID_CHANNEL_ID);
+        TEST_CHECK(ch_drop != INVALID_CHANNEL_ID);
+        TEST_CHECK(engine.JoinChannel(1, ch_drop));
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            host.destroyed_channels.clear();
+            host.restored_channels.clear();
+        }
+
+        engine.Reset();
+        engine.Tick();
+
+        ChannelInfo ci{};
+        TEST_CHECK(engine.GetChannelInfo(ch_keep, ci));
+        TEST_CHECK(!engine.GetChannelInfo(ch_drop, ci));
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            bool saw_drop_destroyed = false;
+            bool saw_keep_destroyed = false;
+            for (const auto& ev : host.destroyed_channels) {
+                if (ev.channel_id == ch_drop) saw_drop_destroyed = true;
+                if (ev.channel_id == ch_keep) saw_keep_destroyed = true;
+            }
+            bool saw_keep_restored = false;
+            bool saw_drop_restored = false;
+            for (const auto& ev : host.restored_channels) {
+                if (ev.channel_id == ch_keep) saw_keep_restored = true;
+                if (ev.channel_id == ch_drop) saw_drop_restored = true;
+            }
+            TEST_CHECK(saw_drop_destroyed);
+            TEST_CHECK(!saw_keep_destroyed);
+            TEST_CHECK(saw_keep_restored);
+            TEST_CHECK(!saw_drop_restored);
+        }
+        TEST_CHECK(!std::filesystem::exists(d2 / "channels" / ("channel_" + std::to_string(ch_drop) + ".json")));
+        engine.Shutdown();
+    }
+
+    // 3. Legacy channel JSON without "persistent" field restores as persistent and upgrades JSON on flush
+    TEST_PHASE("3. Legacy channel JSON without persistent field defaults to persistent");
+    {
+        const auto d3 = r67_dir / "t3";
+        std::filesystem::create_directories(d3 / "bin", fec);
+        ChannelId legacy_id = INVALID_CHANNEL_ID;
+        {
+            MockPlatformHost host;
+            AudioEngine engine(host, make_cfg(d3));
+            TEST_CHECK(engine.Initialize());
+            legacy_id = engine.CreateChannel("LegacyChan", 1);
+            TEST_CHECK(legacy_id == 1);
+            TEST_CHECK(engine.QueueChannel(legacy_id, "http://127.0.0.1:9/seed.mp3"));
+            engine.Shutdown();
+        }
+        const auto ch_file = d3 / "channels" / "channel_1.json";
+        TEST_CHECK(std::filesystem::exists(ch_file));
+        {
+            std::ifstream ifs(ch_file, std::ios::binary);
+            std::string body((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+            ifs.close();
+            const auto pos = body.find("\"persistent\": true,\n");
+            TEST_CHECK(pos != std::string::npos);
+            if (pos != std::string::npos) {
+                // Erase line containing "persistent": true
+                auto line_start = body.rfind('\n', pos);
+                line_start = (line_start == std::string::npos) ? 0 : (line_start + 1);
+                body.erase(line_start, (pos - line_start) + std::string("\"persistent\": true,\n").size());
+            }
+            TEST_CHECK(body.find("\"persistent\"") == std::string::npos);
+            std::ofstream ofs(ch_file, std::ios::binary | std::ios::trunc);
+            ofs << body;
+        }
+        {
+            MockPlatformHost host;
+            AudioEngine engine(host, make_cfg(d3));
+            TEST_CHECK(engine.Initialize());
+            engine.Tick();
+            ChannelInfo ci{};
+            TEST_CHECK(engine.GetChannelInfo(1, ci) && ci.name == "LegacyChan");
+            TEST_CHECK(engine.QueueChannel(1, "http://127.0.0.1:9/after_legacy.mp3"));
+            engine.FlushDirtyChannelsForTesting(true, true);
+            {
+                std::ifstream ifs(ch_file, std::ios::binary);
+                const std::string upgraded((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+                TEST_CHECK(upgraded.find("\"persistent\": true") != std::string::npos);
+                TEST_CHECK(upgraded.find("after_legacy.mp3") != std::string::npos);
+            }
+            engine.Shutdown();
+        }
+    }
+
+    // 4. Legacy config JSON containing removed channels key loads with zero warnings
+    TEST_PHASE("4. Legacy config with removed channels persistence key loads silently");
+    {
+        Logger::Instance().Flush();
+        std::mutex log_mtx;
+        std::vector<std::pair<LogSeverity, std::string>> logs;
+        Logger::Instance().SetSink([&](LogSeverity sev, const std::string& msg) {
+            std::lock_guard<std::mutex> lk(log_mtx);
+            logs.emplace_back(sev, msg);
+        });
+
+        const auto legacy_cfg_path = r67_dir / "legacy_config.json";
+        {
+            std::ofstream ofs(legacy_cfg_path, std::ios::binary | std::ios::trunc);
+            ofs << "{\"channels\":{\"max_channels\":88,\"persist_" "channels\":false}}";
+        }
+        const PluginConfig loaded = ConfigManager::LoadOrCreate(legacy_cfg_path.string());
+        TEST_CHECK(loaded.max_channels == 88);
+
+        Logger::Instance().Flush();
+        Logger::Instance().SetSink(nullptr);
+        {
+            std::lock_guard<std::mutex> lk(log_mtx);
+            for (const auto& entry : logs) {
+                TEST_CHECK(entry.first != LogSeverity::Warning);
+            }
+        }
+    }
+
+    // 5. Single-track Resolve on playlist URL includes --no-playlist and --playlist-items 1 without --flat-playlist
+    TEST_PHASE("5. Single-track Resolve on playlist URL passes --no-playlist and --playlist-items 1");
+    {
+        const auto d5 = r67_dir / "t5";
+        std::filesystem::create_directories(d5 / "bin", fec);
+#ifdef _WIN32
+        const auto fake_ext = d5 / "bin" / "yt-dlp.exe";
+#else
+        const auto fake_ext = d5 / "bin" / "yt-dlp";
+#endif
+        {
+            std::ofstream ofs(fake_ext, std::ios::binary);
+            ofs << std::string(128 * 1024, 'x');
+        }
+#ifndef _WIN32
+        std::filesystem::permissions(
+            fake_ext,
+            std::filesystem::perms::owner_exec,
+            std::filesystem::perm_options::add,
+            fec);
+#endif
+        MockPlatformHost host;
+        AudioEngine engine(host, make_cfg(d5));
+        TEST_CHECK(engine.Initialize());
+        TEST_CHECK(engine.BinariesForTesting().WaitUntilSettled(std::chrono::seconds(2)));
+
+        std::vector<std::string> captured_args;
+        engine.ResolverForTesting().SetYtDlpTestHook([&](
+            const std::vector<std::string>& args,
+            std::string& out_stdout,
+            std::string&,
+            int,
+            const std::atomic<bool>*) {
+            captured_args = args;
+            out_stdout = R"({"title":"First Track Only","uploader":"Artist","duration":120,"url":"http://127.0.0.1:9/t1.mp3","ext":"mp3"})";
+            return true;
+        });
+
+        const ResolveResult rr = engine.ResolverForTesting().Resolve("https://www.youtube.com/watch?v=abc123&list=PLxyz");
+        TEST_CHECK(rr.success);
+        bool has_no_playlist = false;
+        bool has_playlist_items_1 = false;
+        bool has_flat_playlist = false;
+        for (std::size_t i = 0; i < captured_args.size(); ++i) {
+            if (captured_args[i] == "--no-playlist") has_no_playlist = true;
+            if (captured_args[i] == "--flat-playlist") has_flat_playlist = true;
+            if (captured_args[i] == "--playlist-items" && i + 1 < captured_args.size() &&
+                captured_args[i + 1] == "1") {
+                has_playlist_items_1 = true;
+            }
+        }
+        TEST_CHECK(has_no_playlist);
+        TEST_CHECK(has_playlist_items_1);
+        TEST_CHECK(!has_flat_playlist);
+        engine.Shutdown();
+    }
+
+    std::filesystem::remove_all(r67_dir, fec);
+    std::cout << "[PASS] TestRound67Features\n";
+}
+
 #define RUN_TEST(fn)                                                                          \
     do {                                                                                      \
         g_current_test.store(#fn, std::memory_order_release);                                 \
@@ -15456,6 +15662,7 @@ int main(int argc, char** argv) {
     RUN_TEST(TestRound60Features);
     RUN_TEST(TestRound63Features);
     RUN_TEST(TestRound65AutoConnectionLimits);
+    RUN_TEST(TestRound67Features);
     g_tests_done.store(true, std::memory_order_release);
     if (watchdog_thread.joinable()) watchdog_thread.join();
     std::cout << "All core unit tests passed!\n";

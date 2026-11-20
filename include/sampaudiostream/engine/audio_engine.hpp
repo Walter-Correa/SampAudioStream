@@ -173,6 +173,7 @@ struct SyncChannel {
     std::shared_ptr<std::atomic<bool>> playlist_cancel{std::make_shared<std::atomic<bool>>(false)};
 
     // Persistence & boot restore tracking
+    bool persistent{true};
     bool restore_wanted{false};
     bool restore_retry_blocked{false};
     std::chrono::steady_clock::time_point restore_grace_deadline{};
@@ -297,7 +298,8 @@ public:
         PlayerId creator_player_id = INVALID_PLAYER_ID,
         const std::string& password = "",
         ChannelDestroyMode destroy_mode = ChannelDestroyMode::Manual,
-        std::int32_t destroy_timeout_seconds = 0);
+        std::int32_t destroy_timeout_seconds = 0,
+        bool persistent = true);
     bool DestroyChannel(ChannelId channel_id);
     bool PlayChannel(ChannelId channel_id, const std::string& url_or_query, const std::string& original_input_pawn = "");
     bool QueueChannel(
@@ -378,6 +380,9 @@ public:
     }
     void PollLiveTitlesAtForTesting(std::chrono::steady_clock::time_point now) {
         PollLiveTitles(now);
+    }
+    void FlushDirtyChannelsForTesting(bool sync_all = true, bool bypass_debounce = true) {
+        FlushDirtyChannels(sync_all, bypass_debounce);
     }
 
     // LAN interface discovery & per-player host IP resolution (exposed for unit tests)
@@ -516,6 +521,7 @@ private:
         std::vector<ChannelQueueEntry> queue;
         StreamOptions spatial{};
         bool auto_listen{true};
+        bool persistent{true};
         std::uint64_t revision{0};
         std::shared_ptr<std::atomic<bool>> cancelled;
     };
