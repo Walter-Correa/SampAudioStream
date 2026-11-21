@@ -2338,6 +2338,11 @@ PlaylistExtractionResult StreamResolver::ExtractPlaylist(
         "--yes-playlist"
     };
 
+    // Platforms list playlists in pages of about 100 entries, so bigger imports get more time:
+    // 60 s up to 200 items plus 10 s for every further 100 (140 s at the 1000-item maximum).
+    const int list_timeout_ms = 60000 +
+        ((capped > 200) ? static_cast<int>(((capped - 200 + 99) / 100) * 10000) : 0);
+
     std::string stdout_data;
     std::string stderr_data;
     bool auth_required = false;
@@ -2347,7 +2352,7 @@ PlaylistExtractionResult StreamResolver::ExtractPlaylist(
             url,
             stdout_data,
             stderr_data,
-            60000,
+            list_timeout_ms,
             cancel_flag,
             nullptr,
             nullptr,

@@ -9,7 +9,7 @@
  * Commands:
  *   /audiomenu  or  /sa   - Open the interactive SampAudioStream Control Center
  *
- * Demonstrates ALL 82 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
+ * Demonstrates ALL 83 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
  * and ALL 19 plugin callbacks cleanly from in-game menus (no shadow arrays).
  *
  * Server Folders (plugin config):
@@ -29,7 +29,12 @@
  * =============================================================================
  */
 
-#include <a_samp>
+// open.mp toolchains: include <open.mp> directly (its <a_samp> wrapper only adds a deprecation warning).
+// Legacy SA-MP toolchains have no <open.mp> and fall back to <a_samp>.
+#tryinclude <open.mp>
+#if !defined _INC_open_mp
+    #include <a_samp>
+#endif
 #include <SampAudioStream>
 
 // -----------------------------------------------------------------------------
@@ -130,6 +135,8 @@ static gChListIds[MAX_PLAYERS][DEMO_MAX_LISTED_CHANNELS];
 static gChListCount[MAX_PLAYERS];
 static gQueueViewHash[MAX_PLAYERS][DEMO_MAX_QUEUE_VIEW_ITEMS];
 static gQueueViewCount[MAX_PLAYERS];
+static gQueueViewPage[MAX_PLAYERS];
+static gQueueViewStart[MAX_PLAYERS];
 static gQueueSelIdx[MAX_PLAYERS];
 static gQueueSelHash[MAX_PLAYERS];
 static gVoteCid[MAX_PLAYERS];
@@ -159,6 +166,12 @@ static gNewChTimeout[MAX_PLAYERS];
 // Music library browser & sound effect selection per player
 static gLibFolder[MAX_PLAYERS];
 static gLibTrack[MAX_PLAYERS];
+static gLibFolderPage[MAX_PLAYERS];
+static gLibTrackPage[MAX_PLAYERS];
+static gLibViewCount[MAX_PLAYERS];
+
+// "Next/Previous Page" rows shown after the items of the open paged list (bit 1 = next, bit 2 = previous)
+static gPageNav[MAX_PLAYERS];
 static gSoundName[MAX_PLAYERS][64];
 
 // Official server channel created on startup
@@ -512,6 +525,8 @@ static stock ResetPlayerDemoState(playerid)
     gSelChannelId[playerid] = gServerRadioId;
     gChListCount[playerid] = 0;
     gQueueViewCount[playerid] = 0;
+    gQueueViewPage[playerid] = 0;
+    gQueueViewStart[playerid] = 0;
     gQueueSelIdx[playerid] = -1;
     gQueueSelHash[playerid] = 0;
     gVoteCid[playerid] = INVALID_AUDIO_CHANNEL_ID;
@@ -522,6 +537,10 @@ static stock ResetPlayerDemoState(playerid)
     gNewChTimeout[playerid] = 0;
     gLibFolder[playerid] = -1;
     gLibTrack[playerid] = -1;
+    gLibFolderPage[playerid] = 0;
+    gLibTrackPage[playerid] = 0;
+    gLibViewCount[playerid] = 0;
+    gPageNav[playerid] = 0;
     gSoundName[playerid][0] = EOS;
 }
 
@@ -538,7 +557,7 @@ static stock ShowSaMainMenu(playerid)
     new E_SA_AUDIO_STREAM_SOURCE:src_type, src_id, src_lbl[16];
     SA_GetPlayerAudioStreamSource(playerid, src_type, src_id);
     GetSourceTypeLabel(src_type, src_lbl, sizeof(src_lbl));
-    new body[1024];
+    static body[1024];
 
     format(body, sizeof(body),
         "{00FF88}1. Personal Playback Controls {AAAAAA}(Active Stream: %d)\n\
@@ -578,7 +597,7 @@ static stock ShowPersonalMenu(playerid)
     new bool:is_paused = (sid != INVALID_AUDIO_STREAM_ID &&
         SA_GetAudioStreamInfo(sid, t, sizeof(t), a, sizeof(a), dur, st) &&
         st == SA_STATE_PAUSED);
-    new header[768];
+    static header[768];
     format(header, sizeof(header),
         "Play URL or Query {AAAAAA}(SA_PlayAudioStreamForPlayer)\n\
 %s Personal Stream {AAAAAA}(SA_PauseAudioStreamForPlayer)\n\
@@ -597,7 +616,7 @@ Inspect Personal Stream Info {AAAAAA}(SA_GetAudioStreamInfo) [ID: %d]\n\
 
 static stock ShowGlobalMenu(playerid)
 {
-    new body[1024];
+    static body[1024];
     format(body, sizeof(body),
         "Play Global 3D Stream Here {AAAAAA}(SA_PlayAudioStream usepos=true)\n\
 Play Global 2D Stream {AAAAAA}(SA_PlayAudioStream usepos=false)\n\
@@ -621,7 +640,7 @@ Set Live Radio Text by ID {AAAAAA}(SA_SetAudioStreamLiveTitle)",
 
 static stock ShowChannelListMenu(playerid)
 {
-    new body[2048];
+    static body[2048];
     new active_cid = SA_GetPlayerAudioStreamChannel(playerid);
     new total = SA_GetAudioStreamChannelCount();
 
@@ -722,7 +741,8 @@ static stock ShowChannelManageMenu(playerid, channelid)
     new hist_cnt = (hslot != -1) ? gHistCount[hslot] : 0;
     new bool:playlist_on = SA_IsAudioStreamChannelPlaylist(channelid);
 
-    new title[96], body[2048];
+    new title[96];
+    static body[2048];
     format(title, sizeof(title), "{FF88FF}Channel #%d: %s", channelid, cname);
     format(body, sizeof(body),
         "%s This Channel {AAAAAA}(%s%s)\n\
@@ -825,6 +845,28 @@ static stock bool:EnsureSelectedChannelExists(playerid, channelid)
     return true;
 }
 
+// Paged lists show a fixed number of items, then optional "Next Page" / "Previous Page" rows.
+// Only one page is built per dialog, so large queues and libraries cost the same as small ones.
+static stock AppendPageNav(playerid, body[], len, bool:has_next, bool:has_prev)
+{
+    gPageNav[playerid] = (has_next ? 1 : 0) | (has_prev ? 2 : 0);
+    if (has_next) strcat(body, "{00CCFF}Next Page >>\n", len);
+    if (has_prev) strcat(body, "{00CCFF}<< Previous Page\n", len);
+}
+
+// row: clicked row counted from the first row after the page items. Returns 1 (next), -1 (previous) or 0.
+static stock GetPageNavAction(playerid, row)
+{
+    if (row < 0) return 0;
+    if (gPageNav[playerid] & 1)
+    {
+        if (row == 0) return 1;
+        row--;
+    }
+    if ((gPageNav[playerid] & 2) && row == 0) return -1;
+    return 0;
+}
+
 static stock bool:GetChannelQueueDisplayText(channelid, index, out[], len = sizeof(out))
 {
     if (SA_GetAudioStreamChannelQueueLabel(channelid, index, out, len) && out[0] != EOS)
@@ -852,7 +894,8 @@ static stock ShowChannelQueueDialog(playerid, channelid)
 
     new bool:playlist_on = SA_IsAudioStreamChannelPlaylist(channelid);
     new playlist_pos = playlist_on ? SA_GetAudioStreamChannelQueuePos(channelid) : -1;
-    new body[2048], item[132], line[160];
+    static body[3072];
+    new item[132], line[160];
     format(body, sizeof(body),
         "{00FF88}+ Insert URL at Index 0 (Play Next) {AAAAAA}(SA_InsertAudioStreamChannelQueue)\n\
 {FF8888}- Remove Queue Item by Index {AAAAAA}(SA_RemoveAudioStreamChannelQueue)\n\
@@ -861,29 +904,44 @@ static stock ShowChannelQueueDialog(playerid, channelid)
 {FF5555}x Clear All Queued Tracks {AAAAAA}(SA_ClearAudioStreamChannelQueue) [%d]\n\
 {00CCFF}~ Shuffle Queue {AAAAAA}(SA_ShuffleAudioStreamChannelQueue) [%d]\n",
         qcount, qcount);
+    new pages = (qcount > 0) ? (((qcount - 1) / DEMO_MAX_QUEUE_VIEW_ITEMS) + 1) : 1;
+    new page = gQueueViewPage[playerid];
+    if (page < 0) page = (playlist_pos >= 0) ? (playlist_pos / DEMO_MAX_QUEUE_VIEW_ITEMS) : 0; // open on the current item
+    if (page >= pages) page = pages - 1;
+    gQueueViewPage[playerid] = page;
+    new start = page * DEMO_MAX_QUEUE_VIEW_ITEMS;
+    gQueueViewStart[playerid] = start;
     gQueueViewCount[playerid] = 0;
-    for (new i = 0; i < qcount && i < DEMO_MAX_QUEUE_VIEW_ITEMS; i++)
+    for (new i = start; i < qcount && gQueueViewCount[playerid] < DEMO_MAX_QUEUE_VIEW_ITEMS; i++)
     {
-        if (GetChannelQueueDisplayText(channelid, i, item, sizeof(item)))
+        if (!GetChannelQueueDisplayText(channelid, i, item, sizeof(item))) break;
+        if (i == playlist_pos)
         {
-            if (i == playlist_pos)
-            {
-                format(line, sizeof(line), "{EEDD82}> #%d: %s\n", i, item);
-            }
-            else
-            {
-                format(line, sizeof(line), "{FFCC00}#%d: {FFFFFF}%s\n", i, item);
-            }
-            if (strlen(body) + strlen(line) >= sizeof(body)) break;
-            strcat(body, line);
-            gQueueViewHash[playerid][gQueueViewCount[playerid]] = HashStringDjb2(item);
-            gQueueViewCount[playerid]++;
+            format(line, sizeof(line), "{EEDD82}> #%d: %s\n", i, item);
         }
+        else
+        {
+            format(line, sizeof(line), "{FFCC00}#%d: {FFFFFF}%s\n", i, item);
+        }
+        if (strlen(body) + strlen(line) >= sizeof(body)) break;
+        strcat(body, line);
+        gQueueViewHash[playerid][gQueueViewCount[playerid]] = HashStringDjb2(item);
+        gQueueViewCount[playerid]++;
     }
+    AppendPageNav(playerid, body, sizeof(body), (start + gQueueViewCount[playerid] < qcount), (page > 0));
 
-    ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_VIEW, DIALOG_STYLE_LIST,
-        playlist_on ? "{FF88FF}Channel Playlist Actions (current item highlighted)" : "{FF88FF}Channel Queue Actions",
-        body, "Run", "Back");
+    new title[96];
+    if (pages > 1)
+    {
+        format(title, sizeof(title), "%s (page %d/%d)",
+            playlist_on ? "{FF88FF}Channel Playlist Actions" : "{FF88FF}Channel Queue Actions", page + 1, pages);
+    }
+    else
+    {
+        format(title, sizeof(title), "%s",
+            playlist_on ? "{FF88FF}Channel Playlist Actions (current item highlighted)" : "{FF88FF}Channel Queue Actions");
+    }
+    ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_VIEW, DIALOG_STYLE_LIST, title, body, "Run", "Back");
 }
 
 static stock ShowChannelQueueItemDialog(playerid, channelid, idx)
@@ -1074,7 +1132,8 @@ static stock ShowChannelListenersDialog(playerid, channelid)
     }
     SanitizeDialogField(cname);
 
-    new body[1536], line[96], pname[32];
+    static body[1536];
+    new line[96], pname[32];
     format(body, sizeof(body), "{FFFFFF}Subscribed listeners on #%d (%s): %d\n\n", channelid, cname, listeners);
     for (new i = 0; i < listeners && i < 15; i++)
     {
@@ -1145,22 +1204,41 @@ static stock bool:GetLibraryTrackRef(folder_index, track_index, out[], len, name
 static stock ShowLibraryFolderList(playerid)
 {
     new count = SA_GetAudioLibraryFolderCount();
-    new body[2048], line[112], name[64], tracks;
+    static body[4096];
+    new line[112], name[64], tracks;
     format(body, sizeof(body), "{00FF88}Refresh Library {AAAAAA}(SA_RefreshAudioLibrary | %d folders cached)\n", count);
     if (count == 0)
     {
         strcat(body, "{666666}(Empty: add audio files to audio.music_dir, then Refresh)\n");
     }
-    for (new i = 0; i < count && i < DEMO_MAX_LIBRARY_FOLDERS; i++)
+    new pages = (count > 0) ? (((count - 1) / DEMO_MAX_LIBRARY_FOLDERS) + 1) : 1;
+    new page = gLibFolderPage[playerid];
+    if (page < 0) page = 0;
+    if (page >= pages) page = pages - 1;
+    gLibFolderPage[playerid] = page;
+    new start = page * DEMO_MAX_LIBRARY_FOLDERS;
+    gLibViewCount[playerid] = 0;
+    for (new i = start; i < count && gLibViewCount[playerid] < DEMO_MAX_LIBRARY_FOLDERS; i++)
     {
         if (!SA_GetAudioLibraryFolder(i, name, sizeof(name), tracks)) break;
         SanitizeDialogField(name);
-        format(line, sizeof(line), "{FFFFFF}%s {AAAAAA}(%d tracks)\n", (name[0] == EOS) ? "(root files)" : name, tracks);
+        format(line, sizeof(line), "{FFFFFF}%.48s {AAAAAA}(%d tracks)\n", (name[0] == EOS) ? "(root files)" : name, tracks);
         if (strlen(body) + strlen(line) >= sizeof(body)) break;
         strcat(body, line);
+        gLibViewCount[playerid]++;
     }
-    ShowPlayerDialog(playerid, DLG_SA_LIB_FOLDERS, DIALOG_STYLE_LIST,
-        "{00CCFF}Music Library (SA_GetAudioLibraryFolder)", body, "Open", "Back");
+    AppendPageNav(playerid, body, sizeof(body), (start + gLibViewCount[playerid] < count), (page > 0));
+
+    new title[80];
+    if (pages > 1)
+    {
+        format(title, sizeof(title), "{00CCFF}Music Library (SA_GetAudioLibraryFolder) - page %d/%d", page + 1, pages);
+    }
+    else
+    {
+        format(title, sizeof(title), "{00CCFF}Music Library (SA_GetAudioLibraryFolder)");
+    }
+    ShowPlayerDialog(playerid, DLG_SA_LIB_FOLDERS, DIALOG_STYLE_LIST, title, body, "Open", "Back");
 }
 
 static stock ShowLibraryFolderMenu(playerid)
@@ -1173,25 +1251,61 @@ static stock ShowLibraryFolderMenu(playerid)
         ShowLibraryFolderList(playerid);
         return;
     }
+    new raw_name[64];
+    format(raw_name, sizeof(raw_name), "%s", name);
     SanitizeDialogField(name);
 
-    new body[3072], line[160], track[128];
+    new cid = gSelChannelId[playerid];
+    static body[4096];
+    new line[160], track[128], ref[256];
     format(body, sizeof(body),
-        "{00CCFF}+ Import Whole Folder into Channel #%d {AAAAAA}(SA_QueueChannelAudioStreamPlaylist)\n",
-        gSelChannelId[playerid]);
-    for (new i = 0; i < tracks && i < DEMO_MAX_LIBRARY_TRACKS; i++)
+        "{00CCFF}+ Import Whole Folder into Channel #%d {AAAAAA}(SA_QueueChannelAudioStreamPlaylist; queued tracks in {EEDD82}yellow{AAAAAA})\n",
+        cid);
+    new pages = (tracks > 0) ? (((tracks - 1) / DEMO_MAX_LIBRARY_TRACKS) + 1) : 1;
+    new page = gLibTrackPage[playerid];
+    if (page < 0) page = 0;
+    if (page >= pages) page = pages - 1;
+    gLibTrackPage[playerid] = page;
+    new start = page * DEMO_MAX_LIBRARY_TRACKS;
+    gLibViewCount[playerid] = 0;
+    for (new i = start; i < tracks && gLibViewCount[playerid] < DEMO_MAX_LIBRARY_TRACKS; i++)
     {
         if (!SA_GetAudioLibraryTrack(fidx, i, track, sizeof(track))) break;
+        if (raw_name[0] == EOS)
+        {
+            format(ref, sizeof(ref), "library:///%s", track);
+        }
+        else
+        {
+            format(ref, sizeof(ref), "library://%s/%s", raw_name, track);
+        }
+        // One native call per track: the plugin searches the whole channel queue in C++.
+        new queued = SA_FindAudioStreamChannelQueue(cid, ref);
         SanitizeDialogField(track);
-        format(line, sizeof(line), "{FFFFFF}%s\n", track);
+        if (queued != -1)
+        {
+            format(line, sizeof(line), "{EEDD82}%.56s {AAAAAA}(queued #%d)\n", track, queued);
+        }
+        else
+        {
+            format(line, sizeof(line), "{FFFFFF}%.56s\n", track);
+        }
         if (strlen(body) + strlen(line) >= sizeof(body)) break;
         strcat(body, line);
+        gLibViewCount[playerid]++;
     }
+    AppendPageNav(playerid, body, sizeof(body), (start + gLibViewCount[playerid] < tracks), (page > 0));
 
     new title[96];
-    format(title, sizeof(title), "{00CCFF}%s (%d tracks%s)",
-        (name[0] == EOS) ? "(root files)" : name, tracks,
-        (tracks > DEMO_MAX_LIBRARY_TRACKS) ? ", first 40 shown" : "");
+    if (pages > 1)
+    {
+        format(title, sizeof(title), "{00CCFF}%.40s (%d tracks, page %d/%d)",
+            (name[0] == EOS) ? "(root files)" : name, tracks, page + 1, pages);
+    }
+    else
+    {
+        format(title, sizeof(title), "{00CCFF}%.40s (%d tracks)", (name[0] == EOS) ? "(root files)" : name, tracks);
+    }
     ShowPlayerDialog(playerid, DLG_SA_LIB_FOLDER, DIALOG_STYLE_LIST, title, body, "Select", "Back");
 }
 
@@ -1205,14 +1319,21 @@ static stock ShowLibraryTrackMenu(playerid)
         return;
     }
     SanitizeDialogField(track);
-    new title[96], body[512];
+    new queued = SA_FindAudioStreamChannelQueue(gSelChannelId[playerid], ref);
+    new queued_note[48];
+    if (queued != -1)
+    {
+        format(queued_note, sizeof(queued_note), " {EEDD82}[already queued at #%d]", queued);
+    }
+    new title[96];
+    static body[512];
     format(title, sizeof(title), "{00CCFF}Track: %.60s", track);
     format(body, sizeof(body),
         "Play Privately {AAAAAA}(SA_PlayAudioStreamForPlayer)\n\
 Play Global 3D Here {AAAAAA}(SA_PlayAudioStream, 45m)\n\
-Add to Channel #%d Queue {AAAAAA}(SA_QueueChannelAudioStream)\n\
+Add to Channel #%d Queue {AAAAAA}(SA_QueueChannelAudioStream)%s\n\
 Play Now on Channel #%d {AAAAAA}(SA_PlayChannelAudioStream)",
-        gSelChannelId[playerid], gSelChannelId[playerid]);
+        gSelChannelId[playerid], queued_note, gSelChannelId[playerid]);
     ShowPlayerDialog(playerid, DLG_SA_LIB_TRACK, DIALOG_STYLE_LIST, title, body, "Run", "Back");
 }
 
@@ -1277,7 +1398,7 @@ static stock ShowDiagnosticsDialog(playerid)
     SanitizeDialogField(gtitle);
     SanitizeDialogField(gartist);
 
-    new info[1536];
+    static info[1536];
     format(info, sizeof(info),
         "{00CCFF}SampAudioStream Version:\t{FFFFFF}v%s\n\
 {00CCFF}Extractor Ready (yt-dlp + JS runtime):\t%s\n\
@@ -1457,7 +1578,11 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                         "Search", "Back");
                 }
                 case 3: ShowChannelListMenu(playerid);
-                case 4: ShowLibraryFolderList(playerid);
+                case 4:
+                {
+                    gLibFolderPage[playerid] = 0;
+                    ShowLibraryFolderList(playerid);
+                }
                 case 5:
                 {
                     ShowPlayerDialog(playerid, DLG_SA_VANILLA_PLAY, DIALOG_STYLE_INPUT,
@@ -2103,7 +2228,7 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
             }
             gSearchSelIdx[playerid] = listitem;
 
-            new body[640];
+            static body[640];
             format(body, sizeof(body),
                 "Play For Me Only {AAAAAA}(SA_PlayAudioStreamForPlayer)\n\
 Play Global 3D Here {AAAAAA}(SA_PlayAudioStream 45m)\n\
@@ -2516,6 +2641,7 @@ Offline Timeout (Custom seconds)",
                 case 6:
                 {
                     if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+                    gQueueViewPage[playerid] = -1;
                     ShowChannelQueueDialog(playerid, cid);
                 }
                 case 7:
@@ -2742,9 +2868,15 @@ Offline Timeout (Custom seconds)",
                 default:
                 {
                     new idx = listitem - 6;
+                    if (idx >= gQueueViewCount[playerid])
+                    {
+                        gQueueViewPage[playerid] += GetPageNavAction(playerid, idx - gQueueViewCount[playerid]);
+                        ShowChannelQueueDialog(playerid, cid);
+                        return 1;
+                    }
+                    new real_idx = gQueueViewStart[playerid] + idx;
                     new cur_item[132];
-                    if (idx < 0 || idx >= gQueueViewCount[playerid] ||
-                        !GetChannelQueueDisplayText(cid, idx, cur_item, sizeof(cur_item)))
+                    if (idx < 0 || !GetChannelQueueDisplayText(cid, real_idx, cur_item, sizeof(cur_item)))
                     {
                         SendClientMessage(playerid, 0xFFAA00FF,
                             "[Channel] Queue changed before selection; refreshing list.");
@@ -2758,9 +2890,9 @@ Offline Timeout (Custom seconds)",
                         ShowChannelQueueDialog(playerid, cid);
                         return 1;
                     }
-                    gQueueSelIdx[playerid] = idx;
+                    gQueueSelIdx[playerid] = real_idx;
                     gQueueSelHash[playerid] = gQueueViewHash[playerid][idx];
-                    ShowChannelQueueItemDialog(playerid, cid, idx);
+                    ShowChannelQueueItemDialog(playerid, cid, real_idx);
                 }
             }
             return 1;
@@ -3318,7 +3450,14 @@ Offline Timeout (Custom seconds)",
                 ShowLibraryFolderList(playerid);
                 return 1;
             }
-            new idx = listitem - 1;
+            new row = listitem - 1;
+            if (row >= gLibViewCount[playerid])
+            {
+                gLibFolderPage[playerid] += GetPageNavAction(playerid, row - gLibViewCount[playerid]);
+                ShowLibraryFolderList(playerid);
+                return 1;
+            }
+            new idx = gLibFolderPage[playerid] * DEMO_MAX_LIBRARY_FOLDERS + row;
             new name[64], tracks;
             if (!SA_GetAudioLibraryFolder(idx, name, sizeof(name), tracks))
             {
@@ -3326,6 +3465,7 @@ Offline Timeout (Custom seconds)",
                 return 1;
             }
             gLibFolder[playerid] = idx;
+            gLibTrackPage[playerid] = 0;
             ShowLibraryFolderMenu(playerid);
             return 1;
         }
@@ -3352,7 +3492,7 @@ Offline Timeout (Custom seconds)",
                     ShowLibraryFolderList(playerid);
                     return 1;
                 }
-                if (SA_QueueChannelAudioStreamPlaylist(cid, ref, 50))
+                if (SA_QueueChannelAudioStreamPlaylist(cid, ref, 1000)) // clamped to channels.max_queue_per_channel
                 {
                     SendClientMessage(playerid, 0x00FF88FF,
                         "[Library] Folder import scheduled; OnAudioStreamChannelPlaylistQueued reports the result.");
@@ -3364,7 +3504,14 @@ Offline Timeout (Custom seconds)",
                 ShowLibraryFolderMenu(playerid);
                 return 1;
             }
-            gLibTrack[playerid] = listitem - 1;
+            new row = listitem - 1;
+            if (row >= gLibViewCount[playerid])
+            {
+                gLibTrackPage[playerid] += GetPageNavAction(playerid, row - gLibViewCount[playerid]);
+                ShowLibraryFolderMenu(playerid);
+                return 1;
+            }
+            gLibTrack[playerid] = gLibTrackPage[playerid] * DEMO_MAX_LIBRARY_TRACKS + row;
             ShowLibraryTrackMenu(playerid);
             return 1;
         }
@@ -3714,7 +3861,8 @@ public OnAudioStreamSearchResults(playerid, search_id, total_found, E_SA_ERROR_C
         return 1;
     }
 
-    new body[2048], line[160], dur_str[16], t[64], a[48];
+    static body[2048];
+    new line[160], dur_str[16], t[64], a[48];
     format(body, sizeof(body), "Title\tArtist\tDuration\n");
     for (new i = 0; i < gSearchTotal[playerid]; i++)
     {

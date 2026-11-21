@@ -17153,6 +17153,19 @@ void TestRound71SoundFiles() {
         TEST_CHECK(wait_until([&]() { return engine.GetChannelQueuePos(ch) == 2; }));
         std::string label;
         TEST_CHECK(engine.GetChannelQueueItemLabel(ch, 2, label) && label == "m2.wav");
+
+        // Queue search runs in the plugin and honours the start index
+        std::string item2;
+        TEST_CHECK(engine.GetChannelQueueItem(ch, 2, item2));
+        TEST_CHECK(engine.FindChannelQueueItem(ch, item2, 0) == 2);
+        TEST_CHECK(engine.FindChannelQueueItem(ch, item2, -5) == 2);
+        TEST_CHECK(engine.FindChannelQueueItem(ch, item2, 3) == -1);
+        TEST_CHECK(engine.FindChannelQueueItem(ch, "library://Short/s1.wav", 0) == 0);
+        TEST_CHECK(engine.FindChannelQueueItem(ch, "library://Short/s1.wav", 1) == -1);
+        TEST_CHECK(engine.FindChannelQueueItem(ch, "library://Short/S1.wav", 0) == -1);
+        TEST_CHECK(engine.FindChannelQueueItem(ch, "", 0) == -1);
+        TEST_CHECK(engine.FindChannelQueueItem(ch, item2, 1000) == -1);
+        TEST_CHECK(engine.FindChannelQueueItem(ch + 9999, item2, 0) == -1);
         engine.DestroyChannel(ch);
     }
 

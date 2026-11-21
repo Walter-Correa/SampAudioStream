@@ -409,6 +409,8 @@ public:
     bool GetChannelInfo(ChannelId channel_id, ChannelInfo& out_info) const;
     bool GetChannelQueueItem(ChannelId channel_id, std::size_t index, std::string& out_item) const;
     bool GetChannelQueueItemLabel(ChannelId channel_id, std::size_t index, std::string& out_label) const;
+    // Index of the first queue entry at or after start_index whose Pawn-encoded URL equals pawn_item, or -1.
+    std::int32_t FindChannelQueueItem(ChannelId channel_id, const std::string& pawn_item, std::int32_t start_index) const;
 
     // Diagnostics & Queries
     bool GetStreamInfo(StreamId stream_id, TrackMetadata& out_meta, StreamState& out_state) const;

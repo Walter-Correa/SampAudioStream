@@ -166,6 +166,8 @@ native SA_GetAudioStreamChannelInfo(channelid, name[], name_len = sizeof(name), 
 native SA_GetAudioStreamChannelTrack(channelid, title[], title_len = sizeof(title), artist[], artist_len = sizeof(artist), &duration);
 native SA_GetAudioStreamChannelQueue(channelid, index, item[], item_len = sizeof(item));
 native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len = sizeof(label));
+// Returns the 0-based index of the first queue entry at or after start_index whose URL equals item, or -1.
+native SA_FindAudioStreamChannelQueue(channelid, const item[], start_index = 0);
 native SA_ClearAudioStreamChannelQueue(channelid);
 // Positional / spatial channel configuration. For password-restricted areas, pass auto_listen = false.
 native SA_SetAudioStreamChannelPos(channelid, Float:x, Float:y, Float:z, Float:distance = 50.0, worldid = -1, interiorid = -1, bool:auto_listen = true);

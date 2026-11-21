@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.0`), covering all **82 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.0`), covering all **83 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -334,6 +334,19 @@ native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len =
 Reads the friendly display label for the `0`-based `index` queue entry on `channelid` (for example, `Artist - Title` from scripts or the entry title populated by `SA_QueueChannelAudioStreamPlaylist`). `label` may be empty (`""`) if no label was supplied or if the channel was restored from an older JSON without `label_hex`.
 * **Returns:** `1` if the channel and index are valid (even when `label` is empty), `0` if `channelid` does not exist or `index` is out of range.
 
+### `SA_FindAudioStreamChannelQueue`
+```pawn
+native SA_FindAudioStreamChannelQueue(channelid, const item[], start_index = 0);
+```
+Searches `channelid`'s queue for an entry whose URL/query is exactly `item` (case-sensitive, the same text `SA_GetAudioStreamChannelQueue` returns), starting at the `0`-based `start_index` (negative values start at `0`). The comparison runs inside the plugin, so checking whether a track is already queued costs a single native call instead of reading every entry from Pawn, which keeps large queues (`channels.max_queue_per_channel` up to `1000`) cheap to inspect.
+* **Returns:** the index of the first match at or after `start_index`, or `-1` if there is none, `item` is empty or `channelid` does not exist.
+* **Example:**
+```pawn
+if (SA_FindAudioStreamChannelQueue(ch, "library://Rock/song.mp3") != -1) {
+    // Already in the list: highlight it instead of adding it again
+}
+```
+
 ### `SA_ClearAudioStreamChannelQueue`
 ```pawn
 native SA_ClearAudioStreamChannelQueue(channelid);
@@ -397,7 +410,7 @@ Performs a one-time in-place random shuffle (`std::shuffle` seeded with `std::ra
 ```pawn
 native SA_QueueChannelAudioStreamPlaylist(channelid, const url[], max_items = 25);
 ```
-Asynchronously imports up to `clamp(max_items, 1, channels.max_queue_per_channel)` tracks from playlist URL `url` into `channelid` on `extraction_pool_` (one import per channel at a time, `60s` timeout, cancelled if the channel is destroyed). If `channelid` is stopped/idle, the first item begins playing immediately and the rest are queued; if the concurrent transcoder limit is reached when trying to start the first track, nothing is queued and `OnAudioStreamChannelPlaylistQueued` fires with `added = 0`, `SA_ERR_INTERNAL_ERROR`, and `"Maximum concurrent transcoders reached"`. Fires `OnAudioStreamChannelPlaylistQueued` on completion.
+Asynchronously imports up to `clamp(max_items, 1, channels.max_queue_per_channel)` tracks from playlist URL `url` into `channelid` on `extraction_pool_` (one import per channel at a time, `60s` timeout up to 200 items plus `10s` per further 100 items, cancelled if the channel is destroyed). If `channelid` is stopped/idle, the first item begins playing immediately and the rest are queued; if the concurrent transcoder limit is reached when trying to start the first track, nothing is queued and `OnAudioStreamChannelPlaylistQueued` fires with `added = 0`, `SA_ERR_INTERNAL_ERROR`, and `"Maximum concurrent transcoders reached"`. Fires `OnAudioStreamChannelPlaylistQueued` on completion.
 * **Returns:** `1` if the import was scheduled, `0` if `channelid` is invalid, `url` is not an HTTP(S) URL, the extractor is not ready, or an import is already pending for `channelid`.
 
 ### `SA_SeekChannelAudioStream`

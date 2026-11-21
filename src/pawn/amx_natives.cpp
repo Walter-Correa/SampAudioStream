@@ -533,6 +533,16 @@ cell AMX_NATIVE_CALL n_SA_GetAudioStreamChannelQueueLabel(AMX* amx, cell* params
     return 1;
 }
 
+// SA_FindAudioStreamChannelQueue(channelid, const item[], start_index = 0)
+cell AMX_NATIVE_CALL n_SA_FindAudioStreamChannelQueue(AMX* amx, cell* params) {
+    if (!g_engine) return -1;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return -1;
+    const std::string raw_item = ReadAmxString(amx, params[2]);
+    const std::int32_t start_index = (argc >= 3) ? static_cast<std::int32_t>(params[3]) : 0;
+    return static_cast<cell>(g_engine->FindChannelQueueItem(static_cast<ChannelId>(params[1]), raw_item, start_index));
+}
+
 // SA_ClearAudioStreamChannelQueue(channelid)
 cell AMX_NATIVE_CALL n_SA_ClearAudioStreamChannelQueue(AMX*, cell* params) {
     if (!g_engine) return 0;
@@ -1139,6 +1149,7 @@ const std::vector<AMX_NATIVE_INFO>& GetPluginNatives() {
         {"SA_GetAudioStreamChannelTrack", n_SA_GetAudioStreamChannelTrack},
         {"SA_GetAudioStreamChannelQueue", n_SA_GetAudioStreamChannelQueue},
         {"SA_GetAudioStreamChannelQueueLabel", n_SA_GetAudioStreamChannelQueueLabel},
+        {"SA_FindAudioStreamChannelQueue", n_SA_FindAudioStreamChannelQueue},
         {"SA_ClearAudioStreamChannelQueue", n_SA_ClearAudioStreamChannelQueue},
         {"SA_SetAudioStreamChannelPos", n_SA_SetAudioStreamChannelPos},
         {"SA_ClearAudioStreamChannelPos", n_SA_ClearAudioStreamChannelPos},

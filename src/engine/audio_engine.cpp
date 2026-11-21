@@ -7472,6 +7472,26 @@ bool AudioEngine::GetChannelQueueItemLabel(ChannelId channel_id, std::size_t ind
     return true;
 }
 
+std::int32_t AudioEngine::FindChannelQueueItem(
+    ChannelId channel_id,
+    const std::string& pawn_item,
+    std::int32_t start_index) const {
+    if (pawn_item.empty()) return -1;
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = channels_.find(channel_id);
+    if (it == channels_.end() || !it->second) return -1;
+    const auto& queue = it->second->queue;
+    const std::size_t start = (start_index > 0) ? static_cast<std::size_t>(start_index) : 0u;
+    for (std::size_t i = start; i < queue.size(); ++i) {
+        const auto& entry = queue[i];
+        const bool match = entry.pawn_url.empty()
+            ? (ConvertTextForPawn(entry.utf8_url, config_.pawn_text_encoding) == pawn_item)
+            : (entry.pawn_url == pawn_item);
+        if (match) return static_cast<std::int32_t>(i);
+    }
+    return -1;
+}
+
 bool AudioEngine::GetStreamInfo(StreamId stream_id, TrackMetadata& out_meta, StreamState& out_state) const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     auto it = streams_.find(stream_id);
