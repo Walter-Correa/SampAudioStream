@@ -5030,10 +5030,21 @@ bool AudioEngine::PlayChannel(
     std::shared_ptr<ChannelRunState> run;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
+        std::int32_t resume_pos = -1;
+        auto cur = channels_.find(channel_id);
+        if (cur != channels_.end() && cur->second && cur->second->playlist_mode) {
+            const SyncChannel& prev = *cur->second;
+            if (prev.active_run && prev.current_from_queue && prev.playlist_pos >= 0) {
+                resume_pos = prev.playlist_pos;
+            } else if (prev.active_run && !prev.current_from_queue) {
+                resume_pos = prev.playlist_resume_pos;
+            }
+        }
         if (!PlayChannelLocked(channel_id, url_or_query, original_input_pawn, ch, run)) {
             return false;
         }
         ch->playlist_pos = -1;
+        ch->playlist_resume_pos = resume_pos;
         ch->current_from_queue = false;
         ch->consecutive_errors = 0;
         MarkChannelDirtyLocked(*ch);
@@ -5100,7 +5111,18 @@ void AudioEngine::AdvanceChannelOrEndLocked(
 
     if (channel->playlist_mode) {
         if (!channel->current_from_queue) {
-            // Out-of-list PlayChannel track ends without disturbing or advancing the playlist.
+            // Out-of-list PlayChannel track: repeat it on LOOP_TRACK, otherwise continue the playlist after
+            // the item that was playing before it (or from the first item).
+            if (natural_end && channel->loop_mode == ChannelLoopMode::Track && !channel->current_input.utf8_url.empty()) {
+                start_track_from_entry(channel->current_input, -1, false);
+                return;
+            }
+            const std::int32_t next_pos = NextPlaylistIndexAfterOutOfListLocked(*channel);
+            if (next_pos >= 0) {
+                channel->playlist_resume_pos = -1;
+                start_track_from_entry(channel->queue[static_cast<std::size_t>(next_pos)], next_pos, true);
+                return;
+            }
             stop_playback(false, true);
             return;
         }
@@ -5575,7 +5597,9 @@ bool AudioEngine::SkipChannel(ChannelId channel_id) {
                 return false;
             }
             std::int32_t next_idx = -1;
-            if (target->current_from_queue && !target->queue.empty()) {
+            if (!target->current_from_queue) {
+                next_idx = NextPlaylistIndexAfterOutOfListLocked(*target);
+            } else if (!target->queue.empty()) {
                 const std::int32_t q_size = static_cast<std::int32_t>(target->queue.size());
                 const std::int32_t cand = (target->playlist_pos >= -1 && target->playlist_pos < q_size)
                     ? (target->playlist_pos + 1)
@@ -5597,6 +5621,7 @@ bool AudioEngine::SkipChannel(ChannelId channel_id) {
                     return false;
                 }
                 ch->playlist_pos = next_idx;
+                ch->playlist_resume_pos = -1;
                 ch->current_from_queue = true;
                 ch->consecutive_errors = 0;
                 MarkChannelDirtyLocked(*ch);
@@ -5997,6 +6022,7 @@ bool AudioEngine::ClearChannelQueue(ChannelId channel_id) {
             }
         }
         ch.playlist_pos = -1;
+        ch.playlist_resume_pos = -1;
         if (!ch.playlist_mode || stopped_run != nullptr || !ch.active_run) {
             ch.current_from_queue = false;
         }
@@ -6251,6 +6277,9 @@ bool AudioEngine::RemoveChannelQueueItem(ChannelId channel_id, std::size_t index
         const std::string prev_next = GetNextChannelTrackUrlLocked(ch);
         const std::int32_t idx_i32 = static_cast<std::int32_t>(index);
         ch.queue.erase(ch.queue.begin() + static_cast<std::ptrdiff_t>(index));
+        if (idx_i32 <= ch.playlist_resume_pos) {
+            --ch.playlist_resume_pos;
+        }
 
         if (ch.playlist_mode) {
             if (idx_i32 < ch.playlist_pos) {
@@ -6368,6 +6397,9 @@ bool AudioEngine::InsertChannelQueueItem(
                 if (ch.playlist_pos >= 0 && static_cast<std::int32_t>(index) <= ch.playlist_pos) {
                     ++ch.playlist_pos;
                 }
+                if (ch.playlist_resume_pos >= 0 && static_cast<std::int32_t>(index) <= ch.playlist_resume_pos) {
+                    ++ch.playlist_resume_pos;
+                }
                 if (!ch.active_run && (!ch.restore_wanted || ch.restore_retry_blocked)) {
                     if (!PlayChannelLocked(channel_id, url_or_query, original_input_pawn, ch_start, run_start,
                                            clean_utf8_label)) {
@@ -6456,6 +6488,7 @@ bool AudioEngine::ShuffleChannelQueue(ChannelId channel_id) {
         } else {
             std::shuffle(ch.queue.begin(), ch.queue.end(), queue_shuffle_rng_);
         }
+        ch.playlist_resume_pos = -1;
         MarkChannelDirtyLocked(ch);
         const std::string new_next = GetNextChannelTrackUrlLocked(ch);
         if (!new_next.empty() && new_next != prev_next) {
@@ -6493,6 +6526,16 @@ bool AudioEngine::MoveChannelQueueItem(ChannelId channel_id, std::size_t from_in
                 --ch.playlist_pos;
             } else if (from_index > pos && to_index <= pos) {
                 ++ch.playlist_pos;
+            }
+        }
+        if (ch.playlist_resume_pos >= 0) {
+            const std::size_t rpos = static_cast<std::size_t>(ch.playlist_resume_pos);
+            if (rpos == from_index) {
+                ch.playlist_resume_pos = static_cast<std::int32_t>(to_index);
+            } else if (from_index < rpos && to_index >= rpos) {
+                --ch.playlist_resume_pos;
+            } else if (from_index > rpos && to_index <= rpos) {
+                ++ch.playlist_resume_pos;
             }
         }
         MarkChannelDirtyLocked(ch);
@@ -6565,13 +6608,30 @@ bool AudioEngine::SetStreamLiveTitle(StreamId stream_id, const std::string& utf8
     return true;
 }
 
+std::int32_t AudioEngine::NextPlaylistIndexAfterOutOfListLocked(const SyncChannel& ch) {
+    const std::int32_t q_size = static_cast<std::int32_t>(ch.queue.size());
+    if (q_size <= 0) {
+        return -1;
+    }
+    const std::int32_t resume = std::clamp<std::int32_t>(ch.playlist_resume_pos, -1, q_size - 1);
+    const std::int32_t next = resume + 1;
+    if (next < q_size) {
+        return next;
+    }
+    return (ch.loop_mode == ChannelLoopMode::Queue) ? 0 : -1;
+}
+
 std::string AudioEngine::GetNextChannelTrackUrlLocked(const SyncChannel& ch) const {
     if (!ch.active_run) {
         return "";
     }
     if (ch.playlist_mode) {
         if (!ch.current_from_queue) {
-            return "";
+            if (ch.loop_mode == ChannelLoopMode::Track) {
+                return ch.current_input.utf8_url;
+            }
+            const std::int32_t next_pos = NextPlaylistIndexAfterOutOfListLocked(ch);
+            return (next_pos >= 0) ? ch.queue[static_cast<std::size_t>(next_pos)].utf8_url : std::string();
         }
         if (ch.loop_mode == ChannelLoopMode::Track) {
             return ch.current_input.utf8_url;
@@ -6643,6 +6703,7 @@ bool AudioEngine::SetChannelPlaylistMode(ChannelId channel_id, bool enable) {
             return true;
         }
         const std::string prev_next = GetNextChannelTrackUrlLocked(ch);
+        ch.playlist_resume_pos = -1;
         if (enable) {
             ch.playlist_mode = true;
             if (ch.active_run && ch.current_from_queue && !ch.current_input.utf8_url.empty()) {
@@ -6712,6 +6773,7 @@ bool AudioEngine::PlayChannelQueueItem(ChannelId channel_id, std::int32_t index)
         }
         ch->consecutive_errors = 0;
         ch->current_from_queue = true;
+        ch->playlist_resume_pos = -1;
         if (ch->playlist_mode) {
             ch->playlist_pos = index;
         } else {

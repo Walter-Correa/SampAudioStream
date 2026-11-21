@@ -173,6 +173,8 @@ struct SyncChannel {
     ChannelLoopMode loop_mode{ChannelLoopMode::Off};
     bool playlist_mode{false};
     std::int32_t playlist_pos{-1};
+    // Last list item that was playing when an out-of-list track started; the playlist continues after it.
+    std::int32_t playlist_resume_pos{-1};
     bool current_from_queue{false};
     std::atomic<StreamState> state{StreamState::Idle};
     TrackMetadata current_track; // Main-thread owned
@@ -441,6 +443,7 @@ private:
     static std::string GenerateEndpointCode();
     std::string GenerateUniqueEndpointCodeLocked() const;
     std::string GetNextChannelTrackUrlLocked(const SyncChannel& ch) const;
+    static std::int32_t NextPlaylistIndexAfterOutOfListLocked(const SyncChannel& ch);
     std::string BuildEndpointUrl(const std::string& prefix, const std::string& token) const;
     std::string BuildEndpointUrlLocked(const std::string& prefix, const std::string& token) const;
     std::string BuildEndpointUrlForPlayerLocked(const std::string& prefix, const std::string& token, PlayerId player_id) const;

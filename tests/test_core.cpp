@@ -17087,6 +17087,67 @@ void TestRound71SoundFiles() {
         TEST_CHECK(!engine.GetAudioLibraryTrack(0, 1, track));
     }
 
+    // 8. Playlist mode continues into the list after an out-of-list track (skip, natural end, end of list)
+    TEST_PHASE("8. Out-of-list channel track continues the playlist after the item that was playing");
+    {
+        write_file(music_dir / "Mid" / "m1.wav", BuildTestWavBytes(16000, 3000));
+        write_file(music_dir / "Mid" / "m2.wav", BuildTestWavBytes(16000, 3000));
+        write_file(music_dir / "Short" / "s1.wav", BuildTestWavBytes(16000, 400));
+
+        const ChannelId ch = engine.CreateChannel("PLResume", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
+        TEST_CHECK(ch != INVALID_CHANNEL_ID);
+        TEST_CHECK(engine.SetChannelPlaylistMode(ch, true));
+        TEST_CHECK(engine.PlayChannel(ch, "library:///solta.wav"));
+        TEST_CHECK(wait_until([&]() { return engine.GetChannelState(ch) == StreamState::Playing; }));
+        TEST_CHECK(engine.QueueChannel(ch, "library://Mid/m1.wav", "", "m1.wav"));
+        TEST_CHECK(engine.QueueChannel(ch, "library://Mid/m2.wav", "", "m2.wav"));
+        TEST_CHECK(engine.GetChannelQueuePos(ch) == -1);
+
+        // Skipping the out-of-list track starts the list from the first item
+        TEST_CHECK(engine.SkipChannel(ch));
+        TEST_CHECK(wait_until([&]() {
+            return engine.GetChannelQueuePos(ch) == 0 && engine.GetChannelState(ch) == StreamState::Playing;
+        }));
+
+        // A short out-of-list track over item 0 ends naturally and the list continues with item 1
+        TEST_CHECK(engine.PlayChannel(ch, "library://Short/s1.wav"));
+        TEST_CHECK(engine.GetChannelQueuePos(ch) == -1);
+        TEST_CHECK(wait_until([&]() {
+            return engine.GetChannelQueuePos(ch) == 1 && engine.GetChannelState(ch) == StreamState::Playing;
+        }, 20000));
+
+        // Skipping an out-of-list track played over the last item stops (LOOP_OFF) and keeps the list
+        TEST_CHECK(engine.PlayChannel(ch, "library:///solta.wav"));
+        TEST_CHECK(wait_until([&]() { return engine.GetChannelState(ch) == StreamState::Playing; }));
+        TEST_CHECK(engine.SkipChannel(ch));
+        TEST_CHECK(wait_until([&]() {
+            const StreamState st = engine.GetChannelState(ch);
+            return engine.GetChannelQueuePos(ch) == -1 && st != StreamState::Playing &&
+                   st != StreamState::Resolving && st != StreamState::Buffering;
+        }));
+        ChannelInfo info{};
+        TEST_CHECK(engine.GetChannelInfo(ch, info) && info.queue_count == 2);
+
+        // With LOOP_QUEUE the same skip wraps to the first item
+        TEST_CHECK(engine.SetChannelLoopMode(ch, ChannelLoopMode::Queue));
+        TEST_CHECK(engine.PlayChannelQueueItem(ch, 1));
+        TEST_CHECK(wait_until([&]() { return engine.GetChannelQueuePos(ch) == 1; }));
+        TEST_CHECK(engine.PlayChannel(ch, "library:///solta.wav"));
+        TEST_CHECK(engine.SkipChannel(ch));
+        TEST_CHECK(wait_until([&]() {
+            return engine.GetChannelQueuePos(ch) == 0 && engine.GetChannelState(ch) == StreamState::Playing;
+        }));
+
+        // Inserting before the resume point shifts it, so the list still continues after the same item
+        TEST_CHECK(engine.PlayChannel(ch, "library:///solta.wav"));
+        TEST_CHECK(engine.InsertChannelQueueItem(ch, 0, "library://Short/s1.wav", "", "s1.wav"));
+        TEST_CHECK(engine.SkipChannel(ch));
+        TEST_CHECK(wait_until([&]() { return engine.GetChannelQueuePos(ch) == 2; }));
+        std::string label;
+        TEST_CHECK(engine.GetChannelQueueItemLabel(ch, 2, label) && label == "m2.wav");
+        engine.DestroyChannel(ch);
+    }
+
     engine.Shutdown();
     std::filesystem::remove_all(r71_dir, fec);
     std::cout << "[PASS] TestRound71SoundFiles\n";

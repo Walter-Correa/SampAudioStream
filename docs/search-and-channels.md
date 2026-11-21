@@ -160,9 +160,9 @@ Enable non-destructive playlist mode per channel with `SA_SetAudioStreamChannelP
 | Natural end (`LOOP_TRACK`) | Repeats current item at the same `playlist_pos` |
 | Natural end (`LOOP_QUEUE`) | Advances to `playlist_pos + 1`, wrapping back to `0` after the last item |
 | Natural end (`LOOP_OFF`) | Advances to `playlist_pos + 1`; after the last item, stops with `playlist_pos = -1`, preserves list, and fires `OnAudioStreamChannelQueueEnd` |
-| `SA_SkipChannelAudioStream` | Jumps to next item (wrapping on `LOOP_QUEUE`, or stopping without `QueueEnd` on `LOOP_OFF`) |
+| `SA_SkipChannelAudioStream` | Jumps to next item (wrapping on `LOOP_QUEUE`, or stopping without `QueueEnd` on `LOOP_OFF`); during an out-of-list track it continues the list like a natural end |
 | `SA_PlayAudioStreamChannelQueue(i)` | Jumps to item `i` without altering list order (`playlist_pos = i`) |
-| `SA_PlayChannelAudioStream(url)` | Plays out-of-list (`playlist_pos = -1`) without modifying the list, then stops on completion |
+| `SA_PlayChannelAudioStream(url)` | Plays out-of-list (`playlist_pos = -1`) without modifying the list. When it ends (or is skipped or fails) the list continues after the item that was playing before it, or from the first item if none was; `LOOP_TRACK` repeats the out-of-list track, `LOOP_QUEUE` wraps past the last item, and the channel stops (without `OnAudioStreamChannelQueueEnd`) when nothing is left |
 | `Remove(i)` | Decrements `playlist_pos` when `i < playlist_pos`; stops and plays the replacement item at `i` (or stops if none) when `i == playlist_pos`; leaves playback untouched when `i > playlist_pos` |
 | `Move(from, to)` / `Shuffle` | Reorders the list and keeps `playlist_pos` pinned to the currently playing track |
 | `Clear` | Clears the list, sets `playlist_pos = -1`, and stops playback if the active track came from the list |
