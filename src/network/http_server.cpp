@@ -97,6 +97,22 @@ bool ContainsAsciiIgnoreCase(const std::string& haystack, const std::string& nee
     return it != haystack.end();
 }
 
+bool EqualsAsciiIgnoreCase(const std::string& a, const std::string& b) {
+    return a.size() == b.size() && ContainsAsciiIgnoreCase(a, b);
+}
+
+// Name sent as icy-name for personal/global sessions: the SA-MP client only shows on-screen text when
+// icy-name is present, so sessions use the station name when known, otherwise the track display title.
+std::string SessionIcyName(const StreamEndpointInfo& ep) {
+    if (!ep.station_name.empty()) {
+        return ep.station_name;
+    }
+    if (!ep.artist.empty() && !ep.title.empty()) {
+        return ContainsAsciiIgnoreCase(ep.title, ep.artist) ? ep.title : (ep.artist + " - " + ep.title);
+    }
+    return !ep.title.empty() ? ep.title : ep.artist;
+}
+
 bool ExtractResumeOffset(const std::string& target, std::uint64_t& out_offset) {
     auto qpos = target.find('?');
     if (qpos == std::string::npos) return false;
@@ -332,9 +348,11 @@ private:
             << "icy-br: " << endpoint_.bitrate_kbps << "\r\n";
 
         if (endpoint_.send_icy_headers) {
-            if (endpoint_.is_channel && !endpoint_.station_name.empty()) {
-                std::string icy_name = ConvertTextForPawn(endpoint_.station_name, "cp1252");
+            const std::string header_name = endpoint_.is_channel ? endpoint_.station_name : SessionIcyName(endpoint_);
+            if (!header_name.empty()) {
+                std::string icy_name = ConvertTextForPawn(header_name, "cp1252");
                 oss << "icy-name: " << SanitizeHeaderValue(icy_name) << "\r\n";
+                sent_icy_name_ = header_name;
             }
             if (icy_metadata_requested_) {
                 oss << "icy-metaint: " << kIcyMetaInterval << "\r\n";
@@ -402,13 +420,14 @@ private:
 
     void BuildIcyMetaFrame(const StreamEndpointInfo& ep) {
         std::string raw;
-        if (!ep.live_title.empty()) {
-            if (!ep.is_channel && !ep.station_name.empty() &&
-                !ContainsAsciiIgnoreCase(ep.live_title, ep.station_name)) {
-                raw = ep.live_title + " - " + ep.station_name;
-            } else {
-                raw = ep.live_title;
+        if (!ep.is_channel) {
+            // Sessions: the title/station already travels in icy-name, so StreamTitle only carries live radio text.
+            raw = ep.live_title;
+            if (!raw.empty() && !sent_icy_name_.empty() && EqualsAsciiIgnoreCase(raw, sent_icy_name_)) {
+                raw.clear();
             }
+        } else if (!ep.live_title.empty()) {
+            raw = ep.live_title;
         } else if (!ep.artist.empty() && !ep.title.empty()) {
             std::string lt = ep.title;
             std::string la = ep.artist;
@@ -619,6 +638,7 @@ private:
     std::string last_icy_artist_;
     std::string last_icy_station_name_;
     std::string last_icy_live_title_;
+    std::string sent_icy_name_;
     std::vector<std::uint8_t> icy_meta_buf_;
 };
 

@@ -4631,6 +4631,7 @@ void TestRound27Fase9IcyFraming() {
     ep.token = "icy_tok";
     ep.title = "T\xC3\xADtulo' Teste"; // Título' Teste -> apostrophe is kept
     ep.artist = "Artista";
+    ep.is_channel = true;
     ep.bitrate_kbps = 128;
     ep.buffer = buf;
     srv.RegisterEndpoint(ep);
@@ -4642,7 +4643,7 @@ void TestRound27Fase9IcyFraming() {
         asio::io_context ioc;
         asio::ip::tcp::socket sock(ioc);
         sock.connect({asio::ip::address_v4::loopback(), srv.BoundPort()});
-        std::string req = "GET /s/icy_tok HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+        std::string req = "GET /c/icy_tok HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
         asio::write(sock, asio::buffer(req));
         std::string raw;
         std::array<char, 4096> tmp{};
@@ -4671,7 +4672,7 @@ void TestRound27Fase9IcyFraming() {
         asio::io_context ioc;
         asio::ip::tcp::socket sock(ioc);
         sock.connect({asio::ip::address_v4::loopback(), srv.BoundPort()});
-        std::string req = "GET /s/icy_tok HTTP/1.1\r\nHost: 127.0.0.1\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n";
+        std::string req = "GET /c/icy_tok HTTP/1.1\r\nHost: 127.0.0.1\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n";
         asio::write(sock, asio::buffer(req));
 
         // Update metadata cleanly BEFORE chunk >= 32000 so block 2 carries the new track title
@@ -14780,12 +14781,13 @@ void TestRound63Features() {
         StreamEndpointInfo ep;
         ep.token = "r63_icy";
         ep.title = "Title A";
+        ep.is_channel = true;
         ep.artist = "";
         ep.bitrate_kbps = 128;
         ep.buffer = buf;
         srv.RegisterEndpoint(ep);
 
-        const std::string ep_url = "http://127.0.0.1:" + std::to_string(srv.BoundPort()) + "/s/r63_icy";
+        const std::string ep_url = "http://127.0.0.1:" + std::to_string(srv.BoundPort()) + "/c/r63_icy";
         std::atomic<bool> cancel{false};
         std::string out_title;
         std::string out_station;
@@ -15842,8 +15844,8 @@ void TestRound68Features() {
         std::atomic<bool> ep_cancel{false};
         TEST_CHECK(FetchIcyStreamTitle(ready_endpoint_url, {}, ep_cancel, ep_live_title, ep_station_name) == IcyPollResult::Title);
         HttpClient::SetSecurityPolicy(prev_policy);
-        TEST_CHECK(ep_station_name.empty());
-        TEST_CHECK(ep_live_title == "Song - Artist - Radio Teste");
+        TEST_CHECK(ep_station_name == "Radio Teste");
+        TEST_CHECK(ep_live_title == "Song - Artist");
 
         // 5. Channel with non-generic title (probed from icy-name during link probe) is NOT overwritten by poll
         {
@@ -16203,7 +16205,7 @@ void TestRound69Features() {
         }));
         const std::string text_hdrs = fetch_endpoint_headers_lower(engine.GetHttpPort(), text_ep_url);
         TEST_CHECK(text_hdrs.find("200 ok") != std::string::npos);
-        TEST_CHECK(text_hdrs.find("icy-name:") == std::string::npos);
+        TEST_CHECK(text_hdrs.find("icy-name: fx loud.mp3") != std::string::npos);
         TEST_CHECK(text_hdrs.find("icy-metaint:") != std::string::npos);
 
         engine.DestroyChannel(ch);
@@ -16314,6 +16316,90 @@ void TestRound70Features() {
         TEST_CHECK(http_status_line(srv.BoundPort(), "/channel/Zy9xW8vU7t").find(" 404 ") != std::string::npos);
         TEST_CHECK(http_status_line(srv.BoundPort(), "/c/Ab3dE9xQ2k").find(" 404 ") != std::string::npos);
         TEST_CHECK(http_status_line(srv.BoundPort(), "/s/Zy9xW8vU7t").find(" 404 ") != std::string::npos);
+        srv.Stop();
+    }
+
+    // 1b. On-screen text: sessions send icy-name (client needs it) without repeating it in StreamTitle;
+    //     channels keep icy-name = channel name and StreamTitle = track/live text
+    TEST_PHASE("1b. Session icy-name carries the title once; channel keeps name + StreamTitle");
+    {
+        auto read_icy = [](std::uint16_t port, const std::string& path, std::string& out_hdrs, std::string& out_meta) -> bool {
+            asio::io_context ioc;
+            asio::ip::tcp::socket sock(ioc);
+            asio::error_code ec;
+            sock.connect({asio::ip::address_v4::loopback(), port}, ec);
+            if (ec) return false;
+            const std::string req = "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n";
+            asio::write(sock, asio::buffer(req), ec);
+            std::string raw;
+            std::array<char, 4096> tmp{};
+            while (true) {
+                std::size_t n = sock.read_some(asio::buffer(tmp), ec);
+                if (n > 0) raw.append(tmp.data(), n);
+                if (ec) break;
+            }
+            const auto hdr_end = raw.find("\r\n\r\n");
+            if (hdr_end == std::string::npos) return false;
+            out_hdrs = raw.substr(0, hdr_end);
+            const std::size_t meta_pos = hdr_end + 4 + 16000;
+            if (raw.size() <= meta_pos) return false;
+            const std::size_t mlen = static_cast<std::size_t>(static_cast<unsigned char>(raw[meta_pos])) * 16;
+            if (raw.size() < meta_pos + 1 + mlen) return false;
+            out_meta = raw.substr(meta_pos + 1, mlen);
+            while (!out_meta.empty() && out_meta.back() == '\0') out_meta.pop_back();
+            return true;
+        };
+
+        HttpStreamingServer srv;
+        std::string err;
+        TEST_CHECK(srv.Start("127.0.0.1", 0, err, false));
+        std::vector<std::uint8_t> payload(20000, 0x55);
+
+        auto make_ep = [&](const std::string& token, bool is_channel) {
+            auto b = std::make_shared<AudioStreamBuffer>(64 * 1024);
+            b->Write(payload.data(), payload.size());
+            b->MarkEof();
+            StreamEndpointInfo e;
+            e.token = token;
+            e.is_channel = is_channel;
+            e.bitrate_kbps = 128;
+            e.buffer = b;
+            return e;
+        };
+
+        StreamEndpointInfo yt = make_ep("SessYt0001", false);
+        yt.title = "Akon - Don't Matter (Official Music Video)";
+        srv.RegisterEndpoint(yt);
+        StreamEndpointInfo radio = make_ep("SessRadio1", false);
+        radio.title = "Radio Teste";
+        radio.station_name = "Radio Teste";
+        radio.live_title = "Song - Artist";
+        srv.RegisterEndpoint(radio);
+        StreamEndpointInfo same = make_ep("SessSame01", false);
+        same.title = "Radio Teste";
+        same.live_title = "radio teste";
+        srv.RegisterEndpoint(same);
+        StreamEndpointInfo chan = make_ep("ChanBox001", true);
+        chan.title = "musicas.mp3";
+        chan.station_name = "Caixa de som de Fulano";
+        srv.RegisterEndpoint(chan);
+
+        std::string hdrs, meta;
+        TEST_CHECK(read_icy(srv.BoundPort(), "/s/SessYt0001", hdrs, meta));
+        TEST_CHECK(hdrs.find("icy-name: Akon - Don't Matter (Official Music Video)") != std::string::npos);
+        TEST_CHECK(meta.empty());
+
+        TEST_CHECK(read_icy(srv.BoundPort(), "/s/SessRadio1", hdrs, meta));
+        TEST_CHECK(hdrs.find("icy-name: Radio Teste") != std::string::npos);
+        TEST_CHECK(meta == "StreamTitle='Song - Artist';");
+
+        TEST_CHECK(read_icy(srv.BoundPort(), "/s/SessSame01", hdrs, meta));
+        TEST_CHECK(hdrs.find("icy-name: Radio Teste") != std::string::npos);
+        TEST_CHECK(meta.empty());
+
+        TEST_CHECK(read_icy(srv.BoundPort(), "/c/ChanBox001", hdrs, meta));
+        TEST_CHECK(hdrs.find("icy-name: Caixa de som de Fulano") != std::string::npos);
+        TEST_CHECK(meta == "StreamTitle='musicas.mp3';");
         srv.Stop();
     }
 
