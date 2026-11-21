@@ -1258,6 +1258,11 @@ void AudioEngine::ProcessPendingCompletions(std::chrono::steady_clock::time_poin
                 ++it;
                 continue;
             }
+            if (!session->is_global && IsPersonalAudioSilencedLocked(session->owner_player_id)) {
+                // The owner hears a sound or muted personal audio: the rest of the track is still due.
+                ++it;
+                continue;
+            }
             if (now < it->min_deadline) {
                 ++it;
                 continue;
@@ -2549,6 +2554,30 @@ StreamId AudioEngine::PlayAudioStreamForPlayer(
 }
 
 void AudioEngine::RegisterNativePassthroughSession(PlayerId player_id, const std::string& url, const StreamOptions& options) {
+    RegisterNativePassthroughSessionImpl(player_id, url, options, false);
+}
+
+bool AudioEngine::HasActivePlayerSound(PlayerId player_id) const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return player_sounds_.find(player_id) != player_sounds_.end();
+}
+
+bool AudioEngine::DeferNativePassthroughForSound(PlayerId player_id, const std::string& url, const StreamOptions& options) {
+    if (!initialized_.load() || shutting_down_.load() || player_id < 0 || url.empty()) {
+        return false;
+    }
+    if (!HasActivePlayerSound(player_id)) {
+        return false;
+    }
+    RegisterNativePassthroughSessionImpl(player_id, url, options, true);
+    return true;
+}
+
+void AudioEngine::RegisterNativePassthroughSessionImpl(
+    PlayerId player_id,
+    const std::string& url,
+    const StreamOptions& options,
+    bool deferred) {
     if (!initialized_.load() || shutting_down_.load() || player_id < 0 || url.empty()) {
         return;
     }
@@ -2576,6 +2605,7 @@ void AudioEngine::RegisterNativePassthroughSession(PlayerId player_id, const std
     std::shared_ptr<ActiveStreamSession> old_personal;
     std::shared_ptr<AudioStreamBuffer> old_buf;
     bool source_changed = false;
+    std::vector<PlayerAudioCommand> cmds;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         auto prev_it = player_streams_.find(player_id);
@@ -2591,16 +2621,22 @@ void AudioEngine::RegisterNativePassthroughSession(PlayerId player_id, const std
         AddStreamSessionLocked(session);
         player_streams_[player_id] = session->id;
         auto& arb = player_arbitration_[player_id];
-        source_changed = (arb.client_source_kind != AudioSourcePriority::Personal ||
-                          arb.client_source_id != static_cast<std::uint64_t>(session->id));
         arb.personal_stream_id = session->id;
-        arb.client_source_kind = AudioSourcePriority::Personal;
-        arb.client_source_id = session->id;
-        arb.client_generation = 1;
-        arb.client_options_version = session->options_version;
-        arb.client_distance = session->options.distance;
-        arb.client_url = url;
+        if (deferred) {
+            // The client keeps playing the sound; reconciliation delivers this link when the sound ends.
+            ReconcilePlayerLocked(player_id, nullptr, cmds);
+        } else {
+            source_changed = (arb.client_source_kind != AudioSourcePriority::Personal ||
+                              arb.client_source_id != static_cast<std::uint64_t>(session->id));
+            arb.client_source_kind = AudioSourcePriority::Personal;
+            arb.client_source_id = session->id;
+            arb.client_generation = 1;
+            arb.client_options_version = session->options_version;
+            arb.client_distance = session->options.distance;
+            arb.client_url = url;
+        }
     }
+    ApplyPlayerAudioCommands(cmds);
 
     if (old_personal) {
         old_personal->cancel_flag.store(true);
@@ -3783,6 +3819,7 @@ bool AudioEngine::LoadSoundFile(
         std::lock_guard<std::mutex> lock(sound_cache_mutex_);
         auto it = sound_cache_.find(key);
         if (it != sound_cache_.end() && it->second.size == size && it->second.mtime == mtime && it->second.data) {
+            it->second.last_use = ++sound_cache_use_counter_;
             out_data = it->second.data;
             out_content_type = it->second.content_type;
             out_duration_ms = it->second.duration_ms;
@@ -3812,9 +3849,26 @@ bool AudioEngine::LoadSoundFile(
     out_content_type = entry.content_type;
     out_duration_ms = duration_ms;
     std::lock_guard<std::mutex> lock(sound_cache_mutex_);
-    if (sound_cache_.size() >= 64 && sound_cache_.find(key) == sound_cache_.end()) {
-        sound_cache_.clear();
+    auto existing = sound_cache_.find(key);
+    if (existing != sound_cache_.end()) {
+        sound_cache_bytes_ -= std::min<std::uint64_t>(sound_cache_bytes_, existing->second.size);
+        sound_cache_.erase(existing);
     }
+    if (size > kMaxSoundCacheBytes) {
+        return true; // Played from the loaded copy, too large to keep cached.
+    }
+    while (!sound_cache_.empty() && sound_cache_bytes_ + size > kMaxSoundCacheBytes) {
+        auto oldest = sound_cache_.begin();
+        for (auto cit = sound_cache_.begin(); cit != sound_cache_.end(); ++cit) {
+            if (cit->second.last_use < oldest->second.last_use) {
+                oldest = cit;
+            }
+        }
+        sound_cache_bytes_ -= std::min<std::uint64_t>(sound_cache_bytes_, oldest->second.size);
+        sound_cache_.erase(oldest);
+    }
+    entry.last_use = ++sound_cache_use_counter_;
+    sound_cache_bytes_ += size;
     sound_cache_[key] = std::move(entry);
     return true;
 }
@@ -3879,6 +3933,9 @@ bool AudioEngine::PlayAudioStreamSoundForPlayer(
         st.use_position = use_position;
         st.duration_ms = duration_ms;
         st.fetched = false;
+        if (replaced_token.empty()) {
+            st.started_at = std::chrono::steady_clock::now();
+        }
         // Fallback when the client never requests the file (audio streams disabled in its settings).
         st.expires_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(duration_ms + 5000);
         http_server_.RegisterFileEndpoint(FileEndpointInfo{token, data, content_type});
@@ -3920,7 +3977,9 @@ void AudioEngine::UpdatePlayerSounds(std::chrono::steady_clock::time_point now) 
             auto it = player_sounds_.find(pid);
             if (it == player_sounds_.end()) continue;
             released_tokens.push_back(it->second.token);
+            const auto silenced_for = now - it->second.started_at;
             player_sounds_.erase(it);
+            ExtendPendingPersonalCompletionLocked(pid, silenced_for);
             ReconcilePlayerLocked(pid, nullptr, cmds);
         }
     }
@@ -3928,6 +3987,29 @@ void AudioEngine::UpdatePlayerSounds(std::chrono::steady_clock::time_point now) 
         http_server_.UnregisterFileEndpoint(token);
     }
     ApplyPlayerAudioCommands(cmds);
+}
+
+bool AudioEngine::IsPersonalAudioSilencedLocked(PlayerId player_id) const {
+    if (player_id < 0) {
+        return false;
+    }
+    if (player_sounds_.find(player_id) != player_sounds_.end()) {
+        return true;
+    }
+    auto ait = player_arbitration_.find(player_id);
+    return ait != player_arbitration_.end() && ait->second.muted && ait->second.mute_include_personal;
+}
+
+void AudioEngine::ExtendPendingPersonalCompletionLocked(PlayerId player_id, std::chrono::steady_clock::duration delay) {
+    if (player_id < 0 || delay <= std::chrono::steady_clock::duration::zero() || IsPersonalAudioSilencedLocked(player_id)) {
+        return;
+    }
+    for (auto& pending : pending_stream_completions_) {
+        if (pending.session && !pending.session->is_global && pending.session->owner_player_id == player_id) {
+            pending.min_deadline += delay;
+            pending.max_deadline += delay;
+        }
+    }
 }
 
 bool AudioEngine::StopAudioStreamForPlayer(PlayerId player_id, bool send_stop) {
@@ -6895,6 +6977,11 @@ bool AudioEngine::SetPlayerAudioStreamMuted(PlayerId player_id, bool mute, bool 
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         auto& arb = player_arbitration_[player_id];
+        const bool was_personal_muted = arb.muted && arb.mute_include_personal;
+        const bool now_personal_muted = mute && include_personal;
+        if (!was_personal_muted && now_personal_muted) {
+            arb.personal_muted_since = std::chrono::steady_clock::now();
+        }
         if (mute && include_personal && arb.personal_stream_id != INVALID_STREAM_ID) {
             auto sit = streams_.find(arb.personal_stream_id);
             if (sit != streams_.end() && sit->second && !ShouldUseDirectPassthrough(*sit->second) && sit->second->buffer) {
@@ -6908,6 +6995,9 @@ bool AudioEngine::SetPlayerAudioStreamMuted(PlayerId player_id, bool mute, bool 
         }
         arb.muted = mute;
         arb.mute_include_personal = mute ? include_personal : false;
+        if (was_personal_muted && !now_personal_muted) {
+            ExtendPendingPersonalCompletionLocked(player_id, std::chrono::steady_clock::now() - arb.personal_muted_since);
+        }
         ReconcilePlayerLocked(player_id, nullptr, cmds);
     }
     ApplyPlayerAudioCommands(cmds);

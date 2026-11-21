@@ -104,11 +104,11 @@ bool ProbeWavDurationMs(const std::string& bytes, std::int64_t& out_ms) {
     std::uint32_t byte_rate = 0;
     std::uint64_t data_size = 0;
     bool have_data = false;
-    std::size_t pos = 12;
+    std::uint64_t pos = 12;
     while (pos + 8 <= n) {
         const unsigned char* id = data + pos;
         const std::uint64_t chunk_size = ReadLe32(data + pos + 4);
-        const std::size_t body = pos + 8;
+        const std::uint64_t body = pos + 8;
         if (std::memcmp(id, "fmt ", 4) == 0) {
             if (chunk_size < 16 || body + 16 > n) return false;
             byte_rate = ReadLe32(data + body + 8);
@@ -118,7 +118,12 @@ bool ProbeWavDurationMs(const std::string& bytes, std::int64_t& out_ms) {
             have_data = true;
             break;
         }
-        pos = body + static_cast<std::size_t>(chunk_size) + static_cast<std::size_t>(chunk_size & 1u);
+        // 64-bit arithmetic: a chunk size near 4 GiB must not wrap around on 32-bit builds.
+        const std::uint64_t next = body + chunk_size + (chunk_size & 1u);
+        if (next <= pos || next > n) {
+            return false;
+        }
+        pos = next;
     }
     if (!have_data || byte_rate == 0) return false;
     out_ms = static_cast<std::int64_t>((data_size * 1000u) / byte_rate);

@@ -104,6 +104,7 @@ struct PlayerSoundState {
     bool use_position{false};
     std::int64_t duration_ms{0};
     bool fetched{false};
+    std::chrono::steady_clock::time_point started_at{};
     std::chrono::steady_clock::time_point expires_at{};
 };
 
@@ -113,6 +114,7 @@ struct CachedSoundFile {
     std::int64_t duration_ms{0};
     std::uintmax_t size{0};
     std::filesystem::file_time_type mtime{};
+    std::uint64_t last_use{0};
 };
 
 struct GlobalAudioSourceRef {
@@ -129,6 +131,7 @@ struct PlayerArbitrationState {
     std::vector<GlobalAudioSourceRef> global_sources;
     bool muted{false};
     bool mute_include_personal{false};
+    std::chrono::steady_clock::time_point personal_muted_since{};
 
     AudioSourcePriority client_source_kind{AudioSourcePriority::None};
     std::uint64_t client_source_id{0};
@@ -322,6 +325,10 @@ public:
     bool SetPlayerAudioStreamPos(PlayerId player_id, float x, float y, float z);
     bool SetAudioStreamPos(StreamId stream_id, float x, float y, float z);
     void RegisterNativePassthroughSession(PlayerId player_id, const std::string& url, const StreamOptions& options);
+    // While a sound plays for player_id, registers the native passthrough link without sending it, so it starts
+    // when the sound ends. Returns false (doing nothing) when no sound is active.
+    bool DeferNativePassthroughForSound(PlayerId player_id, const std::string& url, const StreamOptions& options);
+    bool HasActivePlayerSound(PlayerId player_id) const;
     bool AttachStreamToPlayer(StreamId stream_id, PlayerId target_player_id);
     bool AttachStreamToVehicle(StreamId stream_id, std::int32_t vehicle_id);
 
@@ -519,6 +526,13 @@ private:
         std::int64_t& out_duration_ms,
         std::string& out_error);
     void UpdatePlayerSounds(std::chrono::steady_clock::time_point now);
+    void RegisterNativePassthroughSessionImpl(
+        PlayerId player_id,
+        const std::string& url,
+        const StreamOptions& options,
+        bool deferred);
+    bool IsPersonalAudioSilencedLocked(PlayerId player_id) const;
+    void ExtendPendingPersonalCompletionLocked(PlayerId player_id, std::chrono::steady_clock::duration delay);
     void CleanupExpiredPassthroughSessions(std::chrono::steady_clock::time_point now);
     void CleanupExpiredChannels(std::chrono::steady_clock::time_point now);
     void CheckUnconnectedClients(std::chrono::steady_clock::time_point now);
@@ -671,6 +685,8 @@ private:
     std::uint64_t next_sound_play_id_{1};
     std::mutex sound_cache_mutex_;
     std::unordered_map<std::string, CachedSoundFile> sound_cache_;
+    std::uint64_t sound_cache_bytes_{0};
+    std::uint64_t sound_cache_use_counter_{0};
 };
 
 enum class IcyPollResult {

@@ -1031,6 +1031,9 @@ cell AMX_NATIVE_CALL Hooked_PlayAudioStreamForPlayer(AMX* amx, cell* params) {
         opts.interior_id == -1 &&
         std::abs(opts.volume - 100.0f) < 0.5f &&
         g_orig_play_audio) {
+        if (g_engine->DeferNativePassthroughForSound(player_id, url, opts)) {
+            return 1;
+        }
         g_engine->StopAudioStreamForPlayer(player_id, false);
         cell ret = g_orig_play_audio(amx, params);
         if (ret != 0) {
@@ -1044,6 +1047,9 @@ cell AMX_NATIVE_CALL Hooked_PlayAudioStreamForPlayer(AMX* amx, cell* params) {
         !StreamResolver::IsKnownPlatformUrl(url) &&
         (StartsWithHttpPlain(url) || (StartsWithHttpOrHttps(url) && StreamResolver::IsKnownDirectAudioExtension(url))) &&
         g_orig_play_audio) {
+        if (g_engine->DeferNativePassthroughForSound(player_id, url, opts)) {
+            return 1;
+        }
         g_engine->StopAudioStreamForPlayer(player_id, false);
         cell ret = g_orig_play_audio(amx, params);
         if (ret != 0) {

@@ -16828,6 +16828,14 @@ void TestRound71SoundFiles() {
         TEST_CHECK(!ProbeSoundDurationMs(std::string(4096, 'x'), ".mp3", ms));
         TEST_CHECK(ProbeSoundDurationMs(BuildTestWavBytes(16000, 1500), ".wav", ms) && ms == 1500);
         TEST_CHECK(!ProbeSoundDurationMs(std::string("RIFF\0\0\0\0WAVEjunk", 16), ".wav", ms));
+        {
+            // A chunk size near 4 GiB must not wrap the parser back to the same chunk on 32-bit builds.
+            std::string looped("RIFF\0\0\0\0WAVEJUNK\xF7\xFF\xFF\xFF", 20);
+            looped.append(44, '\0');
+            const auto t0 = std::chrono::steady_clock::now();
+            TEST_CHECK(!ProbeSoundDurationMs(looped, ".wav", ms));
+            TEST_CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(1));
+        }
         TEST_CHECK(ProbeSoundDurationMs(build_ogg(44100, 88200), ".ogg", ms) && ms == 2000);
         TEST_CHECK(!ProbeSoundDurationMs(std::string(128, 'x'), ".ogg", ms));
         TEST_CHECK(!ProbeSoundDurationMs(BuildTestWavBytes(16000, 1500), ".flac", ms));
@@ -17146,6 +17154,74 @@ void TestRound71SoundFiles() {
         std::string label;
         TEST_CHECK(engine.GetChannelQueueItemLabel(ch, 2, label) && label == "m2.wav");
         engine.DestroyChannel(ch);
+    }
+
+    // 9. A native passthrough link sent during a sound waits for the sound to end
+    TEST_PHASE("9. Native passthrough link sent during a sound is delivered after the sound");
+    {
+        const std::string radio = "http://127.0.0.1:9/live/radio.mp3";
+        StreamOptions opts;
+        TEST_CHECK(!engine.DeferNativePassthroughForSound(2, radio, opts));
+
+        std::size_t mark = 0;
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            mark = host.events.size();
+        }
+        auto count_since = [&](const std::string& needle) {
+            std::size_t n = 0;
+            std::lock_guard<std::mutex> lk(host.mtx);
+            for (std::size_t i = mark; i < host.events.size(); ++i) {
+                if (host.events[i].player_id == 2 && host.events[i].play &&
+                    host.events[i].url.find(needle) != std::string::npos) {
+                    ++n;
+                }
+            }
+            return n;
+        };
+
+        TEST_CHECK(engine.PlayAudioStreamSoundForPlayer(2, "alerts/siren.wav"));
+        TEST_CHECK(engine.HasActivePlayerSound(2));
+        MockAudioEvent ev{};
+        TEST_CHECK(last_event(2, ev) && ev.url.find("/f/") != std::string::npos);
+        const std::string sound_path = path_of(ev.url);
+        TEST_CHECK(engine.DeferNativePassthroughForSound(2, radio, opts));
+        engine.Tick();
+        TEST_CHECK(count_since(radio) == 0);
+        TEST_CHECK(count_since("/f/") == 1);
+
+        std::string head, body;
+        TEST_CHECK(http_get(engine.GetHttpPort(), "GET", sound_path, head, body));
+        TEST_CHECK(wait_until([&]() { return count_since(radio) == 1; }, 4000));
+        TEST_CHECK(count_since("/f/") == 1);
+        AudioStreamSourceType stype = AudioStreamSourceType::None;
+        std::int32_t sid = 0;
+        TEST_CHECK(engine.GetPlayerAudioStreamSource(2, stype, sid) && stype == AudioStreamSourceType::Personal);
+        TEST_CHECK(!engine.HasActivePlayerSound(2));
+        engine.StopAudioStreamForPlayer(2);
+    }
+
+    // 10. A finite personal track does not finish while a sound keeps the player from hearing it
+    TEST_PHASE("10. Personal track completion waits while a sound plays over it");
+    {
+        StreamOptions opts;
+        const StreamId sid = engine.PlayAudioStreamForPlayer(2, "library://Short/s1.wav", opts);
+        TEST_CHECK(sid != INVALID_STREAM_ID);
+        TEST_CHECK(wait_until([&]() {
+            TrackMetadata m{};
+            StreamState st = StreamState::Idle;
+            return engine.GetStreamInfo(sid, m, st) && st == StreamState::Playing;
+        }));
+        // Never fetched: the sound lasts its length plus the 5 s fallback.
+        TEST_CHECK(engine.PlayAudioStreamSoundForPlayer(2, "alerts/siren.wav"));
+        const auto sound_start = std::chrono::steady_clock::now();
+        wait_until([&]() { return false; }, 4500);
+        TrackMetadata meta{};
+        StreamState state = StreamState::Idle;
+        TEST_CHECK(engine.HasActivePlayerSound(2));
+        TEST_CHECK(engine.GetStreamInfo(sid, meta, state) && state != StreamState::Finished);
+        TEST_CHECK(wait_until([&]() { return !engine.GetStreamInfo(sid, meta, state); }, 20000));
+        TEST_CHECK(std::chrono::steady_clock::now() - sound_start >= std::chrono::milliseconds(5200));
     }
 
     engine.Shutdown();

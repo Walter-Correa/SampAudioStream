@@ -8,6 +8,8 @@ namespace sampaudiostream {
 // Short sound effects from audio.sound_dir are served to the client as-is (no transcoding),
 // so only formats the SA-MP client decodes by itself are accepted.
 inline constexpr std::uintmax_t kMaxSoundFileBytes = 5u * 1024u * 1024u;
+// Total memory kept by the in-memory sound cache; older entries are dropped when a new file does not fit.
+inline constexpr std::uint64_t kMaxSoundCacheBytes = 32u * 1024u * 1024u;
 
 bool IsSupportedSoundFileExtension(const std::string& ext_lower);
 const char* SoundFileContentType(const std::string& ext_lower);
