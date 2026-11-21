@@ -4,6 +4,7 @@
 #include "sampaudiostream/core/types.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -28,6 +29,13 @@ struct StreamEndpointInfo {
     bool is_channel{false};
     // Session icy-name when no station name is known (platform such as "YouTube", or the audio file label).
     std::string source_label;
+};
+
+// Complete in-memory file served once per request at /f/<token> (sound effects from audio.sound_dir).
+struct FileEndpointInfo {
+    std::string token;
+    std::shared_ptr<const std::string> data;
+    std::string content_type;
 };
 
 struct FileLimitPlan {
@@ -70,6 +78,11 @@ public:
     std::uint64_t GetEndpointPlayedOffset(const std::string& token) const;
     std::size_t GetActiveConnectionCount(const std::string& token) const;
     std::uint64_t GetEndpointTotalConnectionCount(const std::string& token) const;
+
+    void RegisterFileEndpoint(const FileEndpointInfo& info);
+    void UnregisterFileEndpoint(const std::string& token);
+    // Steady-clock time of the first GET received for a file endpoint; false while it was not requested.
+    bool GetFileEndpointFirstRequestTime(const std::string& token, std::chrono::steady_clock::time_point& out_time) const;
 
 private:
     struct Impl;

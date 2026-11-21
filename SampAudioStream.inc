@@ -1,6 +1,6 @@
 /*
  * SampAudioStream - Universal Audio Streaming Plugin/Component for SA-MP & open.mp
- * Version: 2.2.0
+ * Version: 2.3.0
  *
  * Features:
  *  - YouTube, SoundCloud, Twitch, Vimeo, TikTok, Direct MP3/OGG/WAV/FLAC & HLS streams
@@ -25,9 +25,9 @@
 #endif
 
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
-#define SAMPAUDIOSTREAM_VERSION_MINOR  (2)
+#define SAMPAUDIOSTREAM_VERSION_MINOR  (3)
 #define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.2.0"
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.3.0"
 
 // -----------------------------------------------------------------------------
 // Constants & Enums
@@ -93,7 +93,8 @@ enum E_SA_AUDIO_STREAM_SOURCE {
     SA_SOURCE_PERSONAL = 1,      // source_id = streamid
     SA_SOURCE_CHANNEL = 2,       // source_id = channelid (joined listener)
     SA_SOURCE_GLOBAL = 3,        // source_id = streamid (global stream)
-    SA_SOURCE_CHANNEL_RANGE = 4  // source_id = channelid (heard by range / auto_listen)
+    SA_SOURCE_CHANNEL_RANGE = 4, // source_id = channelid (heard by range / auto_listen)
+    SA_SOURCE_SOUND = 5          // source_id = -1 (short sound from audio.sound_dir, see SA_PlayAudioStreamSoundForPlayer)
 };
 
 // -----------------------------------------------------------------------------
@@ -102,6 +103,10 @@ enum E_SA_AUDIO_STREAM_SOURCE {
 
 native SA_PlayAudioStreamForPlayer(playerid, const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false, bool:stream_text = true);
 native SA_PlayAudioStream(const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false, bool:stream_text = true);
+
+// Plays a short sound file from audio.sound_dir ("file.mp3" or "Folder/file.mp3"; .mp3, .ogg or .wav up to 5 MB)
+// as-is, without transcoding, above every other source; the previous source resumes when the sound ends.
+native bool:SA_PlayAudioStreamSoundForPlayer(playerid, const sound[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false);
 
 native SA_StopAudioStreamForPlayer(playerid);
 native SA_StopAudioStream(streamid);

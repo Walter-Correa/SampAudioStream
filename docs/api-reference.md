@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.2.0`), covering all **81 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.0`), covering all **82 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -32,6 +32,16 @@ native SA_PlayAudioStream(const url[], Float:posX = 0.0, Float:posY = 0.0, Float
 ```
 Starts a global / spatial stream. Any connected player matching `worldid`, `interiorid`, and 3D `distance` (when `usepos == true`) hears it automatically upon entering range and stops upon leaving range. Finite tracks advance at `1x` real-time so latecomers hear the current playback timestamp; live broadcasts stream directly in real time. When `notify_processing` is `true`, fires `OnAudioStreamProcessing` with `playerid == INVALID_PLAYER_ID`. Setting `process_direct_audio_files` to `true` ensures even spatial direct music files on plain `http://` are transcoded server-side rather than handed raw to the client (note: non-live `SA_PlayAudioStream` sessions already transcode for timeline synchronization unless streaming live). Passing `stream_text = false` omits `icy-name`, `icy-metaint`, and inline ICY frames on server-processed playback and disables ICY live-title polling while keeping callbacks and `SA_GetAudioStreamInfo` unchanged (passthrough playback ignores this flag because the remote server controls what the client displays).
 * **Returns:** Valid `streamid` (`>= 1`), or `INVALID_AUDIO_STREAM_ID` (`-1`) on failure.
+
+### `SA_PlayAudioStreamSoundForPlayer`
+```pawn
+native bool:SA_PlayAudioStreamSoundForPlayer(playerid, const sound[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false);
+```
+Plays a short sound effect (alert, notification, jingle, UI or gameplay sound such as an achievement) from `audio.sound_dir` for a single player. `sound` is a path relative to that folder (`"radio_off.mp3"` or one subfolder level such as `"alerts/siren.mp3"`; `\` is accepted as separator), validated with the same strict containment rules as the music library.
+* **No transcoding:** the file is read once into memory (re-read when it changes on disk) and served as-is from `/f/<code>` with `Content-Length`, so it starts immediately and uses no transcoder slot. Only formats the client decodes by itself are accepted: `.mp3`, `.ogg` (Vorbis) and `.wav`, up to `5 MB`. Volume follows the file itself (no volume parameter) and no on-screen stream text is sent.
+* **Plays above everything, then resumes:** the sound takes priority over personal, channel, range and global sources (`OnPlayerAudioStreamSourceChange` reports `SA_SOURCE_SOUND`). It ends `500 ms` after the file's own length, counted from the client's download request (or the length plus `5 s` when the client never requests it), and the player goes back to the source it had before: a channel or radio continues live and an interrupted transcoded personal stream resumes where it was cut. A new sound for the same player replaces the current one. Sound files stay out of the music library, and `SA_StopAudioStreamForPlayer` does not cut a playing sound.
+* Respects `SA_SetPlayerAudioStreamMuted(playerid, true, true)` (returns `false` while personal audio is muted).
+* **Returns:** `true` when the sound was sent, `false` if the player is not connected, the file is missing, unsupported, larger than `5 MB` or invalid (a warning with the reason is logged), or the plugin is not ready.
 
 ### `SA_StopAudioStreamForPlayer`
 ```pawn
@@ -90,7 +100,7 @@ Returns `true` if `playerid` is connected and currently muted via `SA_SetPlayerA
 ```pawn
 native SA_GetPlayerAudioStreamSource(playerid, &E_SA_AUDIO_STREAM_SOURCE:source_type, &source_id);
 ```
-Retrieves the audio source currently delivered to `playerid`'s client (`SA_SOURCE_NONE`, `SA_SOURCE_PERSONAL`, `SA_SOURCE_CHANNEL`, `SA_SOURCE_GLOBAL`, or `SA_SOURCE_CHANNEL_RANGE`, with decoded `streamid` or `channelid` in `source_id`, or `-1` when none).
+Retrieves the audio source currently delivered to `playerid`'s client (`SA_SOURCE_NONE`, `SA_SOURCE_PERSONAL`, `SA_SOURCE_CHANNEL`, `SA_SOURCE_GLOBAL`, `SA_SOURCE_CHANNEL_RANGE`, or `SA_SOURCE_SOUND`, with decoded `streamid` or `channelid` in `source_id`, or `-1` when none or for a sound).
 * **Returns:** `1` if `playerid` is currently receiving a source, `0` otherwise (`source_type = SA_SOURCE_NONE`, `source_id = -1`).
 
 ### `SA_SetPlayerAudioStreamVolume`
@@ -843,7 +853,7 @@ public OnAudioStreamChannelLiveTitleChange(channelid, const title[])
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
 #define SAMPAUDIOSTREAM_VERSION_MINOR  (2)
 #define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.2.0"
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.3.0"
 
 #define INVALID_AUDIO_STREAM_ID  (-1)
 #define INVALID_AUDIO_CHANNEL_ID (-1)
@@ -909,3 +919,4 @@ public OnAudioStreamChannelLiveTitleChange(channelid, const title[])
 | `SA_SOURCE_CHANNEL` (`2`) | Player is listening to a joined synchronized channel (`source_id = channelid`) |
 | `SA_SOURCE_GLOBAL` (`3`) | Player is listening to a global stream (`source_id = streamid`) |
 | `SA_SOURCE_CHANNEL_RANGE` (`4`) | Player is hearing a spatial channel via `auto_listen` range (`source_id = channelid`) |
+| `SA_SOURCE_SOUND` (`5`) | Player is hearing a short sound from `SA_PlayAudioStreamSoundForPlayer` (`source_id = -1`); the previous source resumes when it ends |

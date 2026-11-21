@@ -48,6 +48,7 @@ struct PluginConfig {
     bool normalize_volume{false};
     std::uint32_t live_title_poll_seconds{30};
     std::string music_dir{"scriptfiles/SampAudioStream/music"};
+    std::string sound_dir{"scriptfiles/SampAudioStream/sound"};
     std::string audio_file_label{"Audio File"};
     std::string pawn_text_encoding{"cp1252"}; // "cp1252" (client default) or "utf8"
 };

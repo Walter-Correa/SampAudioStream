@@ -168,14 +168,14 @@ When you start the server, SampAudioStream waits up to **1.5 seconds (`1500 ms`)
    * SA-MP:
      ```text
      [SampAudioStream] HTTP audio streaming server listening on 0.0.0.0:7778 (connection limit 264 for 100 player slots)
-     [SampAudioStream] SampAudioStream v2.2.0 [SA-MP] loaded (config: scriptfiles/SampAudioStream/config.json, HTTP port: 7778)
+     [SampAudioStream] SampAudioStream v2.3.0 [SA-MP] loaded (config: scriptfiles/SampAudioStream/config.json, HTTP port: 7778)
      [SampAudioStream] Audio extractor subsystem ready.
      [SampAudioStream] Detected public server IPv4: 203.0.113.10
      ```
    * open.mp:
      ```text
      [SampAudioStream] HTTP audio streaming server listening on 0.0.0.0:7778 (connection limit 264 for 100 player slots)
-     [SampAudioStream] SampAudioStream v2.2.0 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: 7778)
+     [SampAudioStream] SampAudioStream v2.3.0 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: 7778)
      [SampAudioStream] Audio extractor subsystem ready.
      [SampAudioStream] Detected public server IPv4: 203.0.113.10
      ```
@@ -224,6 +224,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
 | `audio.normalize_volume` | `false` | Optional track loudness equalization (`-16 dBFS` RMS target with `[-12, +9] dB` AGC gain and peak limiter at `0.98`). Applies only to server-transcoded/proxied streams (global, channel, live, and transcoded personal streams); direct passthrough streams are not normalized. Minimal CPU cost (one multiply and sum-of-squares per sample) |
 | `audio.live_title_poll_seconds` | `30` | `0` (disabled) or `10..300` s interval for polling Shoutcast/Icecast ICY `StreamTitle` updates on live radios. Each poll opens a short HTTP connection up to 64 KB (so the radio briefly sees one extra listener at that interval) |
 | `audio.music_dir` | `"scriptfiles/SampAudioStream/music"` | Local server folder for depth-1 music folders and loose tracks playable via `library://` references *(created on startup if missing)* |
+| `audio.sound_dir` | `"scriptfiles/SampAudioStream/sound"` | Local server folder for short sound effects (alerts, notifications, jingles, UI and gameplay sounds such as achievements or a radio switching off) played with `SA_PlayAudioStreamSoundForPlayer`. Files (`.mp3`, `.ogg`, `.wav`, up to 5 MB, loose or in depth-1 subfolders) are sent to the player as they are, without transcoding, so they start immediately and use no transcoder slot; this folder is never listed in the music library *(created on startup if missing; keep it separate from `audio.music_dir`)* |
 | `audio.audio_file_label` | `"Audio File"` | Text shown after the file name in the client on-screen stream text for direct/local audio files played as personal or global sessions (e.g. `musicas.mp3 - Audio File`); extracted tracks show their platform (e.g. `YouTube`) and live radios their station name |
 | `channels.max_channels` | `100` | `1..1000` max simultaneous synchronized channels |
 | `channels.max_queue_per_channel` | `50` | `1..1000` max queued tracks per synchronized channel |
@@ -276,6 +277,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
           "normalize_volume": false,
           "live_title_poll_seconds": 30,
           "music_dir": "scriptfiles/SampAudioStream/music",
+          "sound_dir": "scriptfiles/SampAudioStream/sound",
           "audio_file_label": "Audio File"
       },
       "channels":
@@ -344,6 +346,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
               "normalize_volume": false,
               "live_title_poll_seconds": 30,
               "music_dir": "scriptfiles/SampAudioStream/music",
+              "sound_dir": "scriptfiles/SampAudioStream/sound",
               "audio_file_label": "Audio File"
           },
           "channels":

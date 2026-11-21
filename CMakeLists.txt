@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(SampAudioStream VERSION 2.2.0 LANGUAGES C CXX)
+project(SampAudioStream VERSION 2.3.0 LANGUAGES C CXX)
 
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
 set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
@@ -44,6 +44,7 @@ set(PLUGIN_SOURCES
     src/extractor/resolver.cpp
     src/audio/ring_buffer.cpp
     src/audio/transcoder.cpp
+    src/audio/sound_file.cpp
     src/engine/audio_engine.cpp
     src/runtime/amx_thunks.cpp
     src/runtime/samp_host.cpp
@@ -140,6 +141,7 @@ if(SAMPAUDIO_BUILD_TESTS)
         src/extractor/resolver.cpp
         src/audio/ring_buffer.cpp
         src/audio/transcoder.cpp
+        src/audio/sound_file.cpp
         src/engine/audio_engine.cpp
     )
     target_include_directories(sampaudiostream_tests PRIVATE

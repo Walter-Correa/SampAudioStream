@@ -103,6 +103,25 @@ cell AMX_NATIVE_CALL n_SA_PlayAudioStream(AMX* amx, cell* params) {
     return static_cast<cell>(g_engine->PlayAudioStream(url, opts, raw_url));
 }
 
+// SA_PlayAudioStreamSoundForPlayer(playerid, const sound[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false)
+cell AMX_NATIVE_CALL n_SA_PlayAudioStreamSoundForPlayer(AMX* amx, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
+
+    PlayerId player_id = static_cast<PlayerId>(params[1]);
+    std::string sound = ConvertTextFromPawn(ReadAmxString(amx, params[2]), g_engine->GetPawnTextEncoding());
+    Vector3 position{};
+    float distance = 50.0f;
+    bool use_position = false;
+    if (argc >= 3) position.x = amx_ctof(params[3]);
+    if (argc >= 4) position.y = amx_ctof(params[4]);
+    if (argc >= 5) position.z = amx_ctof(params[5]);
+    if (argc >= 6) distance = amx_ctof(params[6]);
+    if (argc >= 7) use_position = (params[7] != 0);
+    return g_engine->PlayAudioStreamSoundForPlayer(player_id, sound, position, distance, use_position) ? 1 : 0;
+}
+
 // SA_StopAudioStreamForPlayer(playerid)
 cell AMX_NATIVE_CALL n_SA_StopAudioStreamForPlayer(AMX*, cell* params) {
     if (!g_engine) return 0;
@@ -1072,6 +1091,7 @@ const std::vector<AMX_NATIVE_INFO>& GetPluginNatives() {
     static const std::vector<AMX_NATIVE_INFO> natives = {
         {"SA_PlayAudioStreamForPlayer", n_SA_PlayAudioStreamForPlayer},
         {"SA_PlayAudioStream", n_SA_PlayAudioStream},
+        {"SA_PlayAudioStreamSoundForPlayer", n_SA_PlayAudioStreamSoundForPlayer},
         {"SA_StopAudioStreamForPlayer", n_SA_StopAudioStreamForPlayer},
         {"SA_StopAudioStream", n_SA_StopAudioStream},
         {"SA_PauseAudioStreamForPlayer", n_SA_PauseAudioStreamForPlayer},

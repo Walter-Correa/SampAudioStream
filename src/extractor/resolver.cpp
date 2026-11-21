@@ -1,5 +1,6 @@
 #include "sampaudiostream/extractor/resolver.hpp"
 
+#include "sampaudiostream/audio/sound_file.hpp"
 #include "sampaudiostream/audio/transcoder.hpp"
 #include "sampaudiostream/core/config.hpp"
 #include "sampaudiostream/core/logger.hpp"
@@ -1321,6 +1322,83 @@ bool StreamResolver::ParseAndResolveLibraryFile(
 
     out_real_path = canonical_target;
     out_file_name = file;
+    out_error_code = ErrorCode::None;
+    out_error_message.clear();
+    return true;
+}
+
+bool StreamResolver::ParseAndResolveSoundFile(
+    const std::string& sound,
+    const std::string& sound_dir,
+    std::filesystem::path& out_real_path,
+    std::string& out_ext_lower,
+    ErrorCode& out_error_code,
+    std::string& out_error_message) {
+    out_real_path.clear();
+    out_ext_lower.clear();
+    std::string rel = sound;
+    std::replace(rel.begin(), rel.end(), '\\', '/');
+    if (rel.empty() || rel[0] == '/' || HasControlOrForbiddenLibraryChars(rel)) {
+        out_error_code = ErrorCode::InvalidUrl;
+        out_error_message = "Invalid sound file reference";
+        return false;
+    }
+
+    std::string folder;
+    std::string file = rel;
+    const auto slash = rel.find('/');
+    if (slash != std::string::npos) {
+        folder = rel.substr(0, slash);
+        file = rel.substr(slash + 1);
+        if (!IsValidLibrarySegmentName(folder) || file.find('/') != std::string::npos) {
+            out_error_code = ErrorCode::InvalidUrl;
+            out_error_message = "Invalid sound file reference";
+            return false;
+        }
+    }
+    if (!IsValidLibrarySegmentName(file)) {
+        out_error_code = ErrorCode::InvalidUrl;
+        out_error_message = "Invalid sound file reference";
+        return false;
+    }
+    const auto dot = file.rfind('.');
+    const std::string ext_lower = (dot == std::string::npos) ? std::string() : ToLower(file.substr(dot));
+    if (!IsSupportedSoundFileExtension(ext_lower)) {
+        out_error_code = ErrorCode::UnsupportedFormat;
+        out_error_message = "Unsupported sound file extension (use .mp3, .ogg or .wav)";
+        return false;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path base_raw = Utf8ToPath(sound_dir);
+    if (sound_dir.empty() || !std::filesystem::is_directory(base_raw, ec) || ec) {
+        out_error_code = ErrorCode::ExtractionFailed;
+        out_error_message = "Sound directory is unavailable";
+        return false;
+    }
+    const std::filesystem::path canonical_base = std::filesystem::weakly_canonical(base_raw, ec);
+    if (ec || !std::filesystem::is_directory(canonical_base, ec) || ec) {
+        out_error_code = ErrorCode::ExtractionFailed;
+        out_error_message = "Sound directory is unavailable";
+        return false;
+    }
+    const std::filesystem::path candidate = folder.empty()
+        ? (canonical_base / Utf8ToPath(file))
+        : (canonical_base / Utf8ToPath(folder) / Utf8ToPath(file));
+    const std::filesystem::path canonical_target = std::filesystem::weakly_canonical(candidate, ec);
+    if (ec || !IsPathStrictlyInsideBase(canonical_base, canonical_target)) {
+        out_error_code = ErrorCode::InvalidUrl;
+        out_error_message = "Invalid sound file reference";
+        return false;
+    }
+    if (!std::filesystem::is_regular_file(canonical_target, ec) || ec) {
+        out_error_code = ErrorCode::StreamNotFound;
+        out_error_message = "Sound file not found";
+        return false;
+    }
+
+    out_real_path = canonical_target;
+    out_ext_lower = ext_lower;
     out_error_code = ErrorCode::None;
     out_error_message.clear();
     return true;

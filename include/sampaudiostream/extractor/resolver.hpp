@@ -74,6 +74,14 @@ public:
         std::filesystem::path& out_real_dir,
         ErrorCode& out_error_code,
         std::string& out_error_message);
+    // Validates a sound reference ("file.ext" or "Folder/file.ext") strictly inside sound_dir.
+    static bool ParseAndResolveSoundFile(
+        const std::string& sound,
+        const std::string& sound_dir,
+        std::filesystem::path& out_real_path,
+        std::string& out_ext_lower,
+        ErrorCode& out_error_code,
+        std::string& out_error_message);
     static std::vector<AudioLibraryFolderData> ScanMusicLibraryDir(
         const std::string& music_dir,
         const std::string& pawn_text_encoding,

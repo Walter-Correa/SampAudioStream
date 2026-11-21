@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
@@ -90,7 +91,28 @@ enum class AudioSourcePriority : std::uint8_t {
     None = 0,
     Personal = 1,
     Channel = 2,
-    Global = 3
+    Global = 3,
+    Sound = 4 // Short sound effect from audio.sound_dir: plays above every tier, then the previous source resumes
+};
+
+struct PlayerSoundState {
+    std::uint64_t play_id{0};
+    std::string token;
+    std::string url;
+    Vector3 position{};
+    float distance{50.0f};
+    bool use_position{false};
+    std::int64_t duration_ms{0};
+    bool fetched{false};
+    std::chrono::steady_clock::time_point expires_at{};
+};
+
+struct CachedSoundFile {
+    std::shared_ptr<const std::string> data;
+    std::string content_type;
+    std::int64_t duration_ms{0};
+    std::uintmax_t size{0};
+    std::filesystem::file_time_type mtime{};
 };
 
 struct GlobalAudioSourceRef {
@@ -273,6 +295,14 @@ public:
         const std::string& url_or_query,
         const StreamOptions& options,
         const std::string& original_input_pawn = "");
+
+    // Plays a file from audio.sound_dir as-is (no transcoding) above every other source, then resumes the previous one.
+    bool PlayAudioStreamSoundForPlayer(
+        PlayerId player_id,
+        const std::string& sound,
+        const Vector3& position = {},
+        float distance = 50.0f,
+        bool use_position = false);
 
     bool StopAudioStreamForPlayer(PlayerId player_id, bool send_stop = true);
     bool StopAudioStream(StreamId stream_id);
@@ -479,6 +509,13 @@ private:
         std::vector<PlayerAudioCommand>& out_cmds,
         bool& out_queue_ended);
     void UpdateSpatialStreams(const std::vector<PlayerSnapshot>* precomputed_snapshots = nullptr);
+    bool LoadSoundFile(
+        const std::string& sound,
+        std::shared_ptr<const std::string>& out_data,
+        std::string& out_content_type,
+        std::int64_t& out_duration_ms,
+        std::string& out_error);
+    void UpdatePlayerSounds(std::chrono::steady_clock::time_point now);
     void CleanupExpiredPassthroughSessions(std::chrono::steady_clock::time_point now);
     void CleanupExpiredChannels(std::chrono::steady_clock::time_point now);
     void CheckUnconnectedClients(std::chrono::steady_clock::time_point now);
@@ -627,6 +664,10 @@ private:
     std::atomic<std::int32_t> active_live_title_polls_{0};
     mutable std::mutex library_mutex_;
     std::vector<AudioLibraryFolderData> library_folders_;
+    std::unordered_map<PlayerId, PlayerSoundState> player_sounds_; // Guarded by state_mutex_
+    std::uint64_t next_sound_play_id_{1};
+    std::mutex sound_cache_mutex_;
+    std::unordered_map<std::string, CachedSoundFile> sound_cache_;
 };
 
 enum class IcyPollResult {

@@ -72,7 +72,8 @@ enum class AudioStreamSourceType : std::int32_t {
     Personal = 1,
     Channel = 2,
     Global = 3,
-    ChannelRange = 4
+    ChannelRange = 4,
+    Sound = 5
 };
 
 struct ChannelInfo {

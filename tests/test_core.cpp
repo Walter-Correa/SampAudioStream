@@ -1,4 +1,5 @@
 #include "sampaudiostream/audio/ring_buffer.hpp"
+#include "sampaudiostream/audio/sound_file.hpp"
 #include "sampaudiostream/audio/transcoder.hpp"
 #include "sampaudiostream/core/config.hpp"
 #include "sampaudiostream/core/thread_pool.hpp"
@@ -13276,6 +13277,7 @@ void TestRound52PartBUnifiedConfig() {
         "        \"normalize_volume\": false,\n"
         "        \"live_title_poll_seconds\": 30,\n"
         "        \"music_dir\": \"scriptfiles/SampAudioStream/music\",\n"
+        "        \"sound_dir\": \"scriptfiles/SampAudioStream/sound\",\n"
         "        \"audio_file_label\": \"Audio File\"\n"
         "    },\n"
         "    \"channels\":\n"
@@ -13475,7 +13477,7 @@ void TestRound52PartBUnifiedConfig() {
         ConfigManager::ProvideOmpDefaults(writer);
 
         const std::vector<ConfigSchemaFieldInfo> schema = ConfigManager::GetUnifiedSchemaFields();
-        TEST_CHECK(schema.size() == 40);
+        TEST_CHECK(schema.size() == 41);
         TEST_CHECK(registered_omp_keys.size() == schema.size());
         for (std::size_t i = 0; i < schema.size(); ++i) {
             TEST_CHECK(registered_omp_keys[i] == ("sampaudiostream." + schema[i].full_key));
@@ -16718,6 +16720,378 @@ void TestRound70Features() {
     std::cout << "[PASS] TestRound70Features\n";
 }
 
+void TestRound71SoundFiles() {
+    std::error_code fec;
+    const auto r71_dir = std::filesystem::temp_directory_path() / "sampaudiostream_test_r71";
+    std::filesystem::remove_all(r71_dir, fec);
+    std::filesystem::create_directories(r71_dir / "bin", fec);
+    const auto music_dir = r71_dir / "music";
+    const auto sound_dir = r71_dir / "sound";
+
+    auto write_file = [](const std::filesystem::path& p, const std::string& bytes) {
+        std::error_code ec;
+        std::filesystem::create_directories(p.parent_path(), ec);
+        std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
+        ofs.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    };
+
+    auto http_get = [](std::uint16_t port, const std::string& method, const std::string& path,
+                       std::string& out_head, std::string& out_body) -> bool {
+        out_head.clear();
+        out_body.clear();
+        asio::io_context ioc;
+        asio::ip::tcp::socket sock(ioc);
+        asio::error_code ec;
+        sock.connect({asio::ip::address_v4::loopback(), port}, ec);
+        if (ec) return false;
+        const std::string req = method + " " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+        asio::write(sock, asio::buffer(req), ec);
+        std::string raw;
+        std::array<char, 4096> tmp{};
+        for (;;) {
+            std::size_t n = sock.read_some(asio::buffer(tmp), ec);
+            if (n > 0) raw.append(tmp.data(), n);
+            if (ec) break;
+        }
+        sock.close(ec);
+        const auto split = raw.find("\r\n\r\n");
+        if (split == std::string::npos) {
+            out_head = raw;
+            return !raw.empty();
+        }
+        out_head = raw.substr(0, split + 2);
+        out_body = raw.substr(split + 4);
+        return true;
+    };
+
+    auto build_mp3 = [](std::size_t frames, bool with_id3) {
+        std::string out;
+        if (with_id3) {
+            out.append("ID3\x03\x00\x00", 6);
+            out.append("\x00\x00\x00\x0A", 4); // 10-byte tag body
+            out.append(10, '\0');
+        }
+        for (std::size_t i = 0; i < frames; ++i) {
+            std::string frame(417, '\0'); // MPEG-1 Layer III, 128 kbps, 44.1 kHz, no padding
+            frame[0] = static_cast<char>(0xFF);
+            frame[1] = static_cast<char>(0xFB);
+            frame[2] = static_cast<char>(0x90);
+            frame[3] = static_cast<char>(0x00);
+            out += frame;
+        }
+        out.append("TAG", 3);
+        out.append(125, '\0');
+        return out;
+    };
+
+    auto build_ogg = [](std::uint32_t sample_rate, std::uint64_t last_granule) {
+        auto le32 = [](std::uint32_t v) {
+            std::string s(4, '\0');
+            for (int i = 0; i < 4; ++i) s[i] = static_cast<char>((v >> (8 * i)) & 0xFF);
+            return s;
+        };
+        auto le64 = [](std::uint64_t v) {
+            std::string s(8, '\0');
+            for (int i = 0; i < 8; ++i) s[i] = static_cast<char>((v >> (8 * i)) & 0xFF);
+            return s;
+        };
+        std::string ident;
+        ident.append("\x01vorbis", 7);
+        ident += le32(0);
+        ident.push_back('\x02');
+        ident += le32(sample_rate);
+        ident.append(30 - ident.size(), '\0');
+        std::string page1 = "OggS";
+        page1.push_back('\0');
+        page1.push_back('\x02');
+        page1 += le64(0) + le32(1) + le32(0) + le32(0);
+        page1.push_back('\x01');
+        page1.push_back(static_cast<char>(ident.size()));
+        page1 += ident;
+        std::string page2 = "OggS";
+        page2.push_back('\0');
+        page2.push_back('\x04');
+        page2 += le64(last_granule) + le32(1) + le32(1) + le32(0);
+        page2.push_back('\x01');
+        page2.push_back('\x20');
+        page2.append(32, 'a');
+        return page1 + page2;
+    };
+
+    // 1. Duration probing for the formats served as-is
+    TEST_PHASE("1. Sound duration probing for MP3, WAV and Ogg Vorbis");
+    {
+        std::int64_t ms = 0;
+        TEST_CHECK(ProbeSoundDurationMs(build_mp3(100, true), ".mp3", ms));
+        TEST_CHECK(ms == 2612); // 100 * 1152 / 44100
+        TEST_CHECK(ProbeSoundDurationMs(build_mp3(10, false), ".mp3", ms) && ms == 261);
+        TEST_CHECK(!ProbeSoundDurationMs(std::string(4096, 'x'), ".mp3", ms));
+        TEST_CHECK(ProbeSoundDurationMs(BuildTestWavBytes(16000, 1500), ".wav", ms) && ms == 1500);
+        TEST_CHECK(!ProbeSoundDurationMs(std::string("RIFF\0\0\0\0WAVEjunk", 16), ".wav", ms));
+        TEST_CHECK(ProbeSoundDurationMs(build_ogg(44100, 88200), ".ogg", ms) && ms == 2000);
+        TEST_CHECK(!ProbeSoundDurationMs(std::string(128, 'x'), ".ogg", ms));
+        TEST_CHECK(!ProbeSoundDurationMs(BuildTestWavBytes(16000, 1500), ".flac", ms));
+        TEST_CHECK(IsSupportedSoundFileExtension(".mp3") && IsSupportedSoundFileExtension(".ogg") &&
+                   IsSupportedSoundFileExtension(".wav") && !IsSupportedSoundFileExtension(".flac"));
+        TEST_CHECK(std::string(SoundFileContentType(".ogg")) == "audio/ogg");
+        TEST_CHECK(std::string(SoundFileContentType(".mp3")) == "audio/mpeg");
+    }
+
+    const std::string beep = BuildTestWavBytes(16000, 300);
+    write_file(sound_dir / "beep.wav", beep);
+    write_file(sound_dir / "alerts" / "siren.wav", BuildTestWavBytes(16000, 200));
+    write_file(sound_dir / "alerts" / "deep" / "x.wav", beep);
+    write_file(sound_dir / "song.flac", beep);
+    write_file(sound_dir / "broken.mp3", std::string(2048, 'x'));
+    write_file(music_dir / "solta.wav", BuildTestWavBytes(16000, 8000));
+
+    // 2. Sound references stay strictly inside sound_dir
+    TEST_PHASE("2. Sound references reject escapes and resolve one folder level");
+    {
+        const char* bad_refs[] = {
+            "../beep.wav", "/beep.wav", "C:/beep.wav", "alerts/deep/x.wav", "alerts/../beep.wav",
+            "song.flac", "beep", "", "missing.wav"
+        };
+        for (const char* ref : bad_refs) {
+            std::filesystem::path out_path;
+            std::string ext, msg;
+            ErrorCode code = ErrorCode::None;
+            TEST_CHECK(!StreamResolver::ParseAndResolveSoundFile(ref, sound_dir.string(), out_path, ext, code, msg));
+            TEST_CHECK(code != ErrorCode::None && !msg.empty());
+        }
+        std::filesystem::path out_path;
+        std::string ext, msg;
+        ErrorCode code = ErrorCode::None;
+        TEST_CHECK(StreamResolver::ParseAndResolveSoundFile("beep.wav", sound_dir.string(), out_path, ext, code, msg));
+        TEST_CHECK(ext == ".wav" && out_path.filename() == "beep.wav");
+        TEST_CHECK(StreamResolver::ParseAndResolveSoundFile("alerts/siren.wav", sound_dir.string(), out_path, ext, code, msg));
+        TEST_CHECK(StreamResolver::ParseAndResolveSoundFile("alerts\\siren.wav", sound_dir.string(), out_path, ext, code, msg));
+        TEST_CHECK(out_path.filename() == "siren.wav");
+    }
+
+    // 3. /f/<code> serves the complete file once registered and records the first GET
+    TEST_PHASE("3. File endpoint /f/ serves bytes with Content-Length and tracks the first request");
+    {
+        HttpStreamingServer srv;
+        std::string err;
+        TEST_CHECK(srv.Start("127.0.0.1", 0, err, false));
+        auto bytes = std::make_shared<const std::string>(beep);
+        srv.RegisterFileEndpoint(FileEndpointInfo{"SndFile001", bytes, "audio/wav"});
+
+        std::chrono::steady_clock::time_point first{};
+        TEST_CHECK(!srv.GetFileEndpointFirstRequestTime("SndFile001", first));
+        std::string head, body;
+        TEST_CHECK(http_get(srv.BoundPort(), "HEAD", "/f/SndFile001", head, body));
+        TEST_CHECK(head.rfind("HTTP/1.1 200", 0) == 0);
+        TEST_CHECK(!srv.GetFileEndpointFirstRequestTime("SndFile001", first));
+
+        TEST_CHECK(http_get(srv.BoundPort(), "GET", "/f/SndFile001", head, body));
+        TEST_CHECK(head.rfind("HTTP/1.1 200", 0) == 0);
+        TEST_CHECK(head.find("Content-Type: audio/wav\r\n") != std::string::npos);
+        TEST_CHECK(head.find("Content-Length: " + std::to_string(beep.size()) + "\r\n") != std::string::npos);
+        TEST_CHECK(head.find("icy-") == std::string::npos);
+        TEST_CHECK(body == beep);
+        TEST_CHECK(srv.GetFileEndpointFirstRequestTime("SndFile001", first));
+
+        TEST_CHECK(http_get(srv.BoundPort(), "GET", "/f/SndFile001/2", head, body) && head.rfind("HTTP/1.1 404", 0) == 0);
+        TEST_CHECK(http_get(srv.BoundPort(), "GET", "/s/SndFile001", head, body) && head.rfind("HTTP/1.1 404", 0) == 0);
+        srv.UnregisterFileEndpoint("SndFile001");
+        TEST_CHECK(http_get(srv.BoundPort(), "GET", "/f/SndFile001", head, body) && head.rfind("HTTP/1.1 404", 0) == 0);
+        srv.Stop();
+    }
+
+#ifdef _WIN32
+    const auto fake_ext = r71_dir / "bin" / "yt-dlp.exe";
+#else
+    const auto fake_ext = r71_dir / "bin" / "yt-dlp";
+#endif
+    write_file(fake_ext, std::string(128 * 1024, 'x'));
+#ifndef _WIN32
+    std::filesystem::permissions(fake_ext, std::filesystem::perms::owner_exec, std::filesystem::perm_options::add, fec);
+#endif
+
+    PluginConfig def;
+    TEST_CHECK(def.sound_dir == "scriptfiles/SampAudioStream/sound");
+
+    PluginConfig cfg;
+    cfg.bind_ip = "127.0.0.1";
+    cfg.public_ip = "127.0.0.1";
+    cfg.http_port = 0;
+    cfg.base_dir = r71_dir.string();
+    cfg.bin_dir = (r71_dir / "bin").string();
+    cfg.music_dir = music_dir.string();
+    cfg.sound_dir = sound_dir.string();
+    cfg.transcoder_burst_ms = 2000;
+    cfg.auto_download_extractor = false;
+    cfg.auto_update_extractor = false;
+    cfg.enable_js_runtime = false;
+    cfg.allow_private_network_urls = true;
+    cfg.debug_logging = false;
+
+    MockPlatformHost host;
+    host.players = {{1, {0.0f, 0.0f, 0.0f}, 0, 0}, {2, {0.0f, 0.0f, 0.0f}, 0, 0}};
+    AudioEngine engine(host, cfg);
+    TEST_CHECK(engine.Initialize());
+    TEST_CHECK(engine.BinariesForTesting().WaitUntilSettled(std::chrono::seconds(2)));
+
+    auto wait_until = [&](auto&& pred, int timeout_ms = 8000) -> bool {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        while (std::chrono::steady_clock::now() < deadline) {
+            engine.Tick();
+            if (pred()) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(15));
+        }
+        engine.Tick();
+        return pred();
+    };
+
+    auto last_event = [&](PlayerId pid, MockAudioEvent& out) -> bool {
+        std::lock_guard<std::mutex> lk(host.mtx);
+        for (auto it = host.events.rbegin(); it != host.events.rend(); ++it) {
+            if (it->player_id == pid) {
+                out = *it;
+                return true;
+            }
+        }
+        return false;
+    };
+
+    auto path_of = [](const std::string& url) -> std::string {
+        const auto scheme = url.find("://");
+        if (scheme == std::string::npos) return {};
+        const auto slash = url.find('/', scheme + 3);
+        return (slash == std::string::npos) ? std::string() : url.substr(slash);
+    };
+
+    // 4. A sound plays above a channel and the channel resumes after the file length
+    TEST_PHASE("4. Sound overlays a joined channel and the channel resumes afterwards");
+    {
+        const ChannelId ch = engine.CreateChannel("Radio", INVALID_PLAYER_ID, "", ChannelDestroyMode::Manual, 0, false);
+        TEST_CHECK(ch != INVALID_CHANNEL_ID);
+        TEST_CHECK(engine.JoinChannel(1, ch));
+        TEST_CHECK(engine.PlayChannel(ch, "library:///solta.wav"));
+        MockAudioEvent ev{};
+        TEST_CHECK(wait_until([&]() {
+            return last_event(1, ev) && ev.play && ev.url.find("/c/") != std::string::npos;
+        }));
+        const std::string channel_url = ev.url;
+
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            host.source_changes.clear();
+        }
+        TEST_CHECK(engine.PlayAudioStreamSoundForPlayer(1, "beep.wav"));
+        TEST_CHECK(last_event(1, ev) && ev.play && ev.url.find("/f/") != std::string::npos);
+        const std::string sound_path = path_of(ev.url);
+        AudioStreamSourceType stype = AudioStreamSourceType::None;
+        std::int32_t sid = 0;
+        TEST_CHECK(engine.GetPlayerAudioStreamSource(1, stype, sid));
+        TEST_CHECK(stype == AudioStreamSourceType::Sound && sid == -1);
+        TEST_CHECK(wait_until([&]() {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            return !host.source_changes.empty() && host.source_changes.back().source_type == 5;
+        }, 2000));
+
+        // Channel track changes during the sound do not steal the client
+        engine.Tick();
+        TEST_CHECK(last_event(1, ev) && ev.url.find("/f/") != std::string::npos);
+
+        std::string head, body;
+        TEST_CHECK(http_get(engine.GetHttpPort(), "GET", sound_path, head, body));
+        TEST_CHECK(head.rfind("HTTP/1.1 200", 0) == 0 && body == beep);
+        const auto fetched_at = std::chrono::steady_clock::now();
+
+        TEST_CHECK(wait_until([&]() {
+            return last_event(1, ev) && ev.play && ev.url.find("/c/") != std::string::npos;
+        }, 4000));
+        const auto resumed_after = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - fetched_at).count();
+        TEST_CHECK(resumed_after >= 700 && resumed_after < 2500); // 300 ms file + 500 ms margin
+        TEST_CHECK(ev.url == channel_url);
+        TEST_CHECK(engine.GetPlayerAudioStreamSource(1, stype, sid) && stype == AudioStreamSourceType::Channel && sid == ch);
+
+        // The released file endpoint is gone
+        TEST_CHECK(http_get(engine.GetHttpPort(), "GET", sound_path, head, body) && head.rfind("HTTP/1.1 404", 0) == 0);
+        engine.DestroyChannel(ch);
+    }
+
+    // 5. A sound with nothing underneath ends with a stop, and a new sound replaces the current one
+    TEST_PHASE("5. Sound without another source stops at the end; a new sound replaces the current one");
+    {
+        TEST_CHECK(engine.PlayAudioStreamSoundForPlayer(2, "alerts/siren.wav"));
+        MockAudioEvent ev{};
+        TEST_CHECK(last_event(2, ev) && ev.play && ev.url.find("/f/") != std::string::npos);
+        const std::string first_path = path_of(ev.url);
+
+        TEST_CHECK(engine.PlayAudioStreamSoundForPlayer(2, "beep.wav"));
+        TEST_CHECK(last_event(2, ev) && ev.play && ev.url.find("/f/") != std::string::npos);
+        const std::string second_path = path_of(ev.url);
+        TEST_CHECK(second_path != first_path);
+
+        std::string head, body;
+        TEST_CHECK(http_get(engine.GetHttpPort(), "GET", first_path, head, body) && head.rfind("HTTP/1.1 404", 0) == 0);
+        TEST_CHECK(http_get(engine.GetHttpPort(), "GET", second_path, head, body) && body == beep);
+        TEST_CHECK(wait_until([&]() {
+            return last_event(2, ev) && !ev.play;
+        }, 4000));
+        AudioStreamSourceType stype = AudioStreamSourceType::None;
+        std::int32_t sid = 0;
+        TEST_CHECK(!engine.GetPlayerAudioStreamSource(2, stype, sid));
+    }
+
+    // 6. Invalid requests and personal mute
+    TEST_PHASE("6. Missing, unsupported, invalid and muted sound requests are refused");
+    {
+        std::size_t before = 0;
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            before = host.events.size();
+        }
+        TEST_CHECK(!engine.PlayAudioStreamSoundForPlayer(1, "missing.wav"));
+        TEST_CHECK(!engine.PlayAudioStreamSoundForPlayer(1, "song.flac"));
+        TEST_CHECK(!engine.PlayAudioStreamSoundForPlayer(1, "broken.mp3"));
+        TEST_CHECK(!engine.PlayAudioStreamSoundForPlayer(1, "../music/solta.wav"));
+        TEST_CHECK(!engine.PlayAudioStreamSoundForPlayer(7, "beep.wav"));
+        TEST_CHECK(engine.SetPlayerAudioStreamMuted(1, true, true));
+        TEST_CHECK(!engine.PlayAudioStreamSoundForPlayer(1, "beep.wav"));
+        TEST_CHECK(engine.SetPlayerAudioStreamMuted(1, false));
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            TEST_CHECK(host.events.size() == before);
+        }
+
+        // Replacing the file on disk is picked up by the next play
+        write_file(sound_dir / "beep.wav", BuildTestWavBytes(16000, 100));
+        TEST_CHECK(engine.PlayAudioStreamSoundForPlayer(1, "beep.wav"));
+        MockAudioEvent ev{};
+        TEST_CHECK(last_event(1, ev) && ev.play && ev.url.find("/f/") != std::string::npos);
+        std::string head, body;
+        TEST_CHECK(http_get(engine.GetHttpPort(), "GET", path_of(ev.url), head, body));
+        TEST_CHECK(body == BuildTestWavBytes(16000, 100));
+
+        // Disconnect releases the sound endpoint
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            host.players.erase(host.players.begin());
+        }
+        engine.OnPlayerDisconnect(1);
+        TEST_CHECK(http_get(engine.GetHttpPort(), "GET", path_of(ev.url), head, body) && head.rfind("HTTP/1.1 404", 0) == 0);
+    }
+
+    // 7. The music library never lists sound files
+    TEST_PHASE("7. Music library scan ignores the sound folder");
+    {
+        TEST_CHECK(engine.RefreshAudioLibrary() == 1);
+        std::string track;
+        TEST_CHECK(engine.GetAudioLibraryTrack(0, 0, track) && track == "solta.wav");
+        TEST_CHECK(!engine.GetAudioLibraryTrack(0, 1, track));
+    }
+
+    engine.Shutdown();
+    std::filesystem::remove_all(r71_dir, fec);
+    std::cout << "[PASS] TestRound71SoundFiles\n";
+}
+
 #define RUN_TEST(fn)                                                                          \
     do {                                                                                      \
         g_current_test.store(#fn, std::memory_order_release);                                 \
@@ -16837,6 +17211,7 @@ int main(int argc, char** argv) {
     RUN_TEST(TestRound68Features);
     RUN_TEST(TestRound69Features);
     RUN_TEST(TestRound70Features);
+    RUN_TEST(TestRound71SoundFiles);
     g_tests_done.store(true, std::memory_order_release);
     if (watchdog_thread.joinable()) watchdog_thread.join();
     std::cout << "All core unit tests passed!\n";

@@ -83,6 +83,7 @@ constexpr ConfigFieldSpec kConfigSchema[] = {
     BoolSpec("audio", "normalize_volume", "audio.normalize_volume", &PluginConfig::normalize_volume),
     UintSpec("audio", "live_title_poll_seconds", "audio.live_title_poll_seconds", 0, 300, true, &PluginConfig::live_title_poll_seconds),
     StrSpec("audio", "music_dir", "audio.music_dir", &PluginConfig::music_dir),
+    StrSpec("audio", "sound_dir", "audio.sound_dir", &PluginConfig::sound_dir),
     StrSpec("audio", "audio_file_label", "audio.audio_file_label", &PluginConfig::audio_file_label),
 
     // channels

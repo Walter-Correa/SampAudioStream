@@ -1,5 +1,6 @@
 #include "sampaudiostream/engine/audio_engine.hpp"
 
+#include "sampaudiostream/audio/sound_file.hpp"
 #include "sampaudiostream/audio/transcoder.hpp"
 #include "sampaudiostream/core/logger.hpp"
 #include "sampaudiostream/network/http_client.hpp"
@@ -386,6 +387,27 @@ bool AudioEngine::Initialize() {
         std::filesystem::create_directories(Utf8ToPath(config_.music_dir), dir_ec);
         if (dir_ec) {
             Logger::Instance().Warn("Failed to create audio.music_dir: " + dir_ec.message());
+        }
+    }
+    if (!config_.sound_dir.empty()) {
+        std::error_code dir_ec;
+        std::filesystem::create_directories(Utf8ToPath(config_.sound_dir), dir_ec);
+        if (dir_ec) {
+            Logger::Instance().Warn("Failed to create audio.sound_dir: " + dir_ec.message());
+        }
+        if (!config_.music_dir.empty()) {
+            std::error_code canon_ec;
+            const auto sound_path = std::filesystem::weakly_canonical(Utf8ToPath(config_.sound_dir), canon_ec);
+            const auto music_path = std::filesystem::weakly_canonical(Utf8ToPath(config_.music_dir), canon_ec);
+            auto same_or_inside = [](const std::filesystem::path& p, const std::filesystem::path& base) {
+                const std::filesystem::path rel = p.lexically_relative(base);
+                return !rel.empty() && *rel.begin() != "..";
+            };
+            if (!canon_ec && (same_or_inside(sound_path, music_path) || same_or_inside(music_path, sound_path))) {
+                Logger::Instance().Warn(
+                    "audio.sound_dir and audio.music_dir should be separate folders: "
+                    "files inside the music folder are listed in the music library.");
+            }
         }
     }
 
@@ -789,6 +811,11 @@ void AudioEngine::Shutdown() {
         sorted_channel_ids_.clear();
         player_channels_.clear();
         player_arbitration_.clear();
+        for (const auto& [pid, snd] : player_sounds_) {
+            (void)pid;
+            http_server_.UnregisterFileEndpoint(snd.token);
+        }
+        player_sounds_.clear();
         for (auto& [pid, st] : active_searches_) {
             if (st.cancel_flag) st.cancel_flag->store(true);
         }
@@ -903,6 +930,12 @@ void AudioEngine::Reset() {
                     }),
                 pending_delayed_channel_starts_.end());
         }
+
+        for (const auto& [pid, snd] : player_sounds_) {
+            http_server_.UnregisterFileEndpoint(snd.token);
+            affected_set.insert(pid);
+        }
+        player_sounds_.clear();
 
         for (auto& [pid, arb] : player_arbitration_) {
             bool changed = (arb.personal_stream_id != INVALID_STREAM_ID);
@@ -1050,6 +1083,7 @@ void AudioEngine::Tick() {
     auto now = std::chrono::steady_clock::now();
     ProcessDelayedStarts(now);
     ProcessPendingCompletions(now);
+    UpdatePlayerSounds(now);
     auto poll_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_disconnect_poll_).count();
     if (!host_.TracksDisconnectEvents()) {
         CheckDisconnectedPlayers();
@@ -1604,6 +1638,11 @@ void AudioEngine::OnPlayerDisconnect(PlayerId player_id) {
             }
         }
         player_arbitration_.erase(player_id);
+        auto snd_it = player_sounds_.find(player_id);
+        if (snd_it != player_sounds_.end()) {
+            http_server_.UnregisterFileEndpoint(snd_it->second.token);
+            player_sounds_.erase(snd_it);
+        }
     }
 
     if (old_personal) {
@@ -1923,6 +1962,10 @@ void AudioEngine::DecodeClientSource(
                 out_id = static_cast<std::int32_t>(raw_id);
             }
             break;
+        case AudioSourcePriority::Sound:
+            out_type = AudioStreamSourceType::Sound;
+            out_id = -1;
+            break;
         case AudioSourcePriority::None:
         default:
             out_type = AudioStreamSourceType::None;
@@ -1963,7 +2006,23 @@ void AudioEngine::ReconcilePlayerLocked(
         return opts.use_position && !attached;
     };
 
+    auto sound_it = player_sounds_.find(player_id);
+    if (sound_it != player_sounds_.end() && !personal_muted) {
+        const PlayerSoundState& snd = sound_it->second;
+        desired_kind = AudioSourcePriority::Sound;
+        desired_id = snd.play_id;
+        desired_gen = 1;
+        desired_opt_ver = 1;
+        desired_url = snd.url;
+        desired_pos = snd.position;
+        desired_dist = snd.distance;
+        desired_use_pos = snd.use_position;
+    }
+
     for (AudioSourcePriority tier : order) {
+        if (desired_kind == AudioSourcePriority::Sound) {
+            break;
+        }
         if (tier == AudioSourcePriority::Personal) {
             if (arb.personal_stream_id != INVALID_STREAM_ID) {
                 auto sit = streams_.find(arb.personal_stream_id);
@@ -2177,6 +2236,7 @@ void AudioEngine::ReconcilePlayerLocked(
 
     if (desired_kind != AudioSourcePriority::None &&
         desired_kind != AudioSourcePriority::Personal &&
+        desired_kind != AudioSourcePriority::Sound &&
         arb.personal_stream_id != INVALID_STREAM_ID) {
         auto sit = streams_.find(arb.personal_stream_id);
         if (sit != streams_.end() && sit->second->is_passthrough.load()) {
@@ -3693,6 +3753,181 @@ bool AudioEngine::ReResolveExtractorTrack(
     out_meta = std::move(wait_state->result.metadata);
     out_meta.source_type = wait_state->result.source_type;
     return true;
+}
+
+bool AudioEngine::LoadSoundFile(
+    const std::string& sound,
+    std::shared_ptr<const std::string>& out_data,
+    std::string& out_content_type,
+    std::int64_t& out_duration_ms,
+    std::string& out_error) {
+    std::filesystem::path real_path;
+    std::string ext_lower;
+    ErrorCode err_code = ErrorCode::None;
+    if (!StreamResolver::ParseAndResolveSoundFile(sound, config_.sound_dir, real_path, ext_lower, err_code, out_error)) {
+        return false;
+    }
+    std::error_code ec;
+    const std::uintmax_t size = std::filesystem::file_size(real_path, ec);
+    if (ec) {
+        out_error = "Sound file cannot be read";
+        return false;
+    }
+    if (size == 0 || size > kMaxSoundFileBytes) {
+        out_error = "Sound file is empty or larger than 5 MB";
+        return false;
+    }
+    const std::filesystem::file_time_type mtime = std::filesystem::last_write_time(real_path, ec);
+    const std::string key = PathToUtf8(real_path);
+    {
+        std::lock_guard<std::mutex> lock(sound_cache_mutex_);
+        auto it = sound_cache_.find(key);
+        if (it != sound_cache_.end() && it->second.size == size && it->second.mtime == mtime && it->second.data) {
+            out_data = it->second.data;
+            out_content_type = it->second.content_type;
+            out_duration_ms = it->second.duration_ms;
+            return true;
+        }
+    }
+
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    std::ifstream ifs(real_path, std::ios::binary);
+    if (!ifs || !ifs.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) {
+        out_error = "Sound file cannot be read";
+        return false;
+    }
+    std::int64_t duration_ms = 0;
+    if (!ProbeSoundDurationMs(bytes, ext_lower, duration_ms)) {
+        out_error = "Sound file is not a valid " + ext_lower.substr(1) + " file";
+        return false;
+    }
+
+    CachedSoundFile entry;
+    entry.data = std::make_shared<const std::string>(std::move(bytes));
+    entry.content_type = SoundFileContentType(ext_lower);
+    entry.duration_ms = duration_ms;
+    entry.size = size;
+    entry.mtime = mtime;
+    out_data = entry.data;
+    out_content_type = entry.content_type;
+    out_duration_ms = duration_ms;
+    std::lock_guard<std::mutex> lock(sound_cache_mutex_);
+    if (sound_cache_.size() >= 64 && sound_cache_.find(key) == sound_cache_.end()) {
+        sound_cache_.clear();
+    }
+    sound_cache_[key] = std::move(entry);
+    return true;
+}
+
+bool AudioEngine::PlayAudioStreamSoundForPlayer(
+    PlayerId player_id,
+    const std::string& sound,
+    const Vector3& position,
+    float distance,
+    bool use_position) {
+    if (!initialized_.load() || shutting_down_.load() || player_id < 0 || !host_.IsPlayerConnected(player_id)) {
+        return false;
+    }
+
+    std::shared_ptr<const std::string> data;
+    std::string content_type;
+    std::int64_t duration_ms = 0;
+    std::string err;
+    if (!LoadSoundFile(sound, data, content_type, duration_ms, err)) {
+        Logger::Instance().Warn("Sound '" + sound + "' cannot be played: " + err);
+        return false;
+    }
+
+    std::vector<PlayerAudioCommand> cmds;
+    std::string replaced_token;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        auto existing_arb = player_arbitration_.find(player_id);
+        if (existing_arb != player_arbitration_.end() &&
+            existing_arb->second.muted && existing_arb->second.mute_include_personal) {
+            return false;
+        }
+        const std::string token = GenerateUniqueEndpointCodeLocked();
+        const std::string url = BuildEndpointUrlForPlayerLocked("f", token, player_id);
+        if (url.empty()) {
+            return false;
+        }
+        auto& arb = player_arbitration_[player_id];
+
+        // Keep the interrupted personal session's position so it resumes where the sound cut in.
+        if (arb.client_source_kind == AudioSourcePriority::Personal && arb.personal_stream_id != INVALID_STREAM_ID) {
+            auto sit = streams_.find(arb.personal_stream_id);
+            if (sit != streams_.end() && sit->second && !ShouldUseDirectPassthrough(*sit->second) && sit->second->buffer) {
+                auto& s = sit->second;
+                const std::uint64_t earliest = s->buffer->EarliestAvailableOffset();
+                const std::uint64_t written = s->buffer->TotalWritten();
+                const std::uint64_t played = http_server_.GetEndpointPlayedOffset(s->token);
+                s->resync_offset = std::clamp(std::max(played, s->resync_offset), earliest, written);
+            }
+        }
+
+        auto old = player_sounds_.find(player_id);
+        if (old != player_sounds_.end()) {
+            replaced_token = old->second.token;
+        }
+        PlayerSoundState& st = player_sounds_[player_id];
+        st.play_id = next_sound_play_id_++;
+        st.token = token;
+        st.url = url;
+        st.position = position;
+        st.distance = distance;
+        st.use_position = use_position;
+        st.duration_ms = duration_ms;
+        st.fetched = false;
+        // Fallback when the client never requests the file (audio streams disabled in its settings).
+        st.expires_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(duration_ms + 5000);
+        http_server_.RegisterFileEndpoint(FileEndpointInfo{token, data, content_type});
+        ReconcilePlayerLocked(player_id, nullptr, cmds);
+    }
+    if (!replaced_token.empty()) {
+        http_server_.UnregisterFileEndpoint(replaced_token);
+    }
+    ApplyPlayerAudioCommands(cmds);
+    Logger::Instance().Debug(
+        "Playing sound '" + sound + "' for player " + std::to_string(player_id) +
+        " (" + std::to_string(duration_ms) + " ms)");
+    return true;
+}
+
+void AudioEngine::UpdatePlayerSounds(std::chrono::steady_clock::time_point now) {
+    std::vector<PlayerAudioCommand> cmds;
+    std::vector<std::string> released_tokens;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (player_sounds_.empty()) {
+            return;
+        }
+        std::vector<PlayerId> expired;
+        for (auto& [pid, st] : player_sounds_) {
+            if (!st.fetched) {
+                std::chrono::steady_clock::time_point requested_at{};
+                if (http_server_.GetFileEndpointFirstRequestTime(st.token, requested_at)) {
+                    st.fetched = true;
+                    // The client plays the complete file right after downloading it; a short margin covers its start-up.
+                    st.expires_at = requested_at + std::chrono::milliseconds(st.duration_ms + 500);
+                }
+            }
+            if (now >= st.expires_at) {
+                expired.push_back(pid);
+            }
+        }
+        for (PlayerId pid : expired) {
+            auto it = player_sounds_.find(pid);
+            if (it == player_sounds_.end()) continue;
+            released_tokens.push_back(it->second.token);
+            player_sounds_.erase(it);
+            ReconcilePlayerLocked(pid, nullptr, cmds);
+        }
+    }
+    for (const auto& token : released_tokens) {
+        http_server_.UnregisterFileEndpoint(token);
+    }
+    ApplyPlayerAudioCommands(cmds);
 }
 
 bool AudioEngine::StopAudioStreamForPlayer(PlayerId player_id, bool send_stop) {

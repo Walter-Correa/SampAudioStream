@@ -148,6 +148,11 @@ ctest --test-dir build -R core_tests --output-on-failure
 <details>
 <summary>Show the version history</summary>
 
+### 2.3.0 — 21/11/2026
+- **Sound Effects Folder (`audio.sound_dir`) & `SA_PlayAudioStreamSoundForPlayer`**:
+  - New `audio.sound_dir` folder (`"scriptfiles/SampAudioStream/sound"`, created on startup) for short sound effects such as alerts, notifications, jingles and gameplay sounds, kept apart from the music library (a startup warning is logged when it overlaps `audio.music_dir`).
+  - New `SA_PlayAudioStreamSoundForPlayer(playerid, sound[], posX, posY, posZ, distance, usepos)` serves `.mp3`, `.ogg` and `.wav` files up to 5 MB as-is from memory through the new `/f/<code>` route (no transcoder, immediate start), plays them above every other source (`SA_SOURCE_SOUND`) and then resumes what the player was hearing: channels and radios continue live and interrupted transcoded personal streams resume where they were cut.
+
 ### 2.2.0 — 20/11/2026
 - **Cleaner On-Screen Text & Preserved Apostrophes**:
   - Single-player and global sessions no longer emit an HTTP `icy-name:` header (preventing duplicated station/title text in the client); synchronized channels continue sending `icy-name:` as the channel name.

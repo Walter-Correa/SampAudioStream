@@ -79,6 +79,24 @@ bool ExtractEndpointRoute(const std::string& target, bool& out_is_channel, std::
     return !out_token.empty();
 }
 
+bool ExtractFileRoute(const std::string& target, std::string& out_token) {
+    out_token.clear();
+    std::string path = target;
+    auto qpos = path.find('?');
+    if (qpos != std::string::npos) {
+        path = path.substr(0, qpos);
+    }
+    if (path.rfind("/f/", 0) != 0) {
+        return false;
+    }
+    std::string rest = path.substr(3);
+    if (rest.empty() || rest.find('/') != std::string::npos) {
+        return false;
+    }
+    out_token = std::move(rest);
+    return true;
+}
+
 bool ContainsAsciiIgnoreCase(const std::string& haystack, const std::string& needle) {
     if (needle.empty() || haystack.size() < needle.size()) {
         return false;
@@ -178,6 +196,7 @@ class ClientConnection : public std::enable_shared_from_this<ClientConnection> {
 public:
     using Strand = asio::strand<asio::io_context::executor_type>;
     using EndpointLookupFn = std::function<bool(const std::string&, StreamEndpointInfo&)>;
+    using FileLookupFn = std::function<bool(const std::string&, bool, FileEndpointInfo&)>;
     using ProgressReportFn = std::function<void(
         const std::string&,
         std::uint64_t,
@@ -192,6 +211,7 @@ public:
         Strand strand,
         std::string remote_ip,
         EndpointLookupFn lookup_fn,
+        FileLookupFn file_lookup_fn,
         ProgressReportFn progress_fn,
         BindEndpointFn bind_endpoint_fn,
         CloseCallbackFn close_fn)
@@ -202,6 +222,7 @@ public:
           request_buf_(8192), // Cap HTTP request headers at 8 KB
           remote_ip_(std::move(remote_ip)),
           lookup_fn_(std::move(lookup_fn)),
+          file_lookup_fn_(std::move(file_lookup_fn)),
           progress_fn_(std::move(progress_fn)),
           bind_endpoint_fn_(std::move(bind_endpoint_fn)),
           close_fn_(std::move(close_fn)) {}
@@ -278,6 +299,17 @@ private:
 
         if ((method != "GET" && method != "HEAD") || target.empty()) {
             SendErrorResponse(400, "Bad Request");
+            return;
+        }
+
+        std::string file_token;
+        if (ExtractFileRoute(target, file_token)) {
+            FileEndpointInfo file;
+            if (!file_lookup_fn_ || !file_lookup_fn_(file_token, method == "GET", file) || !file.data) {
+                SendErrorResponse(404, "Not Found");
+                return;
+            }
+            ServeFile(std::move(file), method == "HEAD");
             return;
         }
 
@@ -364,6 +396,57 @@ private:
             }
             self->StartDisconnectWatcher();
             self->PumpNextChunk();
+        });
+    }
+
+    void ServeFile(FileEndpointInfo file, bool head_only) {
+        file_data_ = std::move(file.data);
+        file_offset_ = 0;
+        is_head_ = head_only;
+        Logger::Instance().Debug("HTTP sound file request from " + remote_ip_);
+
+        std::ostringstream oss;
+        oss << "HTTP/1.1 200 OK\r\n"
+            << "Content-Type: " << SanitizeHeaderValue(file.content_type) << "\r\n"
+            << "Content-Length: " << file_data_->size() << "\r\n"
+            << "Cache-Control: no-cache, no-store\r\n"
+            << "Connection: close\r\n\r\n";
+        header_response_ = oss.str();
+        auto self = shared_from_this();
+        AsyncWriteWithDeadline(asio::buffer(header_response_), [self]() {
+            if (self->is_head_) {
+                self->CloseSocket();
+                return;
+            }
+            self->PumpFileChunk();
+        });
+    }
+
+    void PumpFileChunk() {
+        if (closed_ || !file_data_) {
+            CloseSocket();
+            return;
+        }
+        if (file_offset_ >= file_data_->size()) {
+            // Half-close so the client reads everything, then close when it disconnects (or after a grace period).
+            std::error_code ec;
+            socket_.shutdown(asio::ip::tcp::socket::shutdown_send, ec);
+            auto self = shared_from_this();
+            header_timer_.expires_after(std::chrono::seconds(10));
+            header_timer_.async_wait(asio::bind_executor(strand_, [self](std::error_code timer_ec) {
+                if (!timer_ec && !self->closed_) {
+                    self->CloseSocket();
+                }
+            }));
+            StartDisconnectWatcher();
+            return;
+        }
+        const std::size_t n = std::min<std::size_t>(64 * 1024, file_data_->size() - file_offset_);
+        const char* ptr = file_data_->data() + file_offset_;
+        file_offset_ += n;
+        auto self = shared_from_this();
+        AsyncWriteWithDeadline(asio::buffer(ptr, n), [self]() {
+            self->PumpFileChunk();
         });
     }
 
@@ -608,10 +691,13 @@ private:
     std::string remote_ip_;
     std::string bound_token_;
     EndpointLookupFn lookup_fn_;
+    FileLookupFn file_lookup_fn_;
     ProgressReportFn progress_fn_;
     BindEndpointFn bind_endpoint_fn_;
     CloseCallbackFn close_fn_;
     StreamEndpointInfo endpoint_;
+    std::shared_ptr<const std::string> file_data_;
+    std::size_t file_offset_{0};
     std::string header_response_;
     std::array<std::uint8_t, 16384> write_buf_{};
     std::array<std::uint8_t, 1> disconnect_probe_buf_{};
@@ -657,6 +743,13 @@ struct HttpStreamingServer::Impl {
     std::unordered_map<std::string, StreamEndpointInfo> endpoints;
     std::unordered_map<std::string, std::uint64_t> last_served_offsets;
     std::unordered_map<std::string, EndpointPlaybackStats> playback_stats;
+
+    struct FileEndpointState {
+        FileEndpointInfo info;
+        bool requested{false};
+        std::chrono::steady_clock::time_point first_request{};
+    };
+    std::unordered_map<std::string, FileEndpointState> file_endpoints;
 
     std::size_t max_total_connections{1024};
     std::size_t max_connections_per_ip{64};
@@ -771,6 +864,20 @@ struct HttpStreamingServer::Impl {
         return true;
     }
 
+    bool LookupFileEndpoint(const std::string& token, bool is_get, FileEndpointInfo& out_info) {
+        std::lock_guard<std::mutex> lock(endpoints_mutex);
+        auto it = file_endpoints.find(token);
+        if (it == file_endpoints.end()) {
+            return false;
+        }
+        if (is_get && !it->second.requested) {
+            it->second.requested = true;
+            it->second.first_request = std::chrono::steady_clock::now();
+        }
+        out_info = it->second.info;
+        return true;
+    }
+
     void ReportServedOffset(
         const std::string& token,
         std::uint64_t initial_offset,
@@ -827,6 +934,9 @@ struct HttpStreamingServer::Impl {
                         remote_ip,
                         [this](const std::string& token, StreamEndpointInfo& info) {
                             return LookupEndpoint(token, info);
+                        },
+                        [this](const std::string& token, bool is_get, FileEndpointInfo& info) {
+                            return LookupFileEndpoint(token, is_get, info);
                         },
                         [this](const std::string& token,
                                std::uint64_t init_off,
@@ -1073,6 +1183,7 @@ void HttpStreamingServer::Stop() {
     impl_->endpoints.clear();
     impl_->last_served_offsets.clear();
     impl_->playback_stats.clear();
+    impl_->file_endpoints.clear();
 }
 
 bool HttpStreamingServer::IsRunning() const {
@@ -1183,6 +1294,34 @@ std::uint64_t HttpStreamingServer::GetEndpointTotalConnectionCount(const std::st
     std::lock_guard<std::mutex> lock(impl_->connections_mutex);
     auto it = impl_->endpoint_total_connections.find(token);
     return it != impl_->endpoint_total_connections.end() ? it->second : 0;
+}
+
+void HttpStreamingServer::RegisterFileEndpoint(const FileEndpointInfo& info) {
+    if (info.token.empty() || !info.data) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(impl_->endpoints_mutex);
+    auto& state = impl_->file_endpoints[info.token];
+    state.info = info;
+    state.requested = false;
+    state.first_request = {};
+}
+
+void HttpStreamingServer::UnregisterFileEndpoint(const std::string& token) {
+    std::lock_guard<std::mutex> lock(impl_->endpoints_mutex);
+    impl_->file_endpoints.erase(token);
+}
+
+bool HttpStreamingServer::GetFileEndpointFirstRequestTime(
+    const std::string& token,
+    std::chrono::steady_clock::time_point& out_time) const {
+    std::lock_guard<std::mutex> lock(impl_->endpoints_mutex);
+    auto it = impl_->file_endpoints.find(token);
+    if (it == impl_->file_endpoints.end() || !it->second.requested) {
+        return false;
+    }
+    out_time = it->second.first_request;
+    return true;
 }
 
 } // namespace sampaudiostream
