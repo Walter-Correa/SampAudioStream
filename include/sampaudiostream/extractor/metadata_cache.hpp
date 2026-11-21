@@ -20,6 +20,7 @@ public:
     std::optional<TrackMetadata> GetTrack(const std::string& key);
     void PutTrack(const std::string& key, const TrackMetadata& metadata);
     void InvalidateTrack(const std::string& key);
+    void InvalidateTrackPrefix(const std::string& prefix);
 
     std::optional<std::vector<SearchResultItem>> GetSearch(const std::string& query_key);
     void PutSearch(const std::string& query_key, const std::vector<SearchResultItem>& items);
@@ -83,6 +84,18 @@ private:
             }
             lru_list.erase(it->second);
             map.erase(it);
+        }
+
+        void InvalidateByPrefix(const std::string& prefix) {
+            for (auto it = map.begin(); it != map.end();) {
+                if (it->first.size() >= prefix.size() &&
+                    it->first.compare(0, prefix.size(), prefix) == 0) {
+                    lru_list.erase(it->second);
+                    it = map.erase(it);
+                } else {
+                    ++it;
+                }
+            }
         }
 
         void Clear() {

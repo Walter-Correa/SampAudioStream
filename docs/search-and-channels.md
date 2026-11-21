@@ -149,6 +149,32 @@ CMD:radio(playerid, params[])
 * **Dynamic Channel Menus:** Enumerate all active channels with `SA_GetAudioStreamChannelCount`, `SA_GetAudioStreamChannelID`, `SA_GetAudioStreamChannelInfo`, `SA_GetAudioStreamChannelTrack`, `SA_GetAudioStreamChannelElapsed`, `SA_GetAudioStreamChannelListener`, `SA_GetAudioStreamChannelQueue`, and `SA_GetAudioStreamChannelDestroy`.
 * **Spatial Channels & Mobile Sound Cars:** Call `SA_SetAudioStreamChannelPos(channelid, x, y, z, distance, worldid, interiorid, auto_listen)` for fixed-position clubs/bars/venues (with client-side 3D attenuation), or attach dynamically with `SA_AttachAudioStreamChannelToVehicle` / `SA_AttachAudioStreamChannelToPlayer` (which play at full 2D volume inside server range and silence outside range because SA-MP clients cannot move active 3D sound origins; reset via `SA_ClearAudioStreamChannelPos`). Use `auto_listen = false` for private/password-restricted areas so only subscribed players inside the zone hear audio.
 * **Queue Manipulation, Labels, Shuffle & Loop Modes:** Optionally pass a friendly `label` to `SA_QueueChannelAudioStream` / `SA_InsertAudioStreamChannelQueue` and read it with `SA_GetAudioStreamChannelQueueLabel` (playlist imports via `SA_QueueChannelAudioStreamPlaylist` populate labels automatically from entry titles, and labels follow the item into `current_input` and `SA_CHANNEL_LOOP_QUEUE`). You can also remove by index (`SA_RemoveAudioStreamChannelQueue`), reorder queue items without losing UTF-8 labels (`SA_MoveAudioStreamChannelQueue`), perform a one-time random shuffle of pending queue items (`SA_ShuffleAudioStreamChannelQueue`), seek tracks (`SA_SeekChannelAudioStream`), configure `SA_SetAudioStreamChannelLoop` (`OFF`, `TRACK`, `QUEUE`), and handle `OnAudioStreamChannelTrackStart`, `OnAudioStreamChannelQueueEnd`, `OnAudioStreamChannelError`, `OnAudioStreamChannelPlaylistQueued`, and `OnAudioStreamChannelRestored`.
+* **Live Internet Radio Text & Station Titles:** On direct live radio streams, the track title starts as `"Direct Audio Stream"` / `"Radio Stream"` unless the station's `icy-name` was found during link probing, and is updated once from `icy-name` on the first ICY poll without re-firing `TrackStart`; ongoing song updates arrive via `OnAudioStreamChannelLiveTitleChange` / `OnAudioStreamLiveTitleChange` without altering `live_title` or channel names.
+
+### Channel Playlist Mode
+Enable non-destructive playlist mode per channel with `SA_SetAudioStreamChannelPlaylist(channelid, true)` (`SA_IsAudioStreamChannelPlaylist` / `SA_GetAudioStreamChannelQueuePos` / `SA_PlayAudioStreamChannelQueue`). Switching **on** keeps any active queued track at index `0`; switching **off** removes entries before `playlist_pos` and reverts to consuming FIFO order:
+
+| Operation | Behavior in Playlist Mode |
+| :--- | :--- |
+| `Queue` / `Insert` | Appends/inserts in list (`playlist_pos` shifts if inserted before it); starts immediately if channel is stopped without a current item |
+| Natural end (`LOOP_TRACK`) | Repeats current item at the same `playlist_pos` |
+| Natural end (`LOOP_QUEUE`) | Advances to `playlist_pos + 1`, wrapping back to `0` after the last item |
+| Natural end (`LOOP_OFF`) | Advances to `playlist_pos + 1`; after the last item, stops with `playlist_pos = -1`, preserves list, and fires `OnAudioStreamChannelQueueEnd` |
+| `SA_SkipChannelAudioStream` | Jumps to next item (wrapping on `LOOP_QUEUE`, or stopping without `QueueEnd` on `LOOP_OFF`) |
+| `SA_PlayAudioStreamChannelQueue(i)` | Jumps to item `i` without altering list order (`playlist_pos = i`) |
+| `SA_PlayChannelAudioStream(url)` | Plays out-of-list (`playlist_pos = -1`) without modifying the list, then stops on completion |
+| `Remove(i)` | Decrements `playlist_pos` when `i < playlist_pos`; stops and plays the replacement item at `i` (or stops if none) when `i == playlist_pos`; leaves playback untouched when `i > playlist_pos` |
+| `Move(from, to)` / `Shuffle` | Reorders the list and keeps `playlist_pos` pinned to the currently playing track |
+| `Clear` | Clears the list, sets `playlist_pos = -1`, and stops playback if the active track came from the list |
+| `Stop` | Stops playback while preserving both the list and `playlist_pos` |
+| Playlist Import | Appends entries to the list (auto-starting from the first imported item if stopped without a current item) |
+| Track Error | Skips to the next item (never loops the failing track); 5 consecutive errors still stop the channel |
+
+### Local Music Library (`audio.music_dir` & `library://`)
+Place audio files directly in `audio.music_dir` (default `"scriptfiles/SampAudioStream/music"`) or inside **depth-1 subfolders** (deeper subfolders and empty folders are ignored). Call `SA_RefreshAudioLibrary()` to index up to `200` folders and `1000` tracks per folder (sorted case-insensitively, filtered to `.mp3`, `.ogg`, `.opus`, `.wav`, `.flac`, `.aac`, `.m4a` and representable in `scripting.pawn_text_encoding`), then enumerate with `SA_GetAudioLibraryFolderCount`, `SA_GetAudioLibraryFolder`, and `SA_GetAudioLibraryTrack`:
+* **Single tracks:** pass `library://<folder>/<file>` (or `library:///<file>` for loose root files) to any URL-accepting native (`SA_PlayAudioStreamForPlayer`, `SA_PlayAudioStream`, `PlayAudioStreamForPlayer`, `SA_PlayChannelAudioStream`, `SA_QueueChannelAudioStream`, `SA_InsertAudioStreamChannelQueue`).
+* **Folder playlist import:** pass `library://<folder>` (or `library://` for the root folder) to `SA_QueueChannelAudioStreamPlaylist` using filenames as queue labels.
+* **Security & Transcoding:** Paths are strictly canonicalized inside `audio.music_dir` (rejecting `..`, `\`, `:`, drive letters, control characters, symlinks escaping `music_dir`, invalid extensions, and non-`library://` disk paths such as `file://`, `C:\...`, `/etc/...` with `SA_ERR_INVALID_URL`). Local files always stream through the server transcoder as finite tracks with known duration, seek, pause, volume, AGC, and `OnAudioStreamFinished`.
 
 ---
 

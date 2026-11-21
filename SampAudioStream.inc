@@ -100,8 +100,8 @@ enum E_SA_AUDIO_STREAM_SOURCE {
 // Core Playback Natives (SA_* API)
 // -----------------------------------------------------------------------------
 
-native SA_PlayAudioStreamForPlayer(playerid, const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false);
-native SA_PlayAudioStream(const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false);
+native SA_PlayAudioStreamForPlayer(playerid, const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false, bool:stream_text = true);
+native SA_PlayAudioStream(const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false, bool:stream_text = true);
 
 native SA_StopAudioStreamForPlayer(playerid);
 native SA_StopAudioStream(streamid);
@@ -182,6 +182,19 @@ native SA_GetAudioStreamChannelListener(channelid, index);
 native SA_SetAudioStreamChannelName(channelid, const name[]);
 native SA_GetAudioStreamChannelLiveTitle(channelid, title[], title_len = sizeof(title));
 native SA_SetAudioStreamChannelLiveTitle(channelid, const title[]);
+native SA_SetAudioStreamChannelPlaylist(channelid, bool:enable);
+native bool:SA_IsAudioStreamChannelPlaylist(channelid);
+native SA_GetAudioStreamChannelQueuePos(channelid);
+native SA_PlayAudioStreamChannelQueue(channelid, index);
+
+// -----------------------------------------------------------------------------
+// Local Audio Library Natives
+// -----------------------------------------------------------------------------
+
+native SA_RefreshAudioLibrary();
+native SA_GetAudioLibraryFolderCount();
+native SA_GetAudioLibraryFolder(index, name[], name_len = sizeof(name), &track_count);
+native SA_GetAudioLibraryTrack(folder_index, track_index, name[], name_len = sizeof(name));
 
 // -----------------------------------------------------------------------------
 // Diagnostics & Metadata Natives
@@ -284,9 +297,9 @@ public SA_Internal_ImportNatives()
 
 #if !defined SA_DISABLE_NATIVE_HOOKS
 
-stock bool:SA_Hook_PlayAudioStream(playerid, const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false)
+stock bool:SA_Hook_PlayAudioStream(playerid, const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false, bool:stream_text = true)
 {
-    return (SA_PlayAudioStreamForPlayer(playerid, url, posX, posY, posZ, distance, usepos, worldid, interiorid, volume, notify_processing, process_direct_audio_files) != INVALID_AUDIO_STREAM_ID);
+    return (SA_PlayAudioStreamForPlayer(playerid, url, posX, posY, posZ, distance, usepos, worldid, interiorid, volume, notify_processing, process_direct_audio_files, stream_text) != INVALID_AUDIO_STREAM_ID);
 }
 
 #if defined _ALS_PlayAudioStreamForPlayer

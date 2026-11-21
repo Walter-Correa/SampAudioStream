@@ -46,13 +46,42 @@ struct PlaylistExtractionResult {
     std::vector<std::string> titles;
 };
 
+struct AudioLibraryFolderData {
+    std::string utf8_name;
+    std::string pawn_name;
+    std::vector<std::string> utf8_tracks;
+    std::vector<std::string> pawn_tracks;
+};
+
 class StreamResolver {
 public:
     StreamResolver(const PluginConfig& config, BinaryManager& binaries, MetadataCache& cache);
 
     static bool LooksLikeUrl(const std::string& input);
+    static bool IsLibraryUrl(const std::string& input);
+    static bool LooksLikeDiskPath(const std::string& input);
+    static bool ParseAndResolveLibraryFile(
+        const std::string& url,
+        const std::string& music_dir,
+        std::filesystem::path& out_real_path,
+        std::string& out_file_name,
+        ErrorCode& out_error_code,
+        std::string& out_error_message);
+    static bool ParseAndResolveLibraryFolder(
+        const std::string& url,
+        const std::string& music_dir,
+        std::string& out_folder_utf8,
+        std::filesystem::path& out_real_dir,
+        ErrorCode& out_error_code,
+        std::string& out_error_message);
+    static std::vector<AudioLibraryFolderData> ScanMusicLibraryDir(
+        const std::string& music_dir,
+        const std::string& pawn_text_encoding,
+        std::uint32_t max_folders = 200,
+        std::uint32_t max_tracks_per_folder = 1000);
     static bool IsKnownDirectAudioExtension(const std::string& url);
     static bool IsDirectAudioFileUrl(const std::string& url);
+    static std::string ExtractUrlFileNameTitle(const std::string& url);
     static bool IsHlsPlaylistUrl(const std::string& url);
     static bool IsKnownPlatformUrl(const std::string& url);
     static bool IsYouTubeAuthChallenge(const std::string& stderr_text, bool* out_is_age_restricted = nullptr);
@@ -84,6 +113,7 @@ public:
 
     ResolveResult Resolve(const std::string& url_or_query, const std::atomic<bool>* cancel_flag = nullptr);
     void InvalidateCachedTrack(const std::string& url_or_query);
+    void InvalidateCachedLibraryTracks();
     SearchExecutionResult Search(const std::string& query, std::uint32_t max_results, const std::atomic<bool>* cancel_flag = nullptr);
     PlaylistExtractionResult ExtractPlaylist(const std::string& url, std::uint32_t max_items, const std::atomic<bool>* cancel_flag = nullptr);
     void SetYtDlpTestHook(YtDlpTestHook hook);
@@ -227,6 +257,7 @@ private:
         const std::string& url,
         std::string& out_content_type,
         bool& out_security_blocked,
+        std::string& out_station_name_utf8,
         const std::atomic<bool>* cancel_flag = nullptr) const;
     bool InspectYtDlpWarnings(const std::string& stderr_text, std::string& out_first_challenge_line) const;
     void MaybeWarnJsChallengeRateLimited() const;

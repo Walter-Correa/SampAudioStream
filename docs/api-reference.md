@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.2.0`), covering all **73 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.2.0`), covering all **81 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -21,16 +21,16 @@ Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.2.0`), coverin
 
 ### `SA_PlayAudioStreamForPlayer`
 ```pawn
-native SA_PlayAudioStreamForPlayer(playerid, const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false);
+native SA_PlayAudioStreamForPlayer(playerid, const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false, bool:stream_text = true);
 ```
-Plays a URL (YouTube, platform link, direct audio, Shoutcast/Icecast) or search query for a single player. Automatically stops any previous personal stream or radio channel for that player. When `notify_processing` is `true`, fires `OnAudioStreamProcessing` right away before resolution/buffering starts. When `process_direct_audio_files` is `true`, direct music files (`.mp3`/`.ogg`/`.wav`/`.flac`/`.aac`/`.m4a`/`.opus` on `http://` or `https://`) bypass native passthrough and are server-transcoded (enabling pause/resume, live volume scaling, frame-aligned `SA_Set*Distance`, and `OnAudioStreamFinished`); live radio streams and `.pls`/`.m3u` playlists remain on passthrough.
+Plays a URL (YouTube, platform link, direct audio, Shoutcast/Icecast) or search query for a single player. Automatically stops any previous personal stream or radio channel for that player. When `notify_processing` is `true`, fires `OnAudioStreamProcessing` right away before resolution/buffering starts. When `process_direct_audio_files` is `true`, direct music files (`.mp3`/`.ogg`/`.wav`/`.flac`/`.aac`/`.m4a`/`.opus` on `http://` or `https://`) bypass native passthrough and are server-transcoded (enabling pause/resume, live volume scaling, frame-aligned `SA_Set*Distance`, and `OnAudioStreamFinished`); live radio streams and `.pls`/`.m3u` playlists remain on passthrough. Passing `stream_text = false` omits `icy-name`, `icy-metaint`, and inline ICY metadata frames from server-processed endpoint responses (so the SA-MP/open.mp client displays no bottom-corner text) and disables ICY live-title polling for the session, while callbacks and query natives (`OnAudioStreamReady`, `SA_GetAudioStreamInfo`) still report metadata normally. For passthrough playback the upstream server controls client display text directly, so combine `.process_direct_audio_files = true, .stream_text = false` when hiding text on direct audio files.
 * **Returns:** Valid `streamid` (`>= 1`), or `INVALID_AUDIO_STREAM_ID` (`-1`) on failure.
 
 ### `SA_PlayAudioStream`
 ```pawn
-native SA_PlayAudioStream(const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false);
+native SA_PlayAudioStream(const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false, bool:stream_text = true);
 ```
-Starts a global / spatial stream. Any connected player matching `worldid`, `interiorid`, and 3D `distance` (when `usepos == true`) hears it automatically upon entering range and stops upon leaving range. Finite tracks advance at `1x` real-time so latecomers hear the current playback timestamp; live broadcasts stream directly in real time. When `notify_processing` is `true`, fires `OnAudioStreamProcessing` with `playerid == INVALID_PLAYER_ID`. Setting `process_direct_audio_files` to `true` ensures even spatial direct music files on plain `http://` are transcoded server-side rather than handed raw to the client (note: non-live `SA_PlayAudioStream` sessions already transcode for timeline synchronization unless streaming live).
+Starts a global / spatial stream. Any connected player matching `worldid`, `interiorid`, and 3D `distance` (when `usepos == true`) hears it automatically upon entering range and stops upon leaving range. Finite tracks advance at `1x` real-time so latecomers hear the current playback timestamp; live broadcasts stream directly in real time. When `notify_processing` is `true`, fires `OnAudioStreamProcessing` with `playerid == INVALID_PLAYER_ID`. Setting `process_direct_audio_files` to `true` ensures even spatial direct music files on plain `http://` are transcoded server-side rather than handed raw to the client (note: non-live `SA_PlayAudioStream` sessions already transcode for timeline synchronization unless streaming live). Passing `stream_text = false` omits `icy-name`, `icy-metaint`, and inline ICY frames on server-processed playback and disables ICY live-title polling while keeping callbacks and `SA_GetAudioStreamInfo` unchanged (passthrough playback ignores this flag because the remote server controls what the client displays).
 * **Returns:** Valid `streamid` (`>= 1`), or `INVALID_AUDIO_STREAM_ID` (`-1`) on failure.
 
 ### `SA_StopAudioStreamForPlayer`
@@ -308,7 +308,7 @@ Retrieves `channelid`'s name, stored creator name, active listener count, stream
 ```pawn
 native SA_GetAudioStreamChannelTrack(channelid, title[], title_len = sizeof(title), artist[], artist_len = sizeof(artist), &duration);
 ```
-Retrieves metadata (`title`, `artist`, `duration` in seconds) of the track currently playing on `channelid`.
+Retrieves metadata (`title`, `artist`, `duration` in seconds) of the track currently playing on `channelid`. For direct live radios, `title` starts as a generic placeholder (`"Direct Audio Stream"` / `"Radio Stream"`) unless the station name was found while probing the link; after the first ICY poll it is replaced by the station's `icy-name` header when available (no callback is re-fired; read it from `OnAudioStreamChannelLiveTitleChange` / `OnAudioStreamLiveTitleChange`).
 
 ### `SA_GetAudioStreamChannelQueue`
 ```pawn
@@ -427,6 +427,41 @@ native SA_SetAudioStreamChannelName(channelid, const name[]);
 ```
 Renames `channelid` (reflected in `SA_GetAudioStreamChannelInfo`, `icy-name` for new HTTP connections, and persisted state). Returns `0` if `name` is empty or `channelid` does not exist.
 
+### `SA_SetAudioStreamChannelPlaylist`
+```pawn
+native SA_SetAudioStreamChannelPlaylist(channelid, bool:enable);
+```
+Enables or disables persistent playlist mode on `channelid` (`false` by default = FIFO queue consumed as tracks play).
+* Turning **on** preserves the currently active queued track (if any) at index `0` followed by the pending queue (`pos = 0`).
+* Turning **off** discards items before the current playback position and reverts to classic queue mode (`pos = -1`).
+* **Returns:** `1` if `channelid` exists, `0` otherwise.
+
+### `SA_IsAudioStreamChannelPlaylist`
+```pawn
+native bool:SA_IsAudioStreamChannelPlaylist(channelid);
+```
+Returns `true` if playlist mode is currently enabled on `channelid`, `false` if disabled or invalid channel.
+
+### `SA_GetAudioStreamChannelQueuePos`
+```pawn
+native SA_GetAudioStreamChannelQueuePos(channelid);
+```
+Returns the `0`-based index of the item currently playing from the playlist, or `-1` if playlist mode is disabled, stopped after natural end, or playing an out-of-list track started via `SA_PlayChannelAudioStream`.
+
+### `SA_PlayAudioStreamChannelQueue`
+```pawn
+native SA_PlayAudioStreamChannelQueue(channelid, index);
+```
+Starts playback of item `index` (`0 .. queue_count - 1`) without reordering the list (`playlist_pos = index` in playlist mode; consumes that item in classic queue mode).
+* **Returns:** `1` on success, `0` if `channelid` or `index` is invalid or stream limit is reached.
+
+```pawn
+SA_SetAudioStreamChannelPlaylist(ch, true);
+SA_QueueChannelAudioStream(ch, "library://Rock/A.ogg", "Track A");
+SA_QueueChannelAudioStream(ch, "library://Rock/B.mp3", "Track B");
+SA_PlayAudioStreamChannelQueue(ch, 1); // Jump directly to index 1 ("Track B")
+```
+
 ### `SA_GetAudioStreamChannelLiveTitle`
 ```pawn
 native SA_GetAudioStreamChannelLiveTitle(channelid, title[], title_len = sizeof(title));
@@ -511,7 +546,7 @@ Reads runtime plugin counters: active stream count, active channel count, live t
 ```pawn
 native SA_GetAudioStreamInfo(streamid, title[], title_len = sizeof(title), artist[], artist_len = sizeof(artist), &duration, &E_SA_STREAM_STATE:stream_state);
 ```
-Retrieves current metadata (`title`, `artist`, `duration` in seconds, and `stream_state`) for `streamid`.
+Retrieves current metadata (`title`, `artist`, `duration` in seconds, and `stream_state`) for `streamid`. For direct live radios, `title` starts as a generic placeholder (`"Direct Audio Stream"` / `"Radio Stream"`) unless the station name was found while probing the link; after the first ICY poll it is replaced by the station's `icy-name` header when available (no callback is re-fired; read it from `OnAudioStreamChannelLiveTitleChange` / `OnAudioStreamLiveTitleChange`).
 * **Returns:** `1` if `streamid` exists, `0` otherwise.
 
 ### `SA_GetAudioStreamLiveTitle`
@@ -541,6 +576,48 @@ native SA_GetAudioStreamHttpPort();
 ```
 Returns the active TCP port bound by the embedded Asio HTTP streaming server (or `0` if not running).
 
+### `SA_RefreshAudioLibrary`
+```pawn
+native SA_RefreshAudioLibrary();
+```
+Rescans `audio.music_dir` (depth-1 subfolders plus loose root files) in memory, filters supported extensions (`.mp3`, `.ogg`, `.opus`, `.wav`, `.flac`, `.aac`, `.m4a`) and filenames representable in `scripting.pawn_text_encoding`, invalidates cached `library://` entries, and enforces up to `200` folders and `1000` tracks per folder.
+* **Returns:** Total non-empty folder count stored in memory.
+
+### `SA_GetAudioLibraryFolderCount`
+```pawn
+native SA_GetAudioLibraryFolderCount();
+```
+Returns the number of non-empty library folders currently cached in memory (requires `SA_RefreshAudioLibrary()` first).
+
+### `SA_GetAudioLibraryFolder`
+```pawn
+native SA_GetAudioLibraryFolder(index, name[], name_len = sizeof(name), &track_count);
+```
+Copies the name of folder `index` into `name` (`""` denotes loose audio files directly inside `audio.music_dir`) and writes its track count to `track_count`.
+* **Returns:** `1` on success, `0` if `index` is out of range.
+
+### `SA_GetAudioLibraryTrack`
+```pawn
+native SA_GetAudioLibraryTrack(folder_index, track_index, name[], name_len = sizeof(name));
+```
+Copies the filename (with extension) at `track_index` inside folder `folder_index` into `name`.
+* **Returns:** `1` on success, `0` if either index is out of range.
+
+```pawn
+new folders = SA_RefreshAudioLibrary();
+for (new f = 0; f < folders; f++)
+{
+    new fname[64], tcount;
+    SA_GetAudioLibraryFolder(f, fname, sizeof(fname), tcount);
+    for (new t = 0; t < tcount; t++)
+    {
+        new tname[128], ref[200];
+        SA_GetAudioLibraryTrack(f, t, tname, sizeof(tname));
+        format(ref, sizeof(ref), fname[0] ? "library://%s/%s" : "library:///%s", fname, tname);
+    }
+}
+```
+
 ---
 
 ## 6. Hooked Vanilla SA-MP Natives
@@ -548,12 +625,17 @@ Returns the active TCP port bound by the embedded Asio HTTP streaming server (or
 When `SA_DISABLE_NATIVE_HOOKS` is not defined (and `scripting.hook_native_audio` is enabled in `config.json`), standard audio calls are transparently upgraded:
 
 ```pawn
-PlayAudioStreamForPlayer(playerid, url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false);
+PlayAudioStreamForPlayer(playerid, url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false, bool:stream_text = true);
 StopAudioStreamForPlayer(playerid);
 ```
 * `SA_DISABLE_NATIVE_HOOKS` and `hook_native_audio` apply only to `PlayAudioStreamForPlayer` and `StopAudioStreamForPlayer`.
 * Direct `http://` or `https://` native audio URLs (`.mp3`/`.ogg`/`.wav`/`.flac`/`.aac`/`.pls`/`.m3u` or probed `audio/*` radios) with default `worldid = -1`, `interiorid = -1`, `volume = 100.0`, and `process_direct_audio_files = false` take the native SA-MP passthrough path by default (extensionless `https://` URLs are probed once and cached before deciding passthrough vs. `yt-dlp`).
 * Passing `.process_direct_audio_files = true` (or `process_direct_audio_files = true`) intercepts direct music file links (`.mp3`, `.ogg`, `.wav`, `.flac`, `.aac`, `.m4a`, `.opus`) through `SampAudioStream`'s transcoder pipeline — unlocking pause/resume, live volume scaling, smooth distance updates, `OnAudioStreamProcessing`, and `OnAudioStreamFinished` — while live radio streams and `.pls`/`.m3u` playlists remain on passthrough.
+* Passing `.stream_text = false` hides the bottom-corner client text (omits `icy-name`, `icy-metaint`, and inline ICY metadata frames) and skips ICY live-title polling on server-processed playback, while callbacks/query natives continue receiving metadata. For passthrough playback the remote server controls the text, so use `.process_direct_audio_files = true, .stream_text = false` on direct sound-effect files:
+```pawn
+// Short sound effect: processed by the plugin so it releases the player when it ends, without any on-screen text
+PlayAudioStreamForPlayer(playerid, "http://example.com/sounds/click.mp3", .process_direct_audio_files = true, .stream_text = false);
+```
 * Any YouTube/platform link, `.m3u8` (HLS) playlist, `.m4a`/`.opus` container, search query, or call using `worldid`/`interiorid`/`volume` always routes through `SampAudioStream`.
 * **`StopAudioStreamForPlayer` vs. `SA_StopAudioStreamForPlayer`:** Vanilla hooked `StopAudioStreamForPlayer(playerid)` stops the player's personal stream **and** leaves any synchronized radio channel (`SA_LeaveAudioStreamChannel`) so the player stops hearing audio (both with and without `SampAudioStream.inc`), whereas `SA_StopAudioStreamForPlayer(playerid)` stops only the personal stream. Note that **global spatial streams** (`SA_PlayAudioStream`) within range continue to be re-applied by periodic spatial updates: to silence a global stream for a player, stop the stream (`SA_StopAudioStream`), change its filter, or move the player out of range.
 
@@ -600,7 +682,7 @@ public OnAudioStreamWaiting(playerid, streamid, wait_ms)
 ```pawn
 forward OnAudioStreamReady(playerid, streamid, const title[], const artist[], duration, const url[]);
 ```
-Fired as soon as stream metadata is resolved and playback is ready to begin (`playerid == INVALID_PLAYER_ID` for global streams; `url` is the resolved direct or local proxy endpoint).
+Fired as soon as stream metadata is resolved and playback is ready to begin (`playerid == INVALID_PLAYER_ID` for global streams; `url` is the resolved direct or local proxy endpoint). For direct live radios, `title` starts as a generic placeholder (`"Direct Audio Stream"` / `"Radio Stream"`) unless the station name was found while probing the link; after the first ICY poll it is replaced by the station's `icy-name` header when available (no callback is re-fired; read it from `OnAudioStreamChannelLiveTitleChange` / `OnAudioStreamLiveTitleChange`).
 
 ### `OnAudioStreamStart`
 ```pawn
@@ -692,7 +774,7 @@ public OnAudioStreamChannelTrackWaiting(channelid, wait_ms)
 ```pawn
 forward OnAudioStreamChannelTrackStart(channelid, const title[], const artist[], duration, const url[]);
 ```
-Fired when a track on `channelid` finishes resolving and starts playback (on initial play, queue advance, skip, loop repeat, and boot restoration). `url` matches the track's Pawn input string.
+Fired when a track on `channelid` finishes resolving and starts playback (on initial play, queue advance, skip, loop repeat, and boot restoration). `url` matches the track's Pawn input string. For direct live radios, `title` starts as a generic placeholder (`"Direct Audio Stream"` / `"Radio Stream"`) unless the station name was found while probing the link; after the first ICY poll it is replaced by the station's `icy-name` header when available (no callback is re-fired; read it from `OnAudioStreamChannelLiveTitleChange` / `OnAudioStreamLiveTitleChange`).
 
 ### `OnAudioStreamChannelQueueEnd`
 ```pawn

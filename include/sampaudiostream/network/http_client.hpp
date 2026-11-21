@@ -9,11 +9,14 @@
 
 namespace sampaudiostream {
 
+using HttpHeaderMap = std::unordered_map<std::string, std::string>;
+
 struct HttpResponse {
     int status_code{0};
     std::string body;
     std::string content_type;
     std::string error;
+    HttpHeaderMap headers;
 
     bool Ok() const { return status_code >= 200 && status_code < 300 && error.empty(); }
 };
@@ -45,9 +48,11 @@ struct HttpSecurityPolicy {
 
 class HttpClient {
 public:
-    using HeaderMap = std::unordered_map<std::string, std::string>;
+    using HeaderMap = HttpHeaderMap;
     using ChunkCallback = std::function<bool(const std::uint8_t* data, std::size_t size)>;
-    using HeaderCallback = std::function<void(int status_code, const std::string& content_type, std::int64_t content_length)>;
+    using HeaderCallback = std::function<void(int status_code, const std::string& content_type, std::int64_t content_length, const HeaderMap& response_headers)>;
+
+    static std::string FindHeaderIgnoreCase(const HeaderMap& headers, const std::string& name);
 
     static void SetSecurityPolicy(const HttpSecurityPolicy& policy);
     static HttpSecurityPolicy GetSecurityPolicy();

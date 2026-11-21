@@ -15,6 +15,8 @@ SampAudioStream supports both **per-player streams** and **world-wide/radius-bas
 | **Replaces Previous Audio** | Automatically stops player's prior personal stream or channel | Multiple global streams can run concurrently across the map |
 
 * **LAN & Loopback Testing (`lan_aware_urls`)**: When enabled (default), local/LAN players automatically receive `127.0.0.1` or the server's matching private LAN IPv4 while remote players receive `public_ip`, without requiring manual config switching.
+* **Short Endpoint URLs:** Server-processed playback serves compact URLs in the form `http://IP:PORT/s/<10-char-code>` (or `/c/<10-char-code>` for channels).
+* **On-Screen Display Text:** Synchronized channels emit `icy-name:` as the channel name; single-player and global sessions omit `icy-name:` and format live radio `StreamTitle` updates as `"<song> - <station>"` (preserving apostrophes `'`) unless `stream_text = false`.
 * **Playlist links:** a video link that also carries a playlist (`watch?v=...&list=...`) plays only that video. A playlist-only link (`youtube.com/playlist?list=...`) plays only its first entry; to play a whole playlist in sequence, use a synchronized channel with `SA_QueueChannelAudioStreamPlaylist`.
 
 ---
@@ -103,3 +105,4 @@ if (vehid > 0)
 * **Direct Audio Files (`process_direct_audio_files` parameter)**:
   * By default (`process_direct_audio_files = false`), `http://` and `https://` direct native audio links at `100.0` volume (`.mp3`, `.ogg`, `.wav`, `.flac`, `.aac`, `.pls`, `.m3u`, and probed Shoutcast/Icecast radios — excluding `.m3u8`/HLS and platform URLs) use zero-CPU native client passthrough — which means pause/resume, `0..200%` volume scaling, frame-accurate `SA_Set*Distance`, and `OnAudioStreamFinished` are unavailable for those sessions.
   * Passing `.process_direct_audio_files = true` in `SA_PlayAudioStreamForPlayer`, `SA_PlayAudioStream`, or `PlayAudioStreamForPlayer` intercepts direct music file links (`.mp3`, `.ogg`, `.wav`, `.flac`, `.aac`, `.m4a`, `.opus`) through `SampAudioStream`'s server pipeline for full pause/volume/distance/callback support, while live radio stations and `.pls`/`.m3u` playlists continue on passthrough.
+  * Direct audio files use their decoded URL file name (falling back to `"Direct Audio Stream"` when the path has no segment) as a provisional track title that is replaced by `icy-name` if the source is a live radio; passing `stream_text = false` suppresses `icy-name` / `icy-metaint` on server-processed playback (combine `.process_direct_audio_files = true, .stream_text = false` to hide on-screen text for short sound-effect files).

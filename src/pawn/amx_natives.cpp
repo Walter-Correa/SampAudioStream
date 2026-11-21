@@ -72,10 +72,11 @@ StreamOptions ParseStreamOptions(cell* params, std::size_t start_idx, std::size_
     if (argc >= start_idx + 8) opts.volume = amx_ctof(params[start_idx + 8]);
     if (argc >= start_idx + 9) opts.notify_processing = (params[start_idx + 9] != 0);
     if (argc >= start_idx + 10) opts.process_direct_audio_files = (params[start_idx + 10] != 0);
+    if (argc >= start_idx + 11) opts.stream_text = (params[start_idx + 11] != 0);
     return opts;
 }
 
-// SA_PlayAudioStreamForPlayer(playerid, const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false)
+// SA_PlayAudioStreamForPlayer(playerid, const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false, bool:stream_text = true)
 cell AMX_NATIVE_CALL n_SA_PlayAudioStreamForPlayer(AMX* amx, cell* params) {
     if (!g_engine) return INVALID_STREAM_ID;
     std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
@@ -89,7 +90,7 @@ cell AMX_NATIVE_CALL n_SA_PlayAudioStreamForPlayer(AMX* amx, cell* params) {
     return static_cast<cell>(g_engine->PlayAudioStreamForPlayer(player_id, url, opts, raw_url));
 }
 
-// SA_PlayAudioStream(const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false)
+// SA_PlayAudioStream(const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false, bool:stream_text = true)
 cell AMX_NATIVE_CALL n_SA_PlayAudioStream(AMX* amx, cell* params) {
     if (!g_engine) return INVALID_STREAM_ID;
     std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
@@ -709,6 +710,83 @@ cell AMX_NATIVE_CALL n_SA_SetAudioStreamChannelLiveTitle(AMX* amx, cell* params)
     return g_engine->SetChannelLiveTitle(static_cast<ChannelId>(params[1]), utf8_title) ? 1 : 0;
 }
 
+// SA_SetAudioStreamChannelPlaylist(channelid, bool:enable)
+cell AMX_NATIVE_CALL n_SA_SetAudioStreamChannelPlaylist(AMX*, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
+    return g_engine->SetChannelPlaylistMode(
+        static_cast<ChannelId>(params[1]),
+        params[2] != 0) ? 1 : 0;
+}
+
+// SA_IsAudioStreamChannelPlaylist(channelid)
+cell AMX_NATIVE_CALL n_SA_IsAudioStreamChannelPlaylist(AMX*, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return 0;
+    return g_engine->IsChannelPlaylistMode(static_cast<ChannelId>(params[1])) ? 1 : 0;
+}
+
+// SA_GetAudioStreamChannelQueuePos(channelid)
+cell AMX_NATIVE_CALL n_SA_GetAudioStreamChannelQueuePos(AMX*, cell* params) {
+    if (!g_engine) return -1;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return -1;
+    return static_cast<cell>(g_engine->GetChannelQueuePos(static_cast<ChannelId>(params[1])));
+}
+
+// SA_PlayAudioStreamChannelQueue(channelid, index)
+cell AMX_NATIVE_CALL n_SA_PlayAudioStreamChannelQueue(AMX*, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2 || params[2] < 0) return 0;
+    return g_engine->PlayChannelQueueItem(
+        static_cast<ChannelId>(params[1]),
+        static_cast<std::size_t>(params[2])) ? 1 : 0;
+}
+
+// SA_RefreshAudioLibrary()
+cell AMX_NATIVE_CALL n_SA_RefreshAudioLibrary(AMX*, cell*) {
+    return g_engine ? static_cast<cell>(g_engine->RefreshAudioLibrary()) : 0;
+}
+
+// SA_GetAudioLibraryFolderCount()
+cell AMX_NATIVE_CALL n_SA_GetAudioLibraryFolderCount(AMX*, cell*) {
+    return g_engine ? static_cast<cell>(g_engine->GetAudioLibraryFolderCount()) : 0;
+}
+
+// SA_GetAudioLibraryFolder(index, name[], name_len = sizeof(name), &track_count)
+cell AMX_NATIVE_CALL n_SA_GetAudioLibraryFolder(AMX* amx, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 4 || params[1] < 0) return 0;
+    std::string name;
+    std::int32_t track_count = 0;
+    if (!g_engine->GetAudioLibraryFolder(static_cast<std::size_t>(params[1]), name, track_count)) {
+        return 0;
+    }
+    WriteAmxString(amx, params[2], name, static_cast<int>(params[3]));
+    WriteAmxCell(amx, params[4], static_cast<cell>(track_count));
+    return 1;
+}
+
+// SA_GetAudioLibraryTrack(folder_index, track_index, name[], name_len = sizeof(name))
+cell AMX_NATIVE_CALL n_SA_GetAudioLibraryTrack(AMX* amx, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 4 || params[1] < 0 || params[2] < 0) return 0;
+    std::string name;
+    if (!g_engine->GetAudioLibraryTrack(
+            static_cast<std::size_t>(params[1]),
+            static_cast<std::size_t>(params[2]),
+            name)) {
+        return 0;
+    }
+    WriteAmxString(amx, params[3], name, static_cast<int>(params[4]));
+    return 1;
+}
+
 // SA_GetAudioStreamLiveTitle(streamid, title[], title_len = sizeof(title))
 cell AMX_NATIVE_CALL n_SA_GetAudioStreamLiveTitle(AMX* amx, cell* params) {
     if (!g_engine) return 0;
@@ -1053,6 +1131,14 @@ const std::vector<AMX_NATIVE_INFO>& GetPluginNatives() {
         {"SA_SetAudioStreamChannelName", n_SA_SetAudioStreamChannelName},
         {"SA_GetAudioStreamChannelLiveTitle", n_SA_GetAudioStreamChannelLiveTitle},
         {"SA_SetAudioStreamChannelLiveTitle", n_SA_SetAudioStreamChannelLiveTitle},
+        {"SA_SetAudioStreamChannelPlaylist", n_SA_SetAudioStreamChannelPlaylist},
+        {"SA_IsAudioStreamChannelPlaylist", n_SA_IsAudioStreamChannelPlaylist},
+        {"SA_GetAudioStreamChannelQueuePos", n_SA_GetAudioStreamChannelQueuePos},
+        {"SA_PlayAudioStreamChannelQueue", n_SA_PlayAudioStreamChannelQueue},
+        {"SA_RefreshAudioLibrary", n_SA_RefreshAudioLibrary},
+        {"SA_GetAudioLibraryFolderCount", n_SA_GetAudioLibraryFolderCount},
+        {"SA_GetAudioLibraryFolder", n_SA_GetAudioLibraryFolder},
+        {"SA_GetAudioLibraryTrack", n_SA_GetAudioLibraryTrack},
         {"SA_GetPlayerAudioStreamID", n_SA_GetPlayerAudioStreamID},
         {"SA_GetAudioStreamCount", n_SA_GetAudioStreamCount},
         {"SA_GetAudioStreamID", n_SA_GetAudioStreamID},

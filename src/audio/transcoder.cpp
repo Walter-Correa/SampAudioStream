@@ -1,5 +1,6 @@
 #include "sampaudiostream/audio/transcoder.hpp"
 
+#include "sampaudiostream/core/config.hpp"
 #include "sampaudiostream/core/logger.hpp"
 #include "sampaudiostream/core/thread_pool.hpp"
 #include "sampaudiostream/network/http_client.hpp"
@@ -2589,7 +2590,7 @@ bool AudioTranscoder::Run(
 
     // Fast Passthrough path ONLY for live MP3 radios when volume is 100% and no pacing is needed
     bool likely_mp3 = (meta.container_ext == "mp3" || meta.codec == "mp3");
-    if (likely_mp3 && meta.is_live && !cfg.pace_realtime && std::abs(volume_percent.load() - 100.0f) < 0.5f) {
+    if (meta.local_file_path.empty() && likely_mp3 && meta.is_live && !cfg.pace_realtime && std::abs(volume_percent.load() - 100.0f) < 0.5f) {
         bool ok = HttpClient::StreamGet(
             meta.direct_media_url,
             meta.http_headers,
@@ -2748,6 +2749,42 @@ bool AudioTranscoder::Run(
         } close_guard{pull_stream, watchdog_stop, watchdog};
 
         if (!downloader.Start([&]() {
+            if (!current_meta.local_file_path.empty()) {
+                std::ifstream ifs(Utf8ToPath(current_meta.local_file_path), std::ios::binary);
+                if (!ifs.is_open()) {
+                    dl_error = "Failed to open local audio file";
+                    pull_stream.MarkEof();
+                    return;
+                }
+                ifs.seekg(0, std::ios::end);
+                const std::streamoff total_bytes = ifs.tellg();
+                ifs.seekg(0, std::ios::beg);
+                if (total_bytes > 0) {
+                    const std::uint64_t max_pf = static_cast<std::uint64_t>(
+                        std::clamp<std::uint32_t>(cfg.max_prefetch_mb, 1, 64)) * 1024ULL * 1024ULL;
+                    pull_stream.EnsureCapacity(static_cast<std::size_t>(
+                        std::min<std::uint64_t>(static_cast<std::uint64_t>(total_bytes), max_pf)));
+                }
+                std::array<std::uint8_t, 32768> fbuf{};
+                while (!effective_cancel.load() && !pull_stream.IsClosed()) {
+                    ifs.read(reinterpret_cast<char*>(fbuf.data()), static_cast<std::streamsize>(fbuf.size()));
+                    const std::streamsize got = ifs.gcount();
+                    if (got > 0) {
+                        if (!pull_stream.Push(fbuf.data(), static_cast<std::size_t>(got), effective_cancel)) {
+                            break;
+                        }
+                    }
+                    if (ifs.eof()) {
+                        break;
+                    }
+                    if (ifs.bad() || ifs.fail()) {
+                        dl_error = "Failed to read local audio file";
+                        break;
+                    }
+                }
+                pull_stream.MarkEof();
+                return;
+            }
             if (hls) {
                 RunHlsDownloader(current_meta, cfg, pull_stream, effective_cancel, dl_error, run_start);
             } else {
@@ -2810,7 +2847,7 @@ bool AudioTranscoder::Run(
                         },
                         effective_cancel,
                         attempt_err,
-                        [&](int st, const std::string&, std::int64_t cl) {
+                        [&](int st, const std::string&, std::int64_t cl, const HttpClient::HeaderMap&) {
                             resp_status = st;
                             if (!logged_first_http) {
                                 logged_first_http = true;
@@ -3242,7 +3279,11 @@ bool AudioTranscoder::Run(
             // Surface transport interruption so truncated tracks do not silently fire OnAudioStreamFinished
             out_error = final_dl_error;
             if (out_error_code) {
-                *out_error_code = (out_error == "URL not allowed") ? ErrorCode::InvalidUrl : ErrorCode::NetworkError;
+                if (!current_meta.local_file_path.empty()) {
+                    *out_error_code = ErrorCode::TranscodeError;
+                } else {
+                    *out_error_code = (out_error == "URL not allowed") ? ErrorCode::InvalidUrl : ErrorCode::NetworkError;
+                }
             }
         } else {
             if (out_error.empty()) {
@@ -3255,6 +3296,303 @@ bool AudioTranscoder::Run(
         }
     }
     return ok || cancel_flag.load();
+}
+
+bool ProbeLocalAudioFileDurationSeconds(
+    const std::filesystem::path& file_path,
+    std::int32_t& out_duration_seconds) {
+    out_duration_seconds = 0;
+
+    std::ifstream ifs(file_path, std::ios::binary);
+    if (!ifs.is_open()) {
+        return false;
+    }
+    ifs.seekg(0, std::ios::end);
+    const std::streamoff fsize_off = ifs.tellg();
+    if (fsize_off <= 0) {
+        return false;
+    }
+    const std::uint64_t fsize = static_cast<std::uint64_t>(fsize_off);
+    ifs.seekg(0, std::ios::beg);
+
+    std::array<std::uint8_t, 64> head{};
+    ifs.read(reinterpret_cast<char*>(head.data()), static_cast<std::streamsize>(head.size()));
+    const std::size_t head_n = static_cast<std::size_t>(ifs.gcount());
+    ifs.clear();
+    ifs.seekg(0, std::ios::beg);
+
+    struct FileReadCtx {
+        std::ifstream* fs;
+        std::uint64_t size;
+    } rctx{&ifs, fsize};
+
+    auto fs_read = [](std::ifstream& fs, void* dst, std::size_t bytes) -> std::size_t {
+        fs.read(reinterpret_cast<char*>(dst), static_cast<std::streamsize>(bytes));
+        const std::streamsize got = fs.gcount();
+        if (fs.eof()) fs.clear();
+        return (got > 0) ? static_cast<std::size_t>(got) : 0;
+    };
+    auto fs_seek_origin = [](std::ifstream& fs, std::uint64_t size, std::int64_t offset, int origin) -> bool {
+        fs.clear();
+        std::streamoff target = 0;
+        if (origin == 0) { // SET
+            target = static_cast<std::streamoff>(offset);
+        } else if (origin == 1) { // CUR
+            const std::streamoff cur = fs.tellg();
+            target = cur + static_cast<std::streamoff>(offset);
+        } else { // END
+            target = static_cast<std::streamoff>(size) + static_cast<std::streamoff>(offset);
+        }
+        if (target < 0 || static_cast<std::uint64_t>(target) > size) {
+            return false;
+        }
+        fs.seekg(target, std::ios::beg);
+        return fs.good();
+    };
+
+    if (head_n >= 4 && std::memcmp(head.data(), "RIFF", 4) == 0) {
+        drwav wav{};
+        auto on_read = [](void* ud, void* dst, size_t n) -> size_t {
+            auto* c = static_cast<FileReadCtx*>(ud);
+            c->fs->read(reinterpret_cast<char*>(dst), static_cast<std::streamsize>(n));
+            const std::streamsize got = c->fs->gcount();
+            if (c->fs->eof()) c->fs->clear();
+            return (got > 0) ? static_cast<size_t>(got) : 0;
+        };
+        auto on_seek = [](void* ud, int off, drwav_seek_origin org) -> drwav_bool32 {
+            auto* c = static_cast<FileReadCtx*>(ud);
+            c->fs->clear();
+            const int o = (org == DRWAV_SEEK_CUR) ? 1 : ((org == DRWAV_SEEK_END) ? 2 : 0);
+            std::streamoff tgt = (o == 0) ? off : ((o == 1) ? (static_cast<std::streamoff>(c->fs->tellg()) + off)
+                                                            : (static_cast<std::streamoff>(c->size) + off));
+            if (tgt < 0 || static_cast<std::uint64_t>(tgt) > c->size) return DRWAV_FALSE;
+            c->fs->seekg(tgt, std::ios::beg);
+            return c->fs->good() ? DRWAV_TRUE : DRWAV_FALSE;
+        };
+        auto on_tell = [](void* ud, drwav_int64* cursor) -> drwav_bool32 {
+            auto* c = static_cast<FileReadCtx*>(ud);
+            if (!cursor) return DRWAV_FALSE;
+            c->fs->clear();
+            const std::streamoff pos = c->fs->tellg();
+            if (pos < 0) return DRWAV_FALSE;
+            *cursor = static_cast<drwav_int64>(pos);
+            return DRWAV_TRUE;
+        };
+        if (drwav_init(&wav, on_read, on_seek, on_tell, &rctx, nullptr)) {
+            if (wav.sampleRate > 0 && wav.totalPCMFrameCount > 0) {
+                out_duration_seconds = static_cast<std::int32_t>(wav.totalPCMFrameCount / wav.sampleRate);
+            }
+            drwav_uninit(&wav);
+            return true;
+        }
+        return false;
+    }
+
+    if (head_n >= 4 && std::memcmp(head.data(), "fLaC", 4) == 0) {
+        auto on_read = [](void* ud, void* dst, size_t n) -> size_t {
+            auto* c = static_cast<FileReadCtx*>(ud);
+            c->fs->read(reinterpret_cast<char*>(dst), static_cast<std::streamsize>(n));
+            const std::streamsize got = c->fs->gcount();
+            if (c->fs->eof()) c->fs->clear();
+            return (got > 0) ? static_cast<size_t>(got) : 0;
+        };
+        auto on_seek = [](void* ud, int off, drflac_seek_origin org) -> drflac_bool32 {
+            auto* c = static_cast<FileReadCtx*>(ud);
+            c->fs->clear();
+            const int o = (org == DRFLAC_SEEK_CUR) ? 1 : ((org == DRFLAC_SEEK_END) ? 2 : 0);
+            std::streamoff tgt = (o == 0) ? off : ((o == 1) ? (static_cast<std::streamoff>(c->fs->tellg()) + off)
+                                                            : (static_cast<std::streamoff>(c->size) + off));
+            if (tgt < 0 || static_cast<std::uint64_t>(tgt) > c->size) return DRFLAC_FALSE;
+            c->fs->seekg(tgt, std::ios::beg);
+            return c->fs->good() ? DRFLAC_TRUE : DRFLAC_FALSE;
+        };
+        auto on_tell = [](void* ud, drflac_int64* cursor) -> drflac_bool32 {
+            auto* c = static_cast<FileReadCtx*>(ud);
+            if (!cursor) return DRFLAC_FALSE;
+            c->fs->clear();
+            const std::streamoff pos = c->fs->tellg();
+            if (pos < 0) return DRFLAC_FALSE;
+            *cursor = static_cast<drflac_int64>(pos);
+            return DRFLAC_TRUE;
+        };
+        if (drflac* flac = drflac_open(on_read, on_seek, on_tell, &rctx, nullptr)) {
+            if (flac->sampleRate > 0 && flac->totalPCMFrameCount > 0) {
+                out_duration_seconds = static_cast<std::int32_t>(flac->totalPCMFrameCount / flac->sampleRate);
+            }
+            drflac_close(flac);
+            return true;
+        }
+        return false;
+    }
+
+    if (head_n >= 4 && std::memcmp(head.data(), "OggS", 4) == 0) {
+        std::array<std::uint8_t, 512> first_page{};
+        const std::size_t fp_n = fs_read(ifs, first_page.data(), first_page.size());
+        bool is_opus = false;
+        std::uint16_t pre_skip = 0;
+        for (std::size_t i = 0; i + 12 <= fp_n; ++i) {
+            if (std::memcmp(first_page.data() + i, "OpusHead", 8) == 0) {
+                is_opus = true;
+                pre_skip = static_cast<std::uint16_t>(first_page[i + 10]) |
+                           (static_cast<std::uint16_t>(first_page[i + 11]) << 8);
+                break;
+            }
+        }
+        if (is_opus) {
+            const std::uint64_t tail_len = std::min<std::uint64_t>(fsize, 65536);
+            std::vector<std::uint8_t> tail(static_cast<std::size_t>(tail_len));
+            if (fs_seek_origin(ifs, fsize, static_cast<std::int64_t>(fsize - tail_len), 0)) {
+                const std::size_t tn = fs_read(ifs, tail.data(), tail.size());
+                for (std::size_t pos = (tn >= 14 ? tn - 14 : 0); ; --pos) {
+                    if (pos + 14 <= tn && std::memcmp(tail.data() + pos, "OggS", 4) == 0) {
+                        std::uint64_t gran = 0;
+                        for (int b = 0; b < 8; ++b) {
+                            gran |= static_cast<std::uint64_t>(tail[pos + 6 + b]) << (b * 8);
+                        }
+                        if (gran > pre_skip && gran != 0xFFFFFFFFFFFFFFFFULL) {
+                            out_duration_seconds = static_cast<std::int32_t>((gran - pre_skip) / 48000ULL);
+                            return true;
+                        }
+                    }
+                    if (pos == 0) break;
+                }
+            }
+            return true;
+        }
+#ifdef _WIN32
+        FILE* f = ::_wfopen(file_path.c_str(), L"rb");
+#else
+        FILE* f = std::fopen(file_path.c_str(), "rb");
+#endif
+        if (f) {
+            int verr = 0;
+            stb_vorbis* v = stb_vorbis_open_file(f, TRUE, &verr, nullptr);
+            if (v) {
+                const float secs = stb_vorbis_stream_length_in_seconds(v);
+                if (secs > 0.0f) {
+                    out_duration_seconds = static_cast<std::int32_t>(secs);
+                }
+                stb_vorbis_close(v);
+                return true;
+            }
+            std::fclose(f);
+        }
+        return true;
+    }
+
+    if (head_n >= 8 && std::memcmp(head.data() + 4, "ftyp", 4) == 0) {
+        auto read_u32 = [](const std::uint8_t* p) -> std::uint32_t {
+            return (static_cast<std::uint32_t>(p[0]) << 24) |
+                   (static_cast<std::uint32_t>(p[1]) << 16) |
+                   (static_cast<std::uint32_t>(p[2]) << 8) |
+                   static_cast<std::uint32_t>(p[3]);
+        };
+        auto read_u64 = [](const std::uint8_t* p) -> std::uint64_t {
+            std::uint64_t v = 0;
+            for (int i = 0; i < 8; ++i) v = (v << 8) | p[i];
+            return v;
+        };
+        std::uint64_t off = 0;
+        while (off + 8 <= fsize) {
+            std::uint8_t hdr[16]{};
+            if (!fs_seek_origin(ifs, fsize, static_cast<std::int64_t>(off), 0) || fs_read(ifs, hdr, 8) != 8) break;
+            std::uint64_t box_sz = read_u32(hdr);
+            std::uint64_t hdr_sz = 8;
+            if (box_sz == 1 && off + 16 <= fsize && fs_read(ifs, hdr + 8, 8) == 8) {
+                box_sz = read_u64(hdr + 8);
+                hdr_sz = 16;
+            } else if (box_sz == 0) {
+                box_sz = fsize - off;
+            }
+            if (box_sz < hdr_sz || off + box_sz > fsize) break;
+            if (std::memcmp(hdr + 4, "moov", 4) == 0) {
+                std::uint64_t inner = off + hdr_sz;
+                const std::uint64_t moov_end = off + box_sz;
+                while (inner + 8 <= moov_end) {
+                    std::uint8_t chdr[8]{};
+                    if (!fs_seek_origin(ifs, fsize, static_cast<std::int64_t>(inner), 0) || fs_read(ifs, chdr, 8) != 8) break;
+                    std::uint64_t csz = read_u32(chdr);
+                    if (csz < 8 || inner + csz > moov_end) break;
+                    if (std::memcmp(chdr + 4, "mvhd", 4) == 0 && csz >= 32) {
+                        std::array<std::uint8_t, 36> mvhd{};
+                        const std::size_t want = static_cast<std::size_t>(std::min<std::uint64_t>(csz - 8, mvhd.size()));
+                        if (fs_read(ifs, mvhd.data(), want) >= 24) {
+                            const std::uint8_t ver = mvhd[0];
+                            if (ver == 0 && want >= 20) {
+                                const std::uint32_t ts = read_u32(mvhd.data() + 12);
+                                const std::uint32_t dur = read_u32(mvhd.data() + 16);
+                                if (ts > 0) out_duration_seconds = static_cast<std::int32_t>(dur / ts);
+                            } else if (ver == 1 && want >= 32) {
+                                const std::uint32_t ts = read_u32(mvhd.data() + 20);
+                                const std::uint64_t dur = read_u64(mvhd.data() + 24);
+                                if (ts > 0) out_duration_seconds = static_cast<std::int32_t>(dur / ts);
+                            }
+                        }
+                        return true;
+                    }
+                    inner += csz;
+                }
+                break;
+            }
+            off += box_sz;
+        }
+        return true;
+    }
+
+    // ADTS AAC or MP3 (including ID3v2-tagged)
+    if (head_n >= 2 && head[0] == 0xFF && (head[1] & 0xF6) == 0xF0) {
+        static constexpr int kAdtsRates[16] = {
+            96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+            16000, 12000, 11025, 8000, 7350, 0, 0, 0
+        };
+        double total_sec = 0.0;
+        std::uint64_t pos = 0;
+        while (pos + 7 <= fsize) {
+            std::uint8_t fh[7]{};
+            if (!fs_seek_origin(ifs, fsize, static_cast<std::int64_t>(pos), 0) || fs_read(ifs, fh, 7) != 7) break;
+            if (fh[0] != 0xFF || (fh[1] & 0xF6) != 0xF0) break;
+            const int sr_idx = (fh[2] >> 2) & 0x0F;
+            const std::uint32_t frame_len =
+                ((static_cast<std::uint32_t>(fh[3]) & 0x03u) << 11) |
+                (static_cast<std::uint32_t>(fh[4]) << 3) |
+                ((static_cast<std::uint32_t>(fh[5]) >> 5) & 0x07u);
+            if (frame_len < 7 || kAdtsRates[sr_idx] <= 0) break;
+            total_sec += 1024.0 / static_cast<double>(kAdtsRates[sr_idx]);
+            pos += frame_len;
+        }
+        if (total_sec > 0.0) {
+            out_duration_seconds = static_cast<std::int32_t>(total_sec);
+        }
+        return true;
+    }
+
+    drmp3 mp3{};
+    auto on_read_mp3 = [](void* ud, void* dst, size_t n) -> size_t {
+        auto* c = static_cast<FileReadCtx*>(ud);
+        c->fs->read(reinterpret_cast<char*>(dst), static_cast<std::streamsize>(n));
+        const std::streamsize got = c->fs->gcount();
+        if (c->fs->eof()) c->fs->clear();
+        return (got > 0) ? static_cast<size_t>(got) : 0;
+    };
+    auto on_seek_mp3 = [](void* ud, int off, drmp3_seek_origin org) -> drmp3_bool32 {
+        auto* c = static_cast<FileReadCtx*>(ud);
+        c->fs->clear();
+        const int o = (org == DRMP3_SEEK_CUR) ? 1 : ((org == DRMP3_SEEK_END) ? 2 : 0);
+        std::streamoff tgt = (o == 0) ? off : ((o == 1) ? (static_cast<std::streamoff>(c->fs->tellg()) + off)
+                                                        : (static_cast<std::streamoff>(c->size) + off));
+        if (tgt < 0 || static_cast<std::uint64_t>(tgt) > c->size) return DRMP3_FALSE;
+        c->fs->seekg(tgt, std::ios::beg);
+        return c->fs->good() ? DRMP3_TRUE : DRMP3_FALSE;
+    };
+    if (drmp3_init(&mp3, on_read_mp3, on_seek_mp3, nullptr, nullptr, &rctx, nullptr)) {
+        const drmp3_uint64 frames = drmp3_get_pcm_frame_count(&mp3);
+        if (mp3.sampleRate > 0 && frames > 0) {
+            out_duration_seconds = static_cast<std::int32_t>(frames / mp3.sampleRate);
+        }
+        drmp3_uninit(&mp3);
+        return true;
+    }
+    return true;
 }
 
 bool RunNormalizedPipelineForTesting(

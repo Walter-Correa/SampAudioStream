@@ -75,6 +75,7 @@ struct ActiveStreamSession {
     std::chrono::steady_clock::time_point paused_since{};
     std::chrono::steady_clock::duration paused_accumulated{};
     std::chrono::seconds seek_base_offset{0};
+    std::string station_name;
     std::string live_title;
     LiveTitlePollState live_poll{};
 };
@@ -148,6 +149,9 @@ struct SyncChannel {
     std::int32_t destroy_timeout_seconds{0};
     std::chrono::steady_clock::time_point creator_disconnected_at{};
     ChannelLoopMode loop_mode{ChannelLoopMode::Off};
+    bool playlist_mode{false};
+    std::int32_t playlist_pos{-1};
+    bool current_from_queue{false};
     std::atomic<StreamState> state{StreamState::Idle};
     TrackMetadata current_track; // Main-thread owned
     ChannelQueueEntry current_input;
@@ -166,6 +170,7 @@ struct SyncChannel {
     std::chrono::steady_clock::time_point paused_since{};
     std::chrono::steady_clock::duration paused_accumulated{};
     std::chrono::seconds seek_base_offset{0};
+    std::string station_name;
     std::string live_title;
     LiveTitlePollState live_poll{};
     std::int32_t consecutive_errors{0};
@@ -349,6 +354,14 @@ public:
     bool SetStreamLiveTitle(StreamId stream_id, const std::string& utf8_title);
     bool SetChannelLoopMode(ChannelId channel_id, ChannelLoopMode mode);
     ChannelLoopMode GetChannelLoopMode(ChannelId channel_id) const;
+    bool SetChannelPlaylistMode(ChannelId channel_id, bool enable);
+    bool IsChannelPlaylistMode(ChannelId channel_id) const;
+    std::int32_t GetChannelQueuePos(ChannelId channel_id) const;
+    bool PlayChannelQueueItem(ChannelId channel_id, std::int32_t index);
+    std::int32_t RefreshAudioLibrary();
+    std::int32_t GetAudioLibraryFolderCount() const;
+    bool GetAudioLibraryFolder(std::int32_t index, std::string& out_pawn_name, std::int32_t& out_track_count) const;
+    bool GetAudioLibraryTrack(std::int32_t folder_index, std::int32_t track_index, std::string& out_pawn_name) const;
     std::int32_t GetChannelElapsedSeconds(ChannelId channel_id) const;
     PlayerId GetChannelListenerAt(ChannelId channel_id, std::size_t index) const;
     bool SetChannelName(ChannelId channel_id, const std::string& utf8_name);
@@ -395,7 +408,9 @@ public:
         const std::string& bind_ip = "");
 
 private:
-    std::string GenerateToken();
+    static std::string GenerateEndpointCode();
+    std::string GenerateUniqueEndpointCodeLocked() const;
+    std::string GetNextChannelTrackUrlLocked(const SyncChannel& ch) const;
     std::string BuildEndpointUrl(const std::string& prefix, const std::string& token) const;
     std::string BuildEndpointUrlLocked(const std::string& prefix, const std::string& token) const;
     std::string BuildEndpointUrlForPlayerLocked(const std::string& prefix, const std::string& token, PlayerId player_id) const;
@@ -516,6 +531,9 @@ private:
         float volume_percent{100.0f};
         bool paused{false};
         ChannelLoopMode loop_mode{ChannelLoopMode::Off};
+        bool playlist_mode{false};
+        std::int32_t playlist_pos{-1};
+        bool current_from_queue{false};
         ChannelQueueEntry current_input;
         bool was_playing{false};
         std::vector<ChannelQueueEntry> queue;
@@ -607,6 +625,8 @@ private:
     };
     std::mt19937 queue_shuffle_rng_;
     std::atomic<std::int32_t> active_live_title_polls_{0};
+    mutable std::mutex library_mutex_;
+    std::vector<AudioLibraryFolderData> library_folders_;
 };
 
 enum class IcyPollResult {
@@ -622,7 +642,8 @@ IcyPollResult FetchIcyStreamTitle(
     const std::string& url,
     const HttpClient::HeaderMap& headers,
     const std::atomic<bool>& cancel_flag,
-    std::string& out_title_utf8);
+    std::string& out_title_utf8,
+    std::string& out_station_name_utf8);
 bool IsLiveTitlePollCandidate(const TrackMetadata& meta, std::uint32_t live_title_poll_seconds = 30);
 
 } // namespace sampaudiostream

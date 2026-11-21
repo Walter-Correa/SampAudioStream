@@ -61,6 +61,19 @@ std::string ToLowerCopy(std::string s) {
     return s;
 }
 
+void StoreParsedResponseHeader(HttpClient::HeaderMap* out_headers, const std::string& raw_line) {
+    if (!out_headers) return;
+    std::string line = raw_line;
+    while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+        line.pop_back();
+    }
+    auto colon = line.find(':');
+    if (colon == std::string::npos) return;
+    std::string k = ToLowerCopy(Trim(line.substr(0, colon)));
+    if (k.empty()) return;
+    (*out_headers)[std::move(k)] = Trim(line.substr(colon + 1));
+}
+
 std::mutex g_security_policy_mtx;
 HttpSecurityPolicy g_security_policy;
 
@@ -747,7 +760,8 @@ bool PerformRawHttpIcyRequest(
     const HttpClient::ChunkCallback& on_chunk,
     const std::atomic<bool>* cancel_flag,
     std::string& out_error,
-    int redirect_depth = 0) {
+    int redirect_depth = 0,
+    HttpClient::HeaderMap* out_response_headers = nullptr) {
     if (redirect_depth > 5) {
         out_error = "Too many redirects";
         return false;
@@ -852,9 +866,13 @@ bool PerformRawHttpIcyRequest(
             }
         }
 
+        if (out_response_headers) {
+            out_response_headers->clear();
+        }
         std::string location;
         std::string hline;
         while (std::getline(hss, hline)) {
+            StoreParsedResponseHeader(out_response_headers, hline);
             auto colon = hline.find(':');
             if (colon == std::string::npos) continue;
             std::string k = Trim(hline.substr(0, colon));
@@ -876,7 +894,7 @@ bool PerformRawHttpIcyRequest(
             if (!HttpClient::ValidateRemoteUrl(next_url, out_error)) {
                 return false;
             }
-            return PerformRawHttpIcyRequest(method, next_url, headers, timeout_ms, out_status, out_content_type, out_content_length, on_chunk, cancel_flag, out_error, redirect_depth + 1);
+            return PerformRawHttpIcyRequest(method, next_url, headers, timeout_ms, out_status, out_content_type, out_content_length, on_chunk, cancel_flag, out_error, redirect_depth + 1, out_response_headers);
         }
 
         if (method == "HEAD" || !on_chunk) {
@@ -931,9 +949,13 @@ bool PerformWinHttpRequest(
     const std::atomic<bool>* cancel_flag,
     std::string& out_error,
     HttpRequestDiagnostics* out_diag = nullptr,
-    bool fresh_session = false) {
+    bool fresh_session = false,
+    HttpClient::HeaderMap* out_response_headers = nullptr) {
     out_status = 0;
     out_content_length = -1;
+    if (out_response_headers) {
+        out_response_headers->clear();
+    }
     if (out_diag) {
         *out_diag = {};
     }
@@ -1111,7 +1133,7 @@ bool PerformWinHttpRequest(
                 return false;
             }
             if (err == ERROR_WINHTTP_INVALID_SERVER_RESPONSE && uc.nScheme == INTERNET_SCHEME_HTTP) {
-                return PerformRawHttpIcyRequest(method, current_url, effective_headers, timeout_ms, out_status, out_content_type, out_content_length, on_chunk, cancel_flag, out_error, redir);
+                return PerformRawHttpIcyRequest(method, current_url, effective_headers, timeout_ms, out_status, out_content_type, out_content_length, on_chunk, cancel_flag, out_error, redir, out_response_headers);
             }
             return fail_winhttp("send", err, true);
         }
@@ -1124,7 +1146,7 @@ bool PerformWinHttpRequest(
                 return false;
             }
             if (err == ERROR_WINHTTP_INVALID_SERVER_RESPONSE && uc.nScheme == INTERNET_SCHEME_HTTP) {
-                return PerformRawHttpIcyRequest(method, current_url, effective_headers, timeout_ms, out_status, out_content_type, out_content_length, on_chunk, cancel_flag, out_error, redir);
+                return PerformRawHttpIcyRequest(method, current_url, effective_headers, timeout_ms, out_status, out_content_type, out_content_length, on_chunk, cancel_flag, out_error, redir, out_response_headers);
             }
             return fail_winhttp("receive", err, true);
         }
@@ -1214,6 +1236,77 @@ bool PerformWinHttpRequest(
             try {
                 out_content_length = std::stoll(WideToUtf8(cl_buf));
             } catch (...) {}
+        }
+
+        if (out_response_headers) {
+            out_response_headers->clear();
+            DWORD raw_bytes_needed = 0;
+            RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+                return WinHttpQueryHeaders(
+                    req,
+                    WINHTTP_QUERY_RAW_HEADERS_CRLF,
+                    WINHTTP_HEADER_NAME_BY_INDEX,
+                    nullptr,
+                    &raw_bytes_needed,
+                    WINHTTP_NO_HEADER_INDEX);
+            });
+            if (cancelled) {
+                out_error = "Cancelled";
+                return false;
+            }
+            if (raw_bytes_needed > 0 && raw_bytes_needed <= 65536) {
+                std::wstring raw_buf(raw_bytes_needed / sizeof(wchar_t), L'\0');
+                bool has_raw = RunWinHttpCall(request_guard, cancel_flag, err, cancelled, [&](HINTERNET req) {
+                    return WinHttpQueryHeaders(
+                        req,
+                        WINHTTP_QUERY_RAW_HEADERS_CRLF,
+                        WINHTTP_HEADER_NAME_BY_INDEX,
+                        raw_buf.data(),
+                        &raw_bytes_needed,
+                        WINHTTP_NO_HEADER_INDEX);
+                });
+                if (cancelled) {
+                    out_error = "Cancelled";
+                    return false;
+                }
+                if (has_raw) {
+                    raw_buf.resize(raw_bytes_needed / sizeof(wchar_t));
+                    while (!raw_buf.empty() && raw_buf.back() == L'\0') {
+                        raw_buf.pop_back();
+                    }
+                    bool all_byte_range = true;
+                    for (wchar_t wc : raw_buf) {
+                        if (static_cast<unsigned int>(wc) > 0xFFu) {
+                            all_byte_range = false;
+                            break;
+                        }
+                    }
+                    std::string raw_text;
+                    if (all_byte_range) {
+                        raw_text.reserve(raw_buf.size());
+                        for (wchar_t wc : raw_buf) {
+                            raw_text.push_back(static_cast<char>(static_cast<unsigned char>(wc)));
+                        }
+                    } else {
+                        raw_text = WideToUtf8(raw_buf);
+                    }
+                    std::istringstream rhs(raw_text);
+                    std::string hline;
+                    bool first_line = true;
+                    while (std::getline(rhs, hline)) {
+                        if (!hline.empty() && hline.back() == '\r') {
+                            hline.pop_back();
+                        }
+                        if (first_line) {
+                            first_line = false;
+                            if (hline.rfind("HTTP/", 0) == 0 || hline.rfind("ICY ", 0) == 0) {
+                                continue;
+                            }
+                        }
+                        StoreParsedResponseHeader(out_response_headers, hline);
+                    }
+                }
+            }
         }
 
         if (fail_on_http_error && out_status >= 400) {
@@ -1488,6 +1581,7 @@ struct LinuxWriteCtx {
     bool ssrf_blocked{false};
     bool headers_published{false};
     HttpRequestDiagnostics* diag{nullptr};
+    HttpClient::HeaderMap* out_response_headers{nullptr};
 };
 
 int CurlOpenSocketCb(void* clientp, int /*purpose*/, CurlSockAddr* address) {
@@ -1569,16 +1663,22 @@ size_t CurlHeaderCb(char* buffer, size_t size, size_t nitems, void* userdata) {
     const size_t total = size * nitems;
     std::string line(buffer, total);
     std::string lower = ToLowerCopy(line);
-    if (lower.rfind("http/", 0) == 0) {
+    if (lower.rfind("http/", 0) == 0 || lower.rfind("icy ", 0) == 0) {
         ctx->content_length = -1;
         ctx->redirect_location.clear();
+        if (ctx->out_response_headers) {
+            ctx->out_response_headers->clear();
+        }
         ctx->headers_published = false;
-    } else if (lower.rfind("content-length:", 0) == 0) {
-        try {
-            ctx->content_length = std::stoll(Trim(line.substr(15)));
-        } catch (...) {}
-    } else if (lower.rfind("location:", 0) == 0) {
-        ctx->redirect_location = Trim(line.substr(9));
+    } else {
+        if (lower.rfind("content-length:", 0) == 0) {
+            try {
+                ctx->content_length = std::stoll(Trim(line.substr(15)));
+            } catch (...) {}
+        } else if (lower.rfind("location:", 0) == 0) {
+            ctx->redirect_location = Trim(line.substr(9));
+        }
+        StoreParsedResponseHeader(ctx->out_response_headers, line);
     }
     return total;
 }
@@ -1596,9 +1696,13 @@ bool PerformLinuxCurlRequest(
     const HttpClient::ChunkCallback& on_chunk,
     const std::atomic<bool>* cancel_flag,
     std::string& out_error,
-    HttpRequestDiagnostics* out_diag = nullptr) {
+    HttpRequestDiagnostics* out_diag = nullptr,
+    HttpClient::HeaderMap* out_response_headers = nullptr) {
     if (out_diag) {
         *out_diag = {};
+    }
+    if (out_response_headers) {
+        out_response_headers->clear();
     }
     auto& curl = CurlApi::Instance();
     if (!curl.handle) {
@@ -1646,6 +1750,7 @@ bool PerformLinuxCurlRequest(
         ctx.port = cur_port;
         ctx.policy = HttpClient::GetSecurityPolicy();
         ctx.diag = out_diag;
+        ctx.out_response_headers = out_response_headers;
         if (out_diag) {
             out_diag->redirected = (redir > 0);
             out_diag->final_host = cur_host;
@@ -1939,6 +2044,19 @@ bool HttpClient::ValidateRemoteUrl(const std::string& url, std::string& out_erro
     return ValidateRemoteUrlWithClass(url, out_error, nullptr);
 }
 
+std::string HttpClient::FindHeaderIgnoreCase(const HeaderMap& headers, const std::string& name) {
+    const std::string target = ToLowerCopy(name);
+    if (target.empty()) {
+        return {};
+    }
+    for (const auto& [k, v] : headers) {
+        if (ToLowerCopy(k) == target) {
+            return v;
+        }
+    }
+    return {};
+}
+
 HttpResponse HttpClient::Get(const std::string& url, const HeaderMap& headers, int timeout_ms, const std::atomic<bool>* cancel_flag) {
     HttpResponse resp;
     std::int64_t content_len = -1;
@@ -1948,9 +2066,9 @@ HttpResponse HttpClient::Get(const std::string& url, const HeaderMap& headers, i
     };
 
 #ifdef _WIN32
-    PerformWinHttpRequest("GET", url, headers, timeout_ms, false, resp.status_code, resp.content_type, content_len, collector, cancel_flag, resp.error);
+    PerformWinHttpRequest("GET", url, headers, timeout_ms, false, resp.status_code, resp.content_type, content_len, collector, cancel_flag, resp.error, nullptr, false, &resp.headers);
 #else
-    PerformLinuxCurlRequest("GET", url, headers, timeout_ms, true, false, resp.status_code, resp.content_type, content_len, collector, cancel_flag, resp.error);
+    PerformLinuxCurlRequest("GET", url, headers, timeout_ms, true, false, resp.status_code, resp.content_type, content_len, collector, cancel_flag, resp.error, nullptr, &resp.headers);
 #endif
     return resp;
 }
@@ -1959,9 +2077,9 @@ HttpResponse HttpClient::Head(const std::string& url, const HeaderMap& headers, 
     HttpResponse resp;
     std::int64_t content_len = -1;
 #ifdef _WIN32
-    PerformWinHttpRequest("HEAD", url, headers, timeout_ms, false, resp.status_code, resp.content_type, content_len, nullptr, cancel_flag, resp.error);
+    PerformWinHttpRequest("HEAD", url, headers, timeout_ms, false, resp.status_code, resp.content_type, content_len, nullptr, cancel_flag, resp.error, nullptr, false, &resp.headers);
 #else
-    PerformLinuxCurlRequest("HEAD", url, headers, timeout_ms, true, false, resp.status_code, resp.content_type, content_len, nullptr, cancel_flag, resp.error);
+    PerformLinuxCurlRequest("HEAD", url, headers, timeout_ms, true, false, resp.status_code, resp.content_type, content_len, nullptr, cancel_flag, resp.error, nullptr, &resp.headers);
 #endif
     return resp;
 }
@@ -2040,6 +2158,7 @@ bool HttpClient::StreamGet(
     int status = 0;
     std::string content_type;
     std::int64_t content_len = -1;
+    HeaderMap resp_headers;
     if (out_diag) {
         *out_diag = {};
     }
@@ -2049,21 +2168,21 @@ bool HttpClient::StreamGet(
         if (!header_emitted) {
             header_emitted = true;
             if (on_headers) {
-                on_headers(status, content_type, content_len);
+                on_headers(status, content_type, content_len, resp_headers);
             }
         }
         return on_chunk(data, size);
     };
 
 #ifdef _WIN32
-    bool ok = PerformWinHttpRequest("GET", url, headers, connect_timeout_ms, true, status, content_type, content_len, wrapped_chunk, &cancel_flag, out_error, out_diag, fresh_session);
+    bool ok = PerformWinHttpRequest("GET", url, headers, connect_timeout_ms, true, status, content_type, content_len, wrapped_chunk, &cancel_flag, out_error, out_diag, fresh_session, &resp_headers);
 #else
     (void)fresh_session;
-    bool ok = PerformLinuxCurlRequest("GET", url, headers, connect_timeout_ms, false, true, status, content_type, content_len, wrapped_chunk, &cancel_flag, out_error, out_diag);
+    bool ok = PerformLinuxCurlRequest("GET", url, headers, connect_timeout_ms, false, true, status, content_type, content_len, wrapped_chunk, &cancel_flag, out_error, out_diag, &resp_headers);
 #endif
     if (!header_emitted && status > 0 && on_headers) {
         header_emitted = true;
-        on_headers(status, content_type, content_len);
+        on_headers(status, content_type, content_len, resp_headers);
     }
     if (!cancel_flag.load() && status >= 400 && out_error != "Cancelled" && out_error != "URL not allowed") {
         out_error = "HTTP status " + std::to_string(status);

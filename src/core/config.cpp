@@ -13,6 +13,13 @@
 #include <nlohmann/json.hpp>
 #include <sstream>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace sampaudiostream {
 
 namespace {
@@ -75,6 +82,7 @@ constexpr ConfigFieldSpec kConfigSchema[] = {
     StrSpec("audio", "player_priority_order", "audio.player_priority_order", &PluginConfig::player_priority_order),
     BoolSpec("audio", "normalize_volume", "audio.normalize_volume", &PluginConfig::normalize_volume),
     UintSpec("audio", "live_title_poll_seconds", "audio.live_title_poll_seconds", 0, 300, true, &PluginConfig::live_title_poll_seconds),
+    StrSpec("audio", "music_dir", "audio.music_dir", &PluginConfig::music_dir),
 
     // channels
     UintSpec("channels", "max_channels", "channels.max_channels", 1, 1000, false, &PluginConfig::max_channels),
@@ -745,6 +753,125 @@ std::string NormalizeExternalTextToUtf8(const std::string& raw) {
         return raw;
     }
     return ConvertTextFromPawn(raw, "cp1252");
+}
+
+std::string TruncateUtf8Bytes(const std::string& utf8, std::size_t max_bytes) {
+    if (utf8.empty() || max_bytes == 0) {
+        return {};
+    }
+    std::string out;
+    out.reserve(std::min(utf8.size(), max_bytes));
+    for (std::size_t i = 0; i < utf8.size() && out.size() < max_bytes;) {
+        const unsigned char b0 = static_cast<unsigned char>(utf8[i]);
+        std::size_t seq_len = 1;
+        if (b0 < 0x80u) {
+            seq_len = 1;
+        } else if ((b0 & 0xE0u) == 0xC0u && i + 1 < utf8.size() &&
+                   (static_cast<unsigned char>(utf8[i + 1]) & 0xC0u) == 0x80u) {
+            seq_len = 2;
+        } else if ((b0 & 0xF0u) == 0xE0u && i + 2 < utf8.size() &&
+                   (static_cast<unsigned char>(utf8[i + 1]) & 0xC0u) == 0x80u &&
+                   (static_cast<unsigned char>(utf8[i + 2]) & 0xC0u) == 0x80u) {
+            seq_len = 3;
+        } else if ((b0 & 0xF8u) == 0xF0u && i + 3 < utf8.size() &&
+                   (static_cast<unsigned char>(utf8[i + 1]) & 0xC0u) == 0x80u &&
+                   (static_cast<unsigned char>(utf8[i + 2]) & 0xC0u) == 0x80u &&
+                   (static_cast<unsigned char>(utf8[i + 3]) & 0xC0u) == 0x80u) {
+            seq_len = 4;
+        }
+        if (out.size() + seq_len > max_bytes) {
+            break;
+        }
+        out.append(utf8, i, seq_len);
+        i += seq_len;
+    }
+    return out;
+}
+
+std::string SanitizeControlAndTrimUtf8(const std::string& utf8, std::size_t max_bytes) {
+    if (utf8.empty() || max_bytes == 0) {
+        return {};
+    }
+    std::string filtered;
+    filtered.reserve(utf8.size());
+    for (unsigned char ch : utf8) {
+        if (ch >= 0x20u && ch != 0x7Fu) {
+            filtered.push_back(static_cast<char>(ch));
+        }
+    }
+    std::size_t first = 0;
+    while (first < filtered.size() && filtered[first] == ' ') {
+        ++first;
+    }
+    std::size_t last = filtered.size();
+    while (last > first && filtered[last - 1] == ' ') {
+        --last;
+    }
+    return TruncateUtf8Bytes(filtered.substr(first, last - first), max_bytes);
+}
+
+std::string CleanIcyStationNameUtf8(const std::string& raw) {
+    if (raw.empty()) {
+        return {};
+    }
+    return SanitizeControlAndTrimUtf8(NormalizeExternalTextToUtf8(raw), 128);
+}
+
+bool CanRepresentTextInPawnEncoding(const std::string& utf8, const std::string& encoding) {
+    if (!IsStrictValidUtf8(utf8)) {
+        return false;
+    }
+    if (encoding != "cp1252") {
+        return true;
+    }
+    return ConvertTextFromPawn(ConvertTextForPawn(utf8, "cp1252"), "cp1252") == utf8;
+}
+
+std::filesystem::path Utf8ToPath(const std::string& utf8) {
+#ifdef _WIN32
+    if (utf8.empty()) {
+        return {};
+    }
+    const int needed = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (needed > 0) {
+        std::wstring wide(static_cast<std::size_t>(needed), L'\0');
+        if (MultiByteToWideChar(
+                CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), static_cast<int>(utf8.size()), wide.data(), needed) == needed) {
+            return std::filesystem::path(wide);
+        }
+    }
+    return std::filesystem::path(utf8);
+#else
+    return std::filesystem::path(utf8);
+#endif
+}
+
+std::string PathToUtf8(const std::filesystem::path& path) {
+#ifdef _WIN32
+    const std::wstring wide = path.wstring();
+    if (wide.empty()) {
+        return {};
+    }
+    const int needed = WideCharToMultiByte(
+        CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+    if (needed > 0) {
+        std::string utf8(static_cast<std::size_t>(needed), '\0');
+        if (WideCharToMultiByte(
+                CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), utf8.data(), needed, nullptr, nullptr) == needed) {
+            return utf8;
+        }
+    }
+    return path.string();
+#else
+    return path.string();
+#endif
+}
+
+bool IsSupportedAudioFileExtension(const std::string& lower_ext) {
+    return lower_ext == ".mp3" || lower_ext == ".ogg" || lower_ext == ".opus" ||
+           lower_ext == ".wav" || lower_ext == ".flac" || lower_ext == ".aac" ||
+           lower_ext == ".m4a";
 }
 
 ServerCfgInfo ConfigManager::LoadServerCfg(const std::string& path) {

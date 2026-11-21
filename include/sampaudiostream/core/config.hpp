@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <vector>
@@ -46,6 +47,7 @@ struct PluginConfig {
     std::string player_priority_order{"personal,channel,global"};
     bool normalize_volume{false};
     std::uint32_t live_title_poll_seconds{30};
+    std::string music_dir{"scriptfiles/SampAudioStream/music"};
     std::string pawn_text_encoding{"cp1252"}; // "cp1252" (client default) or "utf8"
 };
 
@@ -104,5 +106,24 @@ std::string ConvertTextFromPawn(const std::string& text, const std::string& enco
 // Normalizes external ICY/HTTP strings to UTF-8 (pass-through if already valid UTF-8,
 // otherwise decodes from CP1252).
 std::string NormalizeExternalTextToUtf8(const std::string& raw);
+
+// Truncates valid UTF-8 to at most max_bytes without splitting a multi-byte UTF-8 sequence.
+std::string TruncateUtf8Bytes(const std::string& utf8, std::size_t max_bytes);
+
+// Removes ASCII control characters (< 0x20 and 0x7F), trims outer spaces, and truncates to max_bytes.
+std::string SanitizeControlAndTrimUtf8(const std::string& utf8, std::size_t max_bytes);
+
+// Normalizes an HTTP icy-name header value to cleaned UTF-8 truncated to at most 128 bytes.
+std::string CleanIcyStationNameUtf8(const std::string& raw);
+
+// Returns true if utf8 is strictly valid UTF-8 and losslessly representable in encoding ("utf8" or "cp1252").
+bool CanRepresentTextInPawnEncoding(const std::string& utf8, const std::string& encoding);
+
+// Portable UTF-8 <-> std::filesystem::path conversions (wide UTF-16 on Windows, byte pass-through on POSIX).
+std::filesystem::path Utf8ToPath(const std::string& utf8);
+std::string PathToUtf8(const std::filesystem::path& path);
+
+// Returns true if lower_ext (including leading '.', e.g. ".mp3") is supported for local playback/direct files.
+bool IsSupportedAudioFileExtension(const std::string& lower_ext);
 
 } // namespace sampaudiostream

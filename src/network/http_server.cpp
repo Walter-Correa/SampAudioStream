@@ -40,24 +40,61 @@ std::string SanitizeHeaderValue(const std::string& s) {
     return out;
 }
 
-std::string ExtractEndpointToken(const std::string& target) {
-    // Expected: /stream/<token>.mp3 or /channel/<token>.mp3 (optional query string)
+bool ExtractEndpointRoute(const std::string& target, bool& out_is_channel, std::string& out_token) {
+    out_is_channel = false;
+    out_token.clear();
+
     std::string path = target;
     auto qpos = path.find('?');
     if (qpos != std::string::npos) {
         path = path.substr(0, qpos);
     }
 
-    auto last_slash = path.rfind('/');
-    if (last_slash == std::string::npos || last_slash + 1 >= path.size()) {
-        return "";
+    if (path.rfind("/s/", 0) == 0) {
+        out_is_channel = false;
+    } else if (path.rfind("/c/", 0) == 0) {
+        out_is_channel = true;
+    } else {
+        return false;
     }
-    std::string filename = path.substr(last_slash + 1);
-    auto dot = filename.rfind('.');
-    if (dot != std::string::npos) {
-        filename = filename.substr(0, dot);
+
+    std::string rest = path.substr(3);
+    if (rest.empty()) {
+        return false;
     }
-    return filename;
+    auto slash = rest.find('/');
+    if (slash != std::string::npos) {
+        const std::string ver = rest.substr(slash + 1);
+        rest = rest.substr(0, slash);
+        if (rest.empty() || ver.empty()) {
+            return false;
+        }
+        for (unsigned char c : ver) {
+            if (!std::isdigit(c)) {
+                return false;
+            }
+        }
+    }
+    out_token = std::move(rest);
+    return !out_token.empty();
+}
+
+bool ContainsAsciiIgnoreCase(const std::string& haystack, const std::string& needle) {
+    if (needle.empty() || haystack.size() < needle.size()) {
+        return false;
+    }
+    auto lower_char = [](unsigned char c) -> unsigned char {
+        return (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + ('a' - 'A')) : c;
+    };
+    const auto it = std::search(
+        haystack.begin(),
+        haystack.end(),
+        needle.begin(),
+        needle.end(),
+        [&](char a, char b) {
+            return lower_char(static_cast<unsigned char>(a)) == lower_char(static_cast<unsigned char>(b));
+        });
+    return it != haystack.end();
 }
 
 bool ExtractResumeOffset(const std::string& target, std::uint64_t& out_offset) {
@@ -233,10 +270,17 @@ private:
             return;
         }
 
-        std::string token = ExtractEndpointToken(target);
-        if (token.empty() || !lookup_fn_(token, endpoint_) || !endpoint_.buffer) {
+        bool req_is_channel = false;
+        std::string token;
+        if (!ExtractEndpointRoute(target, req_is_channel, token) ||
+            !lookup_fn_(token, endpoint_) ||
+            endpoint_.is_channel != req_is_channel ||
+            !endpoint_.buffer) {
             SendErrorResponse(404, "Not Found");
             return;
+        }
+        if (!endpoint_.send_icy_headers) {
+            icy_metadata_requested_ = false;
         }
 
         is_head_ = (method == "HEAD");
@@ -287,13 +331,14 @@ private:
             << "Connection: close\r\n"
             << "icy-br: " << endpoint_.bitrate_kbps << "\r\n";
 
-        const std::string& header_name = !endpoint_.station_name.empty() ? endpoint_.station_name : endpoint_.title;
-        if (!header_name.empty()) {
-            std::string icy_name = ConvertTextForPawn(header_name, "cp1252");
-            oss << "icy-name: " << SanitizeHeaderValue(icy_name) << "\r\n";
-        }
-        if (icy_metadata_requested_) {
-            oss << "icy-metaint: " << kIcyMetaInterval << "\r\n";
+        if (endpoint_.send_icy_headers) {
+            if (endpoint_.is_channel && !endpoint_.station_name.empty()) {
+                std::string icy_name = ConvertTextForPawn(endpoint_.station_name, "cp1252");
+                oss << "icy-name: " << SanitizeHeaderValue(icy_name) << "\r\n";
+            }
+            if (icy_metadata_requested_) {
+                oss << "icy-metaint: " << kIcyMetaInterval << "\r\n";
+            }
         }
         oss << "\r\n";
 
@@ -358,7 +403,12 @@ private:
     void BuildIcyMetaFrame(const StreamEndpointInfo& ep) {
         std::string raw;
         if (!ep.live_title.empty()) {
-            raw = ep.live_title;
+            if (!ep.is_channel && !ep.station_name.empty() &&
+                !ContainsAsciiIgnoreCase(ep.live_title, ep.station_name)) {
+                raw = ep.live_title + " - " + ep.station_name;
+            } else {
+                raw = ep.live_title;
+            }
         } else if (!ep.artist.empty() && !ep.title.empty()) {
             std::string lt = ep.title;
             std::string la = ep.artist;
@@ -375,7 +425,8 @@ private:
         std::string clean;
         clean.reserve(cp.size());
         for (unsigned char c : cp) {
-            if (c == '\'' || c == '\r' || c == '\n' || c == '\0') continue;
+            if (c == '\r' || c == '\n' || c == '\0') continue;
+            if (c == ';' && !clean.empty() && clean.back() == '\'') continue;
             clean.push_back(static_cast<char>(c));
             if (clean.size() >= 200) break;
         }
@@ -405,15 +456,18 @@ private:
             if (lookup_fn_ && lookup_fn_(bound_token_, latest)) {
                 endpoint_.title = latest.title;
                 endpoint_.artist = latest.artist;
+                endpoint_.station_name = latest.station_name;
                 endpoint_.live_title = latest.live_title;
             }
             if (!sent_initial_icy_meta_ ||
                 endpoint_.title != last_icy_title_ ||
                 endpoint_.artist != last_icy_artist_ ||
+                endpoint_.station_name != last_icy_station_name_ ||
                 endpoint_.live_title != last_icy_live_title_) {
                 BuildIcyMetaFrame(endpoint_);
                 last_icy_title_ = endpoint_.title;
                 last_icy_artist_ = endpoint_.artist;
+                last_icy_station_name_ = endpoint_.station_name;
                 last_icy_live_title_ = endpoint_.live_title;
                 sent_initial_icy_meta_ = true;
             } else {
@@ -563,6 +617,7 @@ private:
     static constexpr std::size_t kIcyMetaInterval = 16000;
     std::string last_icy_title_;
     std::string last_icy_artist_;
+    std::string last_icy_station_name_;
     std::string last_icy_live_title_;
     std::vector<std::uint8_t> icy_meta_buf_;
 };
@@ -1058,6 +1113,14 @@ void HttpStreamingServer::UpdateEndpointLiveTitle(const std::string& token, cons
     auto it = impl_->endpoints.find(token);
     if (it != impl_->endpoints.end()) {
         it->second.live_title = live_title;
+    }
+}
+
+void HttpStreamingServer::UpdateEndpointTitle(const std::string& token, const std::string& title) {
+    std::lock_guard<std::mutex> lock(impl_->endpoints_mutex);
+    auto it = impl_->endpoints.find(token);
+    if (it != impl_->endpoints.end()) {
+        it->second.title = title;
     }
 }
 

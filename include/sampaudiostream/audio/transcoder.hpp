@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -61,6 +62,11 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+// Probes a local audio file's duration in seconds using the plugin's built-in container/codec parsers.
+bool ProbeLocalAudioFileDurationSeconds(
+    const std::filesystem::path& file_path,
+    std::int32_t& out_duration_seconds);
 
 // Feeds synthetic PCM chunks directly through Mp3OutputPipeline for deterministic unit tests.
 bool RunNormalizedPipelineForTesting(

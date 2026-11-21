@@ -38,7 +38,7 @@ Modular guides and exhaustive API documentation are available in the [`docs/`](d
 | **[🔊 Playback, Hooking & Spatial Audio](docs/playback-and-spatial.md)** | `SA_PlayAudioStreamForPlayer` vs. `SA_PlayAudioStream`, radius time sync, live streams, volume, pause, and 3D entity attachment. |
 | **[🔎 Music Search & Synced Channels](docs/search-and-channels.md)** | Asynchronous `SA_SearchAudioStream` dialog workflows and synchronized multi-player radio stations with passwords, creator lifecycle, and queues. |
 | **[⚙️ Architecture, Transcoding & Caching](docs/architecture-and-caching.md)** | Internal C++20 worker pool, embedded codecs, HLS/MPEG-TS live decoding, LRU RAM cache, and ~30s ring buffers. |
-| **[📚 Complete API Reference](docs/api-reference.md)** | Exhaustive reference for all 73 `SA_*` natives, hooked vanilla natives, 19 callbacks, enums, constants, and helpers (plus optional `audio.normalize_volume` equalization for transcoded/proxy streams and live broadcasts, excluding direct passthrough). |
+| **[📚 Complete API Reference](docs/api-reference.md)** | Exhaustive reference for all 81 `SA_*` natives, hooked vanilla natives, 19 callbacks, enums, constants, and helpers (plus optional `audio.normalize_volume` equalization for transcoded/proxy streams and live broadcasts, excluding direct passthrough). |
 | **[⚠️ Important Notes](#important-notes)** | Extractor (`yt-dlp`) dependency notice, server owner content responsibility, and non-affiliation disclaimer. |
 
 ---
@@ -149,6 +149,20 @@ ctest --test-dir build -R core_tests --output-on-failure
 <summary>Show the version history</summary>
 
 ### 2.2.0 — 20/11/2026
+- **Cleaner On-Screen Text & Preserved Apostrophes**:
+  - Single-player and global sessions no longer emit an HTTP `icy-name:` header (preventing duplicated station/title text in the client); synchronized channels continue sending `icy-name:` as the channel name.
+  - Inline `StreamTitle` preserves apostrophes (`'` is no longer stripped; only `\r`, `\n`, `\0`, and `';` sequences are sanitized) and formats live radio stream updates as `"<song> - <station>"` when a station name is available and not already included.
+- **Short Endpoint URLs (`/s/` & `/c/`)**:
+  - Replaced legacy 32-hex `/stream/<token>` and `/channel/ch_<token>` routes with compact 10-character alphanumeric CSPRNG codes under `/s/<code>` (with optional `/<version>` when options update and `?resume=<offset>`) and `/c/<code>`.
+- **Channel Playlist Mode**:
+  - Added non-destructive channel playlist mode (`SA_SetAudioStreamChannelPlaylist`, `SA_IsAudioStreamChannelPlaylist`, `SA_GetAudioStreamChannelQueuePos`, `SA_PlayAudioStreamChannelQueue`) with persisted mode/position, loop-aware wraparound, pre-resolution of the next track, and support for out-of-list `SA_PlayChannelAudioStream(url)` overrides without mutating the list.
+- **Local Music Library (`audio.music_dir` & `library://`)**:
+  - Added on-demand scanning of 1-level subfolders and loose root files in `audio.music_dir` (`"scriptfiles/SampAudioStream/music"`, configurable), exposed via `SA_RefreshAudioLibrary`, `SA_GetAudioLibraryFolderCount`, `SA_GetAudioLibraryFolder`, and `SA_GetAudioLibraryTrack`, and playable/importable across all stream and channel natives using `library://<folder>/<file>`, `library:///<file>`, `library://<folder>`, or `library://` with strict path containment and transcoded finite playback.
+- **Direct File Titles & Optional On-Screen Stream Text (`bool:stream_text = true`)**:
+  - Direct audio files now report their file name (from the URL path) as the track title instead of `"Direct Audio Stream"`; live radios with a file-like link still switch to their `icy-name` when available.
+  - `SA_PlayAudioStreamForPlayer`, `SA_PlayAudioStream` and hooked `PlayAudioStreamForPlayer` gained a trailing `bool:stream_text = true` parameter; `false` hides the on-screen stream text for server-processed playback (useful for short sound effects).
+- **Live Radio Station Names (`icy-name`)**:
+  - Direct live radios now report the station's `icy-name` as the track title (instead of `"Direct Audio Stream"` / `"Radio Stream"`) once it is known from the link probe or the first ICY poll.
 - **Per-Channel Persistence**:
   - `SA_CreateAudioStreamChannel` gained a trailing `bool:persistent = true` parameter. Persistent channels are saved and restored as before; non-persistent channels live only in memory, are never written to disk, and are destroyed on GMX. The global `channels.persist_channels` option was removed (old config files keep loading; the key is ignored).
 - **Single-Track Playlist Link Handling**:

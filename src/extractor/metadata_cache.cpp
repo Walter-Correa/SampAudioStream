@@ -26,6 +26,11 @@ void MetadataCache::InvalidateTrack(const std::string& key) {
     track_cache_.Invalidate(key);
 }
 
+void MetadataCache::InvalidateTrackPrefix(const std::string& prefix) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    track_cache_.InvalidateByPrefix(prefix);
+}
+
 std::optional<std::vector<SearchResultItem>> MetadataCache::GetSearch(const std::string& query_key) {
     std::lock_guard<std::mutex> lock(mutex_);
     return search_cache_.Get(query_key);

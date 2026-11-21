@@ -115,12 +115,14 @@ struct StreamOptions {
     std::int32_t attach_vehicle_id{0};
     bool notify_processing{true};
     bool process_direct_audio_files{false};
+    bool stream_text{true};
 };
 
 struct TrackMetadata {
     std::string id;
     std::string original_url;
     std::string direct_media_url;
+    std::string local_file_path; // Internal validated disk path for library:// playback (never logged or returned)
     std::string title;
     std::string artist;
     std::string extractor_name;
@@ -129,6 +131,7 @@ struct TrackMetadata {
     std::string container_ext;
     std::int32_t duration_seconds{0};
     bool is_live{false};
+    bool title_is_placeholder{false};
     SourceType source_type{SourceType::DirectAudio};
     std::chrono::steady_clock::time_point resolved_at{};
     std::int64_t available_at_epoch_ms{0};

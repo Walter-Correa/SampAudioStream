@@ -1,5 +1,7 @@
 #include "sampaudiostream/extractor/resolver.hpp"
 
+#include "sampaudiostream/audio/transcoder.hpp"
+#include "sampaudiostream/core/config.hpp"
 #include "sampaudiostream/core/logger.hpp"
 #include "sampaudiostream/core/thread_pool.hpp"
 #include "sampaudiostream/extractor/browser_cookies.hpp"
@@ -430,6 +432,134 @@ bool HasExplicitUrlScheme(const std::string& input) {
         if (!std::isalnum(c) && c != '+' && c != '-' && c != '.') return false;
     }
     return true;
+}
+
+bool HasControlOrForbiddenLibraryChars(const std::string& s) {
+    for (unsigned char c : s) {
+        if (c < 0x20 || c == 0x7F || c == '\\' || c == ':') {
+            return true;
+        }
+    }
+    return s.find("..") != std::string::npos;
+}
+
+bool IsValidLibrarySegmentName(const std::string& seg) {
+    return !seg.empty() && seg != "." && seg != "..";
+}
+
+bool PathsEqualPlatform(const std::filesystem::path& a, const std::filesystem::path& b) {
+#ifdef _WIN32
+    return ToLower(PathToUtf8(a)) == ToLower(PathToUtf8(b));
+#else
+    return a == b;
+#endif
+}
+
+bool IsPathStrictlyInsideBase(const std::filesystem::path& base_dir, const std::filesystem::path& candidate) {
+    std::filesystem::path b = base_dir.lexically_normal();
+    std::filesystem::path c = candidate.lexically_normal();
+    // Strip trailing empty component produced by trailing slash, if any.
+    auto strip_trailing_empty = [](std::vector<std::filesystem::path>& parts) {
+        while (!parts.empty() && parts.back().empty()) {
+            parts.pop_back();
+        }
+    };
+    std::vector<std::filesystem::path> b_parts(b.begin(), b.end());
+    std::vector<std::filesystem::path> c_parts(c.begin(), c.end());
+    strip_trailing_empty(b_parts);
+    strip_trailing_empty(c_parts);
+    if (b_parts.empty() || c_parts.size() <= b_parts.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < b_parts.size(); ++i) {
+        if (!PathsEqualPlatform(b_parts[i], c_parts[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void WarnRateLimitedLibrary(const std::string& msg) {
+    static std::mutex mu;
+    static std::chrono::steady_clock::time_point last_warn{};
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        if (last_warn.time_since_epoch().count() != 0 &&
+            (now - last_warn) < std::chrono::seconds(30)) {
+            return;
+        }
+        last_warn = now;
+    }
+    Logger::Instance().Warn(msg);
+}
+
+struct ScannedTrackPair {
+    std::string utf8_name;
+    std::string lower_name;
+    std::string pawn_name;
+};
+
+std::vector<ScannedTrackPair> CollectAudioTracksInDir(
+    const std::filesystem::path& canonical_base,
+    const std::filesystem::path& canonical_dir,
+    const std::string& folder_label_for_log,
+    const std::string& pawn_text_encoding,
+    std::uint32_t max_tracks) {
+    std::vector<ScannedTrackPair> items;
+    std::error_code ec;
+    std::filesystem::directory_iterator it(canonical_dir, std::filesystem::directory_options::skip_permission_denied, ec);
+    if (ec) {
+        return items;
+    }
+    std::size_t ignored_unrepresentable = 0;
+    for (const auto& entry : it) {
+        std::error_code item_ec;
+        if (!entry.is_regular_file(item_ec) || item_ec) {
+            continue;
+        }
+        const std::filesystem::path entry_path = entry.path();
+        const std::string filename_utf8 = PathToUtf8(entry_path.filename());
+        if (!IsValidLibrarySegmentName(filename_utf8) || HasControlOrForbiddenLibraryChars(filename_utf8)) {
+            continue;
+        }
+        const std::string ext_lower = ToLower(PathToUtf8(entry_path.extension()));
+        if (!IsSupportedAudioFileExtension(ext_lower)) {
+            continue;
+        }
+        const std::filesystem::path canonical_file = std::filesystem::weakly_canonical(entry_path, item_ec);
+        if (item_ec || !IsPathStrictlyInsideBase(canonical_base, canonical_file)) {
+            continue;
+        }
+        if (!CanRepresentTextInPawnEncoding(filename_utf8, pawn_text_encoding)) {
+            ++ignored_unrepresentable;
+            continue;
+        }
+        items.push_back(ScannedTrackPair{
+            filename_utf8,
+            ToLower(filename_utf8),
+            ConvertTextForPawn(filename_utf8, pawn_text_encoding)
+        });
+    }
+    if (ignored_unrepresentable > 0) {
+        WarnRateLimitedLibrary(
+            "[Audio] Ignored " + std::to_string(ignored_unrepresentable) +
+            " library audio file(s) in '" + (folder_label_for_log.empty() ? std::string("<root>") : folder_label_for_log) +
+            "' with filename(s) not representable in scripting.pawn_text_encoding=" + pawn_text_encoding);
+    }
+    std::sort(items.begin(), items.end(), [](const ScannedTrackPair& a, const ScannedTrackPair& b) {
+        if (a.lower_name != b.lower_name) {
+            return a.lower_name < b.lower_name;
+        }
+        return a.utf8_name < b.utf8_name;
+    });
+    if (max_tracks > 0 && items.size() > max_tracks) {
+        WarnRateLimitedLibrary(
+            "[Audio] Library folder '" + (folder_label_for_log.empty() ? std::string("<root>") : folder_label_for_log) +
+            "' exceeds limit of " + std::to_string(max_tracks) + " tracks; remaining files were truncated");
+        items.resize(max_tracks);
+    }
+    return items;
 }
 
 std::string ExtractUrlHost(const std::string& lower_url) {
@@ -1066,6 +1196,324 @@ bool StreamResolver::LooksLikeUrl(const std::string& input) {
     return lower.rfind("http://", 0) == 0 || lower.rfind("https://", 0) == 0;
 }
 
+bool StreamResolver::IsLibraryUrl(const std::string& input) {
+    if (input.size() < 10) {
+        return false;
+    }
+    return ToLower(input.substr(0, 10)) == "library://";
+}
+
+bool StreamResolver::LooksLikeDiskPath(const std::string& input) {
+    if (input.empty()) {
+        return false;
+    }
+    if (input[0] == '/' || input[0] == '\\') {
+        return true;
+    }
+    if (input.size() >= 2 &&
+        std::isalpha(static_cast<unsigned char>(input[0])) != 0 &&
+        input[1] == ':') {
+        return true;
+    }
+    if (input == "." || input == ".." ||
+        input.rfind("./", 0) == 0 || input.rfind(".\\", 0) == 0 ||
+        input.rfind("../", 0) == 0 || input.rfind("..\\", 0) == 0 ||
+        input.rfind("~/", 0) == 0 || input.rfind("~\\", 0) == 0) {
+        return true;
+    }
+    return false;
+}
+
+bool StreamResolver::ParseAndResolveLibraryFile(
+    const std::string& url,
+    const std::string& music_dir,
+    std::filesystem::path& out_real_path,
+    std::string& out_file_name,
+    ErrorCode& out_error_code,
+    std::string& out_error_message) {
+    out_real_path.clear();
+    out_file_name.clear();
+    if (!IsLibraryUrl(url)) {
+        out_error_code = ErrorCode::InvalidUrl;
+        out_error_message = "URL not allowed";
+        return false;
+    }
+    const std::string rel = url.substr(10);
+    if (rel.empty() || HasControlOrForbiddenLibraryChars(rel)) {
+        out_error_code = ErrorCode::InvalidUrl;
+        out_error_message = "Invalid library track reference";
+        return false;
+    }
+
+    std::string folder;
+    std::string file;
+    if (rel[0] == '/') {
+        file = rel.substr(1);
+        if (file.find('/') != std::string::npos) {
+            out_error_code = ErrorCode::InvalidUrl;
+            out_error_message = "Invalid library track reference";
+            return false;
+        }
+    } else {
+        const auto slash = rel.find('/');
+        if (slash == std::string::npos) {
+            out_error_code = ErrorCode::InvalidUrl;
+            out_error_message = "Invalid library track reference";
+            return false;
+        }
+        folder = rel.substr(0, slash);
+        file = rel.substr(slash + 1);
+        if (!IsValidLibrarySegmentName(folder) || file.find('/') != std::string::npos) {
+            out_error_code = ErrorCode::InvalidUrl;
+            out_error_message = "Invalid library track reference";
+            return false;
+        }
+    }
+
+    if (!IsValidLibrarySegmentName(file)) {
+        out_error_code = ErrorCode::InvalidUrl;
+        out_error_message = "Invalid library track filename";
+        return false;
+    }
+    const auto dot = file.rfind('.');
+    if (dot == std::string::npos) {
+        out_error_code = ErrorCode::InvalidUrl;
+        out_error_message = "Unsupported local audio file extension";
+        return false;
+    }
+    const std::string ext_lower = ToLower(file.substr(dot));
+    if (!IsSupportedAudioFileExtension(ext_lower)) {
+        out_error_code = ErrorCode::InvalidUrl;
+        out_error_message = "Unsupported local audio file extension";
+        return false;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path base_raw = Utf8ToPath(music_dir);
+    if (music_dir.empty() || !std::filesystem::exists(base_raw, ec) || ec ||
+        !std::filesystem::is_directory(base_raw, ec) || ec) {
+        out_error_code = ErrorCode::ExtractionFailed;
+        out_error_message = "Music library directory is unavailable";
+        return false;
+    }
+    const std::filesystem::path canonical_base = std::filesystem::weakly_canonical(base_raw, ec);
+    if (ec || !std::filesystem::is_directory(canonical_base, ec) || ec) {
+        out_error_code = ErrorCode::ExtractionFailed;
+        out_error_message = "Music library directory is unavailable";
+        return false;
+    }
+
+    std::filesystem::path candidate = folder.empty()
+        ? (canonical_base / Utf8ToPath(file))
+        : (canonical_base / Utf8ToPath(folder) / Utf8ToPath(file));
+    const std::filesystem::path canonical_target = std::filesystem::weakly_canonical(candidate, ec);
+    if (ec || !IsPathStrictlyInsideBase(canonical_base, canonical_target)) {
+        out_error_code = ErrorCode::InvalidUrl;
+        out_error_message = "URL not allowed";
+        return false;
+    }
+    if (!std::filesystem::exists(canonical_target, ec) || ec ||
+        !std::filesystem::is_regular_file(canonical_target, ec) || ec) {
+        out_error_code = ErrorCode::ExtractionFailed;
+        out_error_message = "Local library file not found";
+        return false;
+    }
+
+    out_real_path = canonical_target;
+    out_file_name = file;
+    out_error_code = ErrorCode::None;
+    out_error_message.clear();
+    return true;
+}
+
+bool StreamResolver::ParseAndResolveLibraryFolder(
+    const std::string& url,
+    const std::string& music_dir,
+    std::string& out_folder_utf8,
+    std::filesystem::path& out_real_dir,
+    ErrorCode& out_error_code,
+    std::string& out_error_message) {
+    out_folder_utf8.clear();
+    out_real_dir.clear();
+    if (!IsLibraryUrl(url)) {
+        out_error_code = ErrorCode::InvalidUrl;
+        out_error_message = "URL not allowed";
+        return false;
+    }
+    std::string rel = url.substr(10);
+    if (HasControlOrForbiddenLibraryChars(rel)) {
+        out_error_code = ErrorCode::InvalidUrl;
+        out_error_message = "Invalid library folder reference";
+        return false;
+    }
+    if (!rel.empty() && rel != "/") {
+        if (rel.back() == '/') {
+            rel.pop_back();
+        }
+        if (rel.empty() || rel.find('/') != std::string::npos || !IsValidLibrarySegmentName(rel)) {
+            out_error_code = ErrorCode::InvalidUrl;
+            out_error_message = "Invalid library folder reference";
+            return false;
+        }
+        out_folder_utf8 = rel;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path base_raw = Utf8ToPath(music_dir);
+    if (music_dir.empty() || !std::filesystem::exists(base_raw, ec) || ec ||
+        !std::filesystem::is_directory(base_raw, ec) || ec) {
+        out_error_code = ErrorCode::ExtractionFailed;
+        out_error_message = "Music library directory is unavailable";
+        return false;
+    }
+    const std::filesystem::path canonical_base = std::filesystem::weakly_canonical(base_raw, ec);
+    if (ec || !std::filesystem::is_directory(canonical_base, ec) || ec) {
+        out_error_code = ErrorCode::ExtractionFailed;
+        out_error_message = "Music library directory is unavailable";
+        return false;
+    }
+
+    if (out_folder_utf8.empty()) {
+        out_real_dir = canonical_base;
+        out_error_code = ErrorCode::None;
+        out_error_message.clear();
+        return true;
+    }
+
+    const std::filesystem::path canonical_sub = std::filesystem::weakly_canonical(
+        canonical_base / Utf8ToPath(out_folder_utf8), ec);
+    if (ec || !IsPathStrictlyInsideBase(canonical_base, canonical_sub)) {
+        out_error_code = ErrorCode::InvalidUrl;
+        out_error_message = "URL not allowed";
+        return false;
+    }
+    if (!std::filesystem::exists(canonical_sub, ec) || ec ||
+        !std::filesystem::is_directory(canonical_sub, ec) || ec) {
+        out_error_code = ErrorCode::ExtractionFailed;
+        out_error_message = "Local library folder not found";
+        return false;
+    }
+
+    out_real_dir = canonical_sub;
+    out_error_code = ErrorCode::None;
+    out_error_message.clear();
+    return true;
+}
+
+std::vector<AudioLibraryFolderData> StreamResolver::ScanMusicLibraryDir(
+    const std::string& music_dir,
+    const std::string& pawn_text_encoding,
+    std::uint32_t max_folders,
+    std::uint32_t max_tracks_per_folder) {
+    std::vector<AudioLibraryFolderData> folders;
+    if (music_dir.empty()) {
+        return folders;
+    }
+    std::error_code ec;
+    const std::filesystem::path base_raw = Utf8ToPath(music_dir);
+    if (!std::filesystem::exists(base_raw, ec) || ec ||
+        !std::filesystem::is_directory(base_raw, ec) || ec) {
+        return folders;
+    }
+    const std::filesystem::path canonical_base = std::filesystem::weakly_canonical(base_raw, ec);
+    if (ec || !std::filesystem::is_directory(canonical_base, ec) || ec) {
+        return folders;
+    }
+
+    // 1. Collect tracks directly in the root folder ("")
+    auto root_tracks = CollectAudioTracksInDir(
+        canonical_base, canonical_base, "", pawn_text_encoding, max_tracks_per_folder);
+    if (!root_tracks.empty()) {
+        AudioLibraryFolderData root_folder;
+        root_folder.utf8_name = "";
+        root_folder.pawn_name = "";
+        root_folder.utf8_tracks.reserve(root_tracks.size());
+        root_folder.pawn_tracks.reserve(root_tracks.size());
+        for (auto& t : root_tracks) {
+            root_folder.utf8_tracks.push_back(std::move(t.utf8_name));
+            root_folder.pawn_tracks.push_back(std::move(t.pawn_name));
+        }
+        folders.push_back(std::move(root_folder));
+    }
+
+    // 2. Collect non-empty depth-1 subfolders sorted case-insensitively
+    struct SubdirCandidate {
+        std::string utf8_name;
+        std::string lower_name;
+        std::string pawn_name;
+        std::filesystem::path canonical_dir;
+    };
+    std::vector<SubdirCandidate> subdirs;
+    std::size_t ignored_unrepresentable_folders = 0;
+    std::filesystem::directory_iterator dir_it(
+        canonical_base, std::filesystem::directory_options::skip_permission_denied, ec);
+    if (!ec) {
+        for (const auto& entry : dir_it) {
+            std::error_code item_ec;
+            if (!entry.is_directory(item_ec) || item_ec) {
+                continue;
+            }
+            const std::filesystem::path entry_path = entry.path();
+            const std::string folder_utf8 = PathToUtf8(entry_path.filename());
+            if (!IsValidLibrarySegmentName(folder_utf8) || HasControlOrForbiddenLibraryChars(folder_utf8)) {
+                continue;
+            }
+            const std::filesystem::path canonical_sub = std::filesystem::weakly_canonical(entry_path, item_ec);
+            if (item_ec || !IsPathStrictlyInsideBase(canonical_base, canonical_sub)) {
+                continue;
+            }
+            if (!CanRepresentTextInPawnEncoding(folder_utf8, pawn_text_encoding)) {
+                ++ignored_unrepresentable_folders;
+                continue;
+            }
+            subdirs.push_back(SubdirCandidate{
+                folder_utf8,
+                ToLower(folder_utf8),
+                ConvertTextForPawn(folder_utf8, pawn_text_encoding),
+                canonical_sub
+            });
+        }
+    }
+    if (ignored_unrepresentable_folders > 0) {
+        WarnRateLimitedLibrary(
+            "[Audio] Ignored " + std::to_string(ignored_unrepresentable_folders) +
+            " library folder(s) with name(s) not representable in scripting.pawn_text_encoding=" + pawn_text_encoding);
+    }
+
+    std::sort(subdirs.begin(), subdirs.end(), [](const SubdirCandidate& a, const SubdirCandidate& b) {
+        if (a.lower_name != b.lower_name) {
+            return a.lower_name < b.lower_name;
+        }
+        return a.utf8_name < b.utf8_name;
+    });
+
+    for (auto& sub : subdirs) {
+        if (max_folders > 0 && folders.size() >= max_folders) {
+            WarnRateLimitedLibrary(
+                "[Audio] Music library exceeded limit of " + std::to_string(max_folders) +
+                " folders; remaining folders were omitted");
+            break;
+        }
+        auto sub_tracks = CollectAudioTracksInDir(
+            canonical_base, sub.canonical_dir, sub.utf8_name, pawn_text_encoding, max_tracks_per_folder);
+        if (sub_tracks.empty()) {
+            continue;
+        }
+        AudioLibraryFolderData fd;
+        fd.utf8_name = std::move(sub.utf8_name);
+        fd.pawn_name = std::move(sub.pawn_name);
+        fd.utf8_tracks.reserve(sub_tracks.size());
+        fd.pawn_tracks.reserve(sub_tracks.size());
+        for (auto& t : sub_tracks) {
+            fd.utf8_tracks.push_back(std::move(t.utf8_name));
+            fd.pawn_tracks.push_back(std::move(t.pawn_name));
+        }
+        folders.push_back(std::move(fd));
+    }
+
+    return folders;
+}
+
 bool StreamResolver::IsKnownDirectAudioExtension(const std::string& url) {
     std::string clean = ToLower(StripUrlQuery(url));
     return EndsWith(clean, ".mp3") || EndsWith(clean, ".ogg") ||
@@ -1079,10 +1527,31 @@ bool StreamResolver::IsDirectAudioFileUrl(const std::string& url) {
         return false;
     }
     std::string clean = ToLower(StripUrlQuery(url));
-    return EndsWith(clean, ".mp3") || EndsWith(clean, ".ogg") ||
-           EndsWith(clean, ".wav") || EndsWith(clean, ".flac") ||
-           EndsWith(clean, ".aac") || EndsWith(clean, ".m4a") ||
-           EndsWith(clean, ".opus");
+    const auto last_dot = clean.rfind('.');
+    if (last_dot == std::string::npos) {
+        return false;
+    }
+    return IsSupportedAudioFileExtension(clean.substr(last_dot));
+}
+
+std::string StreamResolver::ExtractUrlFileNameTitle(const std::string& url) {
+    const std::string base = StripUrlQuery(url);
+    const std::size_t scheme_pos = base.find("://");
+    const std::size_t path_start = (scheme_pos != std::string::npos)
+        ? base.find('/', scheme_pos + 3)
+        : 0;
+    if (path_start == std::string::npos) {
+        return {};
+    }
+    const std::size_t last_slash = base.rfind('/');
+    if (last_slash == std::string::npos || last_slash < path_start) {
+        return {};
+    }
+    const std::string raw_seg = base.substr(last_slash + 1);
+    if (raw_seg.empty()) {
+        return {};
+    }
+    return CleanIcyStationNameUtf8(UrlDecodeSimple(raw_seg));
 }
 
 bool StreamResolver::IsHlsPlaylistUrl(const std::string& url) {
@@ -1166,8 +1635,10 @@ bool StreamResolver::ProbeDirectHttpAudio(
     const std::string& url,
     std::string& out_content_type,
     bool& out_security_blocked,
+    std::string& out_station_name_utf8,
     const std::atomic<bool>* cancel_flag) const {
     out_security_blocked = false;
+    out_station_name_utf8.clear();
     auto resp = HttpClient::Head(url, {}, 4000, cancel_flag);
     if (resp.error == "URL not allowed") {
         out_security_blocked = true;
@@ -1177,6 +1648,8 @@ bool StreamResolver::ProbeDirectHttpAudio(
         std::string ct = ToLower(resp.content_type);
         out_content_type = ct;
         if (IsAudioContentType(ct)) {
+            out_station_name_utf8 = CleanIcyStationNameUtf8(
+                HttpClient::FindHeaderIgnoreCase(resp.headers, "icy-name"));
             return true;
         }
     }
@@ -1185,6 +1658,7 @@ bool StreamResolver::ProbeDirectHttpAudio(
     std::atomic<bool> local_cancel{false};
     int get_status = 0;
     std::string get_ct;
+    std::string get_station_name;
     std::string sample_bytes;
     std::string probe_err;
 
@@ -1201,9 +1675,13 @@ bool StreamResolver::ProbeDirectHttpAudio(
         },
         cancel_flag ? *cancel_flag : local_cancel,
         probe_err,
-        [&](int st, const std::string& ct, std::int64_t) {
+        [&](int st, const std::string& ct, std::int64_t, const HttpClient::HeaderMap& resp_headers) {
             get_status = st;
             get_ct = ToLower(ct);
+            if (st >= 200 && st < 300) {
+                get_station_name = CleanIcyStationNameUtf8(
+                    HttpClient::FindHeaderIgnoreCase(resp_headers, "icy-name"));
+            }
         },
         4000);
 
@@ -1214,6 +1692,7 @@ bool StreamResolver::ProbeDirectHttpAudio(
     if (get_status >= 200 && get_status < 300) {
         out_content_type = get_ct;
         if (IsAudioContentType(get_ct) || HasAudioStreamMagic(sample_bytes)) {
+            out_station_name_utf8 = std::move(get_station_name);
             return true;
         }
     }
@@ -1298,8 +1777,35 @@ ResolveResult StreamResolver::Resolve(const std::string& url_or_query, const std
 ResolveResult StreamResolver::ResolveUncached(const std::string& url_or_query, const std::atomic<bool>* cancel_flag, int playlist_depth) {
     ResolveResult res;
 
+    if (IsLibraryUrl(url_or_query)) {
+        std::filesystem::path real_path;
+        std::string file_name;
+        ErrorCode err_code = ErrorCode::None;
+        std::string err_msg;
+        if (!ParseAndResolveLibraryFile(url_or_query, config_.music_dir, real_path, file_name, err_code, err_msg)) {
+            res.error = err_code;
+            res.error_message = err_msg.empty() ? "Invalid library track reference" : err_msg;
+            return res;
+        }
+        std::int32_t duration_seconds = 0;
+        ProbeLocalAudioFileDurationSeconds(real_path, duration_seconds);
+
+        res.success = true;
+        res.source_type = SourceType::ExtractorStream;
+        res.metadata.original_url = url_or_query;
+        res.metadata.local_file_path = PathToUtf8(real_path);
+        res.metadata.extractor_name = "library";
+        res.metadata.title = file_name;
+        res.metadata.title_is_placeholder = false;
+        res.metadata.is_live = false;
+        res.metadata.duration_seconds = duration_seconds;
+        res.metadata.source_type = SourceType::ExtractorStream;
+        cache_.PutTrack(url_or_query, res.metadata);
+        return res;
+    }
+
     bool is_url = LooksLikeUrl(url_or_query);
-    if (!is_url && HasExplicitUrlScheme(url_or_query)) {
+    if (!is_url && (HasExplicitUrlScheme(url_or_query) || LooksLikeDiskPath(url_or_query))) {
         res.error = ErrorCode::InvalidUrl;
         res.error_message = "URL not allowed";
         return res;
@@ -1317,23 +1823,26 @@ ResolveResult StreamResolver::ResolveUncached(const std::string& url_or_query, c
 
             bool looks_playlist = IsLivePlaylistExtension(url_or_query);
             std::string probed_ct;
+            std::string probed_station_name;
             bool probed_audio = false;
             bool security_blocked = false;
 
             if (!looks_playlist && IsKnownDirectAudioExtension(url_or_query)) {
+                const std::string file_title = ExtractUrlFileNameTitle(url_or_query);
                 res.success = true;
                 res.source_type = SourceType::DirectAudio;
                 res.metadata.original_url = url_or_query;
                 res.metadata.direct_media_url = url_or_query;
                 res.metadata.extractor_name = "direct";
-                res.metadata.title = "Direct Audio Stream";
+                res.metadata.title = file_title.empty() ? "Direct Audio Stream" : file_title;
+                res.metadata.title_is_placeholder = true;
                 res.metadata.is_live = false;
                 cache_.PutTrack(url_or_query, res.metadata);
                 return res;
             }
 
             if (!looks_playlist) {
-                probed_audio = ProbeDirectHttpAudio(url_or_query, probed_ct, security_blocked, cancel_flag);
+                probed_audio = ProbeDirectHttpAudio(url_or_query, probed_ct, security_blocked, probed_station_name, cancel_flag);
                 if (security_blocked) {
                     res.error = ErrorCode::InvalidUrl;
                     res.error_message = "URL not allowed";
@@ -1362,8 +1871,10 @@ ResolveResult StreamResolver::ResolveUncached(const std::string& url_or_query, c
                         if (inner.success) {
                             inner.metadata.original_url = url_or_query;
                             inner.metadata.is_live = true;
-                            if (inner.metadata.title.empty() || inner.metadata.title == "Direct Audio Stream") {
+                            if (inner.metadata.title.empty() || inner.metadata.title_is_placeholder ||
+                                inner.metadata.title == "Direct Audio Stream") {
                                 inner.metadata.title = "Radio Stream";
+                                inner.metadata.title_is_placeholder = true;
                             }
                             cache_.PutTrack(url_or_query, inner.metadata);
                             return inner;
@@ -1379,7 +1890,17 @@ ResolveResult StreamResolver::ResolveUncached(const std::string& url_or_query, c
                 res.metadata.original_url = url_or_query;
                 res.metadata.direct_media_url = url_or_query;
                 res.metadata.extractor_name = "direct";
-                res.metadata.title = direct_file ? "Direct Audio Stream" : "Radio Stream";
+                if (!probed_station_name.empty()) {
+                    res.metadata.title = probed_station_name;
+                    res.metadata.title_is_placeholder = false;
+                } else if (direct_file) {
+                    const std::string file_title = ExtractUrlFileNameTitle(url_or_query);
+                    res.metadata.title = file_title.empty() ? "Direct Audio Stream" : file_title;
+                    res.metadata.title_is_placeholder = true;
+                } else {
+                    res.metadata.title = "Radio Stream";
+                    res.metadata.title_is_placeholder = true;
+                }
                 res.metadata.is_live = !direct_file;
                 cache_.PutTrack(url_or_query, res.metadata);
                 return res;
@@ -1514,6 +2035,10 @@ void StreamResolver::InvalidateCachedTrack(const std::string& url_or_query) {
     if (!url_or_query.empty()) {
         cache_.InvalidateTrack(url_or_query);
     }
+}
+
+void StreamResolver::InvalidateCachedLibraryTracks() {
+    cache_.InvalidateTrackPrefix("library://");
 }
 
 SearchExecutionResult StreamResolver::Search(
@@ -1674,6 +2199,42 @@ PlaylistExtractionResult StreamResolver::ExtractPlaylist(
     std::uint32_t max_items,
     const std::atomic<bool>* cancel_flag) {
     PlaylistExtractionResult res;
+    if (IsLibraryUrl(url)) {
+        std::string folder_utf8;
+        std::filesystem::path real_dir;
+        ErrorCode err_code = ErrorCode::None;
+        std::string err_msg;
+        if (!ParseAndResolveLibraryFolder(url, config_.music_dir, folder_utf8, real_dir, err_code, err_msg)) {
+            res.error = err_code;
+            res.error_message = err_msg.empty() ? "Invalid library folder reference" : err_msg;
+            return res;
+        }
+        std::error_code ec;
+        const std::filesystem::path canonical_base = std::filesystem::weakly_canonical(Utf8ToPath(config_.music_dir), ec);
+        if (ec) {
+            res.error = ErrorCode::ExtractionFailed;
+            res.error_message = "Music library directory is unavailable";
+            return res;
+        }
+        const std::uint32_t limit = std::min<std::uint32_t>(std::max<std::uint32_t>(1, max_items), 1000u);
+        auto tracks = CollectAudioTracksInDir(
+            canonical_base, real_dir, folder_utf8, config_.pawn_text_encoding, limit);
+        if (tracks.empty()) {
+            res.error = ErrorCode::ExtractionFailed;
+            res.error_message = "Library folder contains no playable audio tracks";
+            return res;
+        }
+        res.urls.reserve(tracks.size());
+        res.titles.reserve(tracks.size());
+        for (auto& t : tracks) {
+            res.urls.push_back(folder_utf8.empty()
+                ? ("library:///" + t.utf8_name)
+                : ("library://" + folder_utf8 + "/" + t.utf8_name));
+            res.titles.push_back(std::move(t.utf8_name));
+        }
+        res.success = true;
+        return res;
+    }
     if (!LooksLikeUrl(url)) {
         res.error = ErrorCode::InvalidUrl;
         res.error_message = "Playlist URL must start with http:// or https://";
