@@ -29,7 +29,7 @@ struct TranscoderConfig {
     bool normalize_volume{false};         // Optional sliding-RMS AGC + peak limiter before int16 encoding
     std::uint32_t hls_poll_interval_ms{2000};
     std::uint32_t hls_live_stall_timeout_ms{30000};
-    std::uint32_t max_prefetch_mb{16};
+    std::uint32_t max_prefetch_mb{8};
     std::uint32_t no_audio_timeout_ms{20000};
     std::uint32_t stream_connect_timeout_ms{15000};
     std::uint32_t retry_backoff_first_ms{500};

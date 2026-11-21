@@ -240,7 +240,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
 | `extractor.max_search_results` | `10` | `1..50` max items returned by `SA_SearchAudioStream` |
 | `performance.worker_threads` | `4` | `1..16` extraction & search worker threads |
 | `performance.max_concurrent_transcoders` | `32` | `1..128` parallel active transcoder threads |
-| `performance.max_prefetch_mb` | `16` | `1..64` MB pull buffer cap per finite HTTP download *(max prefetch RAM = `performance.max_prefetch_mb * active_transcoders`)* |
+| `performance.max_prefetch_mb` | `8` | `1..64` MB pull buffer cap per finite HTTP download *(max prefetch RAM = `performance.max_prefetch_mb * active_transcoders`; local library files always use a fixed `1 MB` buffer)* |
 | `performance.cache_max_entries` | `256` | `16..4096` LRU cache entries per bucket |
 | `performance.cache_ttl_seconds` | `3600` | `60..86400` s (search TTL is `max(60, TTL/4)`) |
 | `scripting.hook_native_audio` | `true` | Intercept vanilla `PlayAudioStreamForPlayer` / `Stop` |
@@ -302,7 +302,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
       {
           "worker_threads": 4,
           "max_concurrent_transcoders": 32,
-          "max_prefetch_mb": 16,
+          "max_prefetch_mb": 8,
           "cache_max_entries": 256,
           "cache_ttl_seconds": 3600
       },
@@ -371,7 +371,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
           {
               "worker_threads": 4,
               "max_concurrent_transcoders": 32,
-              "max_prefetch_mb": 16,
+              "max_prefetch_mb": 8,
               "cache_max_entries": 256,
               "cache_ttl_seconds": 3600
           },
@@ -445,7 +445,7 @@ When `logging.debug` is `true`, **SampAudioStream** emits detailed timing, subpr
 * **Why does `"Audio stream: http://..."` appear in player chat, and how can it be hidden?**
   That message is printed by the **GTA:SA SA-MP/open.mp game client itself** whenever a player receives `PlayAudioStreamForPlayer`. Players can toggle it on or off anytime by typing **`/audiomsg`** in their in-game chat (or disable it in SA-MP settings); there is no server-side packet to hide it while still playing audio.
 * **How much RAM and CPU does it consume?**
-  Each active transcoded stream or channel uses one transcoder slot (within `max_concurrent_transcoders`), one ~30 s circular MP3 output ring buffer (`~480 KB` at `128 kbps`, minimum `256 KB`), and—for finite HTTP files—an input pull buffer bounded by **`performance.max_prefetch_mb`** (`16 MB` default, upper bound `max_prefetch_mb * active_finite_transcoders`). Buffers are freed immediately when playback ends, stops, or the owner disconnects.
+  Each active transcoded stream or channel uses one transcoder slot (within `max_concurrent_transcoders`), one ~30 s circular MP3 output ring buffer (`~480 KB` at `128 kbps`, minimum `256 KB`), and—for finite HTTP files—an input pull buffer bounded by **`performance.max_prefetch_mb`** (`8 MB` default, upper bound `max_prefetch_mb * active_finite_transcoders`). Local music library files use a fixed input buffer of at most `1 MB` instead. Buffers are freed immediately when playback ends, stops, or the owner disconnects.
 * **Can I keep using `PlayAudioStreamForPlayer` without changing my gamemode?**
   Yes. Including `<SampAudioStream>` automatically hooks `PlayAudioStreamForPlayer` and `StopAudioStreamForPlayer`. Define `#define SA_DISABLE_NATIVE_HOOKS` before `#include <SampAudioStream>` if you prefer keeping vanilla `PlayAudioStreamForPlayer` untouched and calling `SA_*` natives explicitly.
 * **How do I update SampAudioStream?**

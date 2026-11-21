@@ -23,7 +23,7 @@ struct PluginConfig {
     std::uint32_t mp3_bitrate_kbps{128};
     std::uint32_t mp3_sample_rate{48000};
     std::uint32_t transcoder_burst_ms{6000};
-    std::uint32_t max_prefetch_mb{16};
+    std::uint32_t max_prefetch_mb{8};
     std::uint32_t worker_threads{4};
     std::uint32_t max_concurrent_transcoders{32};
     std::uint32_t cache_max_entries{256};

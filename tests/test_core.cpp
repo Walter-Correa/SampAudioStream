@@ -4424,10 +4424,11 @@ void TestRound27Fase3DnsVsPolicyBlock() {
 
 void TestRound27Fase4MaxPrefetchMb() {
     PluginConfig cfg;
-    TEST_CHECK(cfg.max_prefetch_mb == 16);
+    TEST_CHECK(cfg.max_prefetch_mb == 8);
+    TEST_CHECK(TranscoderConfig{}.max_prefetch_mb == 8);
     cfg.max_prefetch_mb = 999;
     ConfigManager::Sanitize(cfg);
-    TEST_CHECK(cfg.max_prefetch_mb == 16);
+    TEST_CHECK(cfg.max_prefetch_mb == 8);
 
     // Serve ~1.2 MB finite MP3 payload (>512 KB) and pause consumption right after startup
     std::vector<std::uint8_t> mp3_frame(417, 0);
@@ -13302,7 +13303,7 @@ void TestRound52PartBUnifiedConfig() {
         "    {\n"
         "        \"worker_threads\": 4,\n"
         "        \"max_concurrent_transcoders\": 32,\n"
-        "        \"max_prefetch_mb\": 16,\n"
+        "        \"max_prefetch_mb\": 8,\n"
         "        \"cache_max_entries\": 256,\n"
         "        \"cache_ttl_seconds\": 3600\n"
         "    },\n"
@@ -17242,6 +17243,44 @@ void TestRound71SoundFiles() {
     std::cout << "[PASS] TestRound71SoundFiles\n";
 }
 
+void TestRound74LocalFilePullBuffer() {
+    std::error_code fec;
+    const auto r74_dir = std::filesystem::temp_directory_path() / "sampaudiostream_test_r74";
+    std::filesystem::remove_all(r74_dir, fec);
+    std::filesystem::create_directories(r74_dir, fec);
+
+    // 40 s of 16 kHz mono PCM is about 1.28 MB, larger than the fixed 1 MB local pull buffer
+    const std::string big_wav = BuildTestWavBytes(16000, 40000);
+    TEST_CHECK(big_wav.size() > 1024u * 1024u);
+    const auto wav_path = r74_dir / "big.wav";
+    {
+        std::ofstream ofs(wav_path, std::ios::binary);
+        ofs.write(big_wav.data(), static_cast<std::streamsize>(big_wav.size()));
+    }
+
+    TEST_PHASE("local file larger than the pull buffer plays to the end");
+    TrackMetadata meta;
+    meta.local_file_path = PathToUtf8(wav_path);
+    meta.is_live = false;
+    TranscoderConfig tcfg;
+    tcfg.target_sample_rate = 48000;
+    tcfg.target_bitrate_kbps = 128;
+    tcfg.pace_realtime = false;
+    tcfg.max_prefetch_mb = 1;
+    auto buf = std::make_shared<AudioStreamBuffer>(256 * 1024);
+    std::atomic<bool> cancel{false}, pause{false};
+    std::atomic<float> vol{100.0f};
+    std::string err;
+    AudioTranscoder tr(meta, tcfg, buf);
+    TEST_CHECK(tr.Run(cancel, pause, vol, err));
+    TEST_CHECK(err.empty());
+    // 40 s at 128 kbps is about 640 KB of MP3; accept anything above 36 s worth
+    TEST_CHECK(buf->TotalWritten() >= 36u * 16000u);
+
+    std::filesystem::remove_all(r74_dir, fec);
+    std::cout << "[PASS] TestRound74LocalFilePullBuffer\n";
+}
+
 #define RUN_TEST(fn)                                                                          \
     do {                                                                                      \
         g_current_test.store(#fn, std::memory_order_release);                                 \
@@ -17362,6 +17401,7 @@ int main(int argc, char** argv) {
     RUN_TEST(TestRound69Features);
     RUN_TEST(TestRound70Features);
     RUN_TEST(TestRound71SoundFiles);
+    RUN_TEST(TestRound74LocalFilePullBuffer);
     g_tests_done.store(true, std::memory_order_release);
     if (watchdog_thread.joinable()) watchdog_thread.join();
     std::cout << "All core unit tests passed!\n";

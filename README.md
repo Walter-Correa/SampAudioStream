@@ -157,6 +157,9 @@ ctest --test-dir build -R core_tests --output-on-failure
 - **Large Channel Queues**:
   - New `SA_FindAudioStreamChannelQueue(channelid, item[], start_index)` finds a URL in a channel queue inside the plugin and returns its index (or `-1`), so scripts can check or highlight queued tracks with one call instead of reading every entry.
   - Playlist imports allow more time for big lists (`60s` up to 200 items plus `10s` per further 100 items, `140s` at the 1000-item maximum).
+- **Lower Prefetch Memory**:
+  - `performance.max_prefetch_mb` now defaults to `8` (was `16`): a typical YouTube track still downloads whole, while the worst case for many simultaneous large files is halved.
+  - Local music library files no longer load up to `max_prefetch_mb` into RAM; they are read from disk through a fixed buffer of at most `1 MB`.
 - **Demo Filterscript Updated to 2.2.0/2.3.0 Features (`FS_SampAudioStream_Demo.pwn`)**:
   - Added a Music Library menu (refresh, folders, tracks, private/global/channel playback and whole-folder import via `library://`), channel playlist mode (toggle, highlighted current item, play any item), a sound effect player, an on-screen stream text toggle (`stream_text`), a persistent/temporary step in channel creation and the `SA_SOURCE_SOUND` label.
   - Fixed the dialog range check that ignored the live radio text, global live text and queue item dialogs.

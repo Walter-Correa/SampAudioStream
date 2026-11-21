@@ -65,7 +65,8 @@ SampAudioStream **does not write downloaded MP3 music files to disk**. Everythin
    * Eviction policy: **LRU** capped at `performance.cache_max_entries` (default `256` entries per bucket).
    * Repeated requests for the same URL or search query within TTL return without spawning `yt-dlp`.
 2. **Pull Prefetch Buffer (`performance.max_prefetch_mb`) & MP3 Output Ring Buffer (`AudioStreamBuffer`)**:
-   * Finite HTTP downloads expand their input pull buffer up to `min(Content-Length, max_prefetch_mb * 1 MB)` (`16 MB` default, clamped `1..64 MB`), allowing upstream CDNs to finish fast downloads without TCP idle drops while bound-capping total prefetch RAM to **`max_prefetch_mb * active_finite_transcoders`**.
+   * Finite HTTP downloads expand their input pull buffer up to `min(Content-Length, max_prefetch_mb * 1 MB)` (`8 MB` default, clamped `1..64 MB`), allowing upstream CDNs to finish fast downloads without TCP idle drops while bound-capping total prefetch RAM to **`max_prefetch_mb * active_finite_transcoders`**. A typical YouTube track (`3..5 MB`) still fits whole; larger files keep downloading as they play.
+   * Local files (`library://` music library tracks) do not use `max_prefetch_mb`: they are read from disk through a fixed pull buffer of at most `1 MB`, so a library track never holds the whole file in RAM.
    * Each active transcoded stream or channel also allocates a circular output MP3 ring buffer sized for **~30 seconds** (`~480 KB` at `128 kbps`, minimum `256 KB`) in RAM (`CalculateRingBufferBytes`).
    * A zero-decode watchdog aborts hung or non-audio streams cleanly if zero PCM frames are decoded within `20 seconds`.
    * Stopping a stream, disconnecting (`OnPlayerDisconnect`), or restarting the gamemode (GMX `Reset`) cancels and frees buffers immediately.

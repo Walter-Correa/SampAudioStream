@@ -2760,10 +2760,11 @@ bool AudioTranscoder::Run(
                 const std::streamoff total_bytes = ifs.tellg();
                 ifs.seekg(0, std::ios::beg);
                 if (total_bytes > 0) {
-                    const std::uint64_t max_pf = static_cast<std::uint64_t>(
-                        std::clamp<std::uint32_t>(cfg.max_prefetch_mb, 1, 64)) * 1024ULL * 1024ULL;
+                    // Local disk reads cannot stall like a CDN connection, so a small fixed buffer is
+                    // enough and the file is never held in RAM up to max_prefetch_mb.
+                    constexpr std::uint64_t kLocalFilePullBufferBytes = 1024ULL * 1024ULL;
                     pull_stream.EnsureCapacity(static_cast<std::size_t>(
-                        std::min<std::uint64_t>(static_cast<std::uint64_t>(total_bytes), max_pf)));
+                        std::min<std::uint64_t>(static_cast<std::uint64_t>(total_bytes), kLocalFilePullBufferBytes)));
                 }
                 std::array<std::uint8_t, 32768> fbuf{};
                 while (!effective_cancel.load() && !pull_stream.IsClosed()) {
