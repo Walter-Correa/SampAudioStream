@@ -101,16 +101,11 @@ bool EqualsAsciiIgnoreCase(const std::string& a, const std::string& b) {
     return a.size() == b.size() && ContainsAsciiIgnoreCase(a, b);
 }
 
-// Name sent as icy-name for personal/global sessions: the SA-MP client only shows on-screen text when
-// icy-name is present, so sessions use the station name when known, otherwise the track display title.
+// Name sent as icy-name for personal/global sessions. The SA-MP client only shows on-screen text as
+// "<StreamTitle> - <icy-name>" when both are present, so sessions send the station name when known,
+// otherwise the source label (platform such as "YouTube", or the configured audio file label).
 std::string SessionIcyName(const StreamEndpointInfo& ep) {
-    if (!ep.station_name.empty()) {
-        return ep.station_name;
-    }
-    if (!ep.artist.empty() && !ep.title.empty()) {
-        return ContainsAsciiIgnoreCase(ep.title, ep.artist) ? ep.title : (ep.artist + " - " + ep.title);
-    }
-    return !ep.title.empty() ? ep.title : ep.artist;
+    return !ep.station_name.empty() ? ep.station_name : ep.source_label;
 }
 
 bool ExtractResumeOffset(const std::string& target, std::uint64_t& out_offset) {
@@ -420,13 +415,7 @@ private:
 
     void BuildIcyMetaFrame(const StreamEndpointInfo& ep) {
         std::string raw;
-        if (!ep.is_channel) {
-            // Sessions: the title/station already travels in icy-name, so StreamTitle only carries live radio text.
-            raw = ep.live_title;
-            if (!raw.empty() && !sent_icy_name_.empty() && EqualsAsciiIgnoreCase(raw, sent_icy_name_)) {
-                raw.clear();
-            }
-        } else if (!ep.live_title.empty()) {
+        if (!ep.live_title.empty()) {
             raw = ep.live_title;
         } else if (!ep.artist.empty() && !ep.title.empty()) {
             std::string lt = ep.title;
@@ -438,6 +427,11 @@ private:
             raw = ep.title;
         } else {
             raw = ep.artist;
+        }
+
+        if (!ep.is_channel && !raw.empty() && !sent_icy_name_.empty() && EqualsAsciiIgnoreCase(raw, sent_icy_name_)) {
+            // A radio session without live text yet would read "<station> - <station>": send no title until it arrives.
+            raw.clear();
         }
 
         std::string cp = ConvertTextForPawn(raw, "cp1252");

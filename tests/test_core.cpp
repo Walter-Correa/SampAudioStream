@@ -13275,7 +13275,8 @@ void TestRound52PartBUnifiedConfig() {
         "        \"player_priority_order\": \"personal,channel,global\",\n"
         "        \"normalize_volume\": false,\n"
         "        \"live_title_poll_seconds\": 30,\n"
-        "        \"music_dir\": \"scriptfiles/SampAudioStream/music\"\n"
+        "        \"music_dir\": \"scriptfiles/SampAudioStream/music\",\n"
+        "        \"audio_file_label\": \"Audio File\"\n"
         "    },\n"
         "    \"channels\":\n"
         "    {\n"
@@ -13474,7 +13475,7 @@ void TestRound52PartBUnifiedConfig() {
         ConfigManager::ProvideOmpDefaults(writer);
 
         const std::vector<ConfigSchemaFieldInfo> schema = ConfigManager::GetUnifiedSchemaFields();
-        TEST_CHECK(schema.size() == 39);
+        TEST_CHECK(schema.size() == 40);
         TEST_CHECK(registered_omp_keys.size() == schema.size());
         for (std::size_t i = 0; i < schema.size(); ++i) {
             TEST_CHECK(registered_omp_keys[i] == ("sampaudiostream." + schema[i].full_key));
@@ -16205,7 +16206,7 @@ void TestRound69Features() {
         }));
         const std::string text_hdrs = fetch_endpoint_headers_lower(engine.GetHttpPort(), text_ep_url);
         TEST_CHECK(text_hdrs.find("200 ok") != std::string::npos);
-        TEST_CHECK(text_hdrs.find("icy-name: fx loud.mp3") != std::string::npos);
+        TEST_CHECK(text_hdrs.find("icy-name: audio file") != std::string::npos);
         TEST_CHECK(text_hdrs.find("icy-metaint:") != std::string::npos);
 
         engine.DestroyChannel(ch);
@@ -16369,16 +16370,23 @@ void TestRound70Features() {
 
         StreamEndpointInfo yt = make_ep("SessYt0001", false);
         yt.title = "Akon - Don't Matter (Official Music Video)";
+        yt.source_label = "YouTube";
         srv.RegisterEndpoint(yt);
         StreamEndpointInfo radio = make_ep("SessRadio1", false);
         radio.title = "Radio Teste";
         radio.station_name = "Radio Teste";
         radio.live_title = "Song - Artist";
+        radio.source_label = "Audio File";
         srv.RegisterEndpoint(radio);
         StreamEndpointInfo same = make_ep("SessSame01", false);
         same.title = "Radio Teste";
-        same.live_title = "radio teste";
+        same.station_name = "Radio Teste";
+        same.source_label = "Audio File";
         srv.RegisterEndpoint(same);
+        StreamEndpointInfo file = make_ep("SessFile01", false);
+        file.title = "musicas.mp3";
+        file.source_label = "Arquivo de audio";
+        srv.RegisterEndpoint(file);
         StreamEndpointInfo chan = make_ep("ChanBox001", true);
         chan.title = "musicas.mp3";
         chan.station_name = "Caixa de som de Fulano";
@@ -16386,8 +16394,12 @@ void TestRound70Features() {
 
         std::string hdrs, meta;
         TEST_CHECK(read_icy(srv.BoundPort(), "/s/SessYt0001", hdrs, meta));
-        TEST_CHECK(hdrs.find("icy-name: Akon - Don't Matter (Official Music Video)") != std::string::npos);
-        TEST_CHECK(meta.empty());
+        TEST_CHECK(hdrs.find("icy-name: YouTube") != std::string::npos);
+        TEST_CHECK(meta == "StreamTitle='Akon - Don't Matter (Official Music Video)';");
+
+        TEST_CHECK(read_icy(srv.BoundPort(), "/s/SessFile01", hdrs, meta));
+        TEST_CHECK(hdrs.find("icy-name: Arquivo de audio") != std::string::npos);
+        TEST_CHECK(meta == "StreamTitle='musicas.mp3';");
 
         TEST_CHECK(read_icy(srv.BoundPort(), "/s/SessRadio1", hdrs, meta));
         TEST_CHECK(hdrs.find("icy-name: Radio Teste") != std::string::npos);

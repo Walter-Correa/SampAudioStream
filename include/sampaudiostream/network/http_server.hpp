@@ -26,6 +26,8 @@ struct StreamEndpointInfo {
     std::string live_title;
     bool send_icy_headers{true};
     bool is_channel{false};
+    // Session icy-name when no station name is known (platform such as "YouTube", or the audio file label).
+    std::string source_label;
 };
 
 struct FileLimitPlan {

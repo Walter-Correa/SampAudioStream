@@ -224,6 +224,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
 | `audio.normalize_volume` | `false` | Optional track loudness equalization (`-16 dBFS` RMS target with `[-12, +9] dB` AGC gain and peak limiter at `0.98`). Applies only to server-transcoded/proxied streams (global, channel, live, and transcoded personal streams); direct passthrough streams are not normalized. Minimal CPU cost (one multiply and sum-of-squares per sample) |
 | `audio.live_title_poll_seconds` | `30` | `0` (disabled) or `10..300` s interval for polling Shoutcast/Icecast ICY `StreamTitle` updates on live radios. Each poll opens a short HTTP connection up to 64 KB (so the radio briefly sees one extra listener at that interval) |
 | `audio.music_dir` | `"scriptfiles/SampAudioStream/music"` | Local server folder for depth-1 music folders and loose tracks playable via `library://` references *(created on startup if missing)* |
+| `audio.audio_file_label` | `"Audio File"` | Text shown after the file name in the client on-screen stream text for direct/local audio files played as personal or global sessions (e.g. `musicas.mp3 - Audio File`); extracted tracks show their platform (e.g. `YouTube`) and live radios their station name |
 | `channels.max_channels` | `100` | `1..1000` max simultaneous synchronized channels |
 | `channels.max_queue_per_channel` | `50` | `1..1000` max queued tracks per synchronized channel |
 | `channels.channel_restore_grace_seconds` | `300` | `0..3600` s grace window after boot for restored `OnDisconnect` channels (`0` = remove on boot) |
@@ -274,7 +275,8 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
           "player_priority_order": "personal,channel,global",
           "normalize_volume": false,
           "live_title_poll_seconds": 30,
-          "music_dir": "scriptfiles/SampAudioStream/music"
+          "music_dir": "scriptfiles/SampAudioStream/music",
+          "audio_file_label": "Audio File"
       },
       "channels":
       {
@@ -341,7 +343,8 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
               "player_priority_order": "personal,channel,global",
               "normalize_volume": false,
               "live_title_poll_seconds": 30,
-              "music_dir": "scriptfiles/SampAudioStream/music"
+              "music_dir": "scriptfiles/SampAudioStream/music",
+              "audio_file_label": "Audio File"
           },
           "channels":
           {

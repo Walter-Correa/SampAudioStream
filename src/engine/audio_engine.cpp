@@ -298,6 +298,30 @@ std::string CleanLiveTitleUtf8(const std::string& utf8) {
     return SanitizeControlAndTrimUtf8(utf8, 256);
 }
 
+// Second part of the client on-screen text for sessions: the platform of extracted tracks, or the
+// configured audio file label for direct/library files.
+std::string SessionSourceLabel(const TrackMetadata& meta, const std::string& audio_file_label) {
+    std::string key = meta.extractor_name;
+    std::string lower = key;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lower.empty() || lower == "direct" || lower == "library" || lower == "generic") {
+        return audio_file_label;
+    }
+    static const std::pair<const char*, const char*> kPlatforms[] = {
+        {"youtube", "YouTube"}, {"soundcloud", "SoundCloud"}, {"twitch", "Twitch"}, {"vimeo", "Vimeo"},
+        {"tiktok", "TikTok"}, {"kick", "Kick"}, {"bandcamp", "Bandcamp"}, {"mixcloud", "Mixcloud"},
+        {"dailymotion", "Dailymotion"}, {"facebook", "Facebook"}, {"instagram", "Instagram"},
+        {"twitter", "X"}, {"spotify", "Spotify"}, {"deezer", "Deezer"}, {"audiomack", "Audiomack"},
+    };
+    for (const auto& [needle, label] : kPlatforms) {
+        if (lower.find(needle) != std::string::npos) {
+            return label;
+        }
+    }
+    const auto colon = key.find(':');
+    return (colon == std::string::npos) ? key : key.substr(0, colon);
+}
+
 bool IsGenericRadioTrackTitle(const TrackMetadata& meta) {
     return meta.title_is_placeholder ||
            meta.title.empty() ||
@@ -3361,6 +3385,7 @@ void AudioEngine::CompleteResolvedStreamStart(
             ep.title = local_meta.title;
             ep.artist = local_meta.artist;
             ep.station_name = session->station_name;
+            ep.source_label = SessionSourceLabel(local_meta, config_.audio_file_label);
             ep.bitrate_kbps = config_.mp3_bitrate_kbps;
             ep.is_live_channel = session->is_global;
             ep.is_channel = false;
