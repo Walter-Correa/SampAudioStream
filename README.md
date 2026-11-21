@@ -97,7 +97,7 @@ CMD:zone(playerid, params[])
 }
 ```
 
-See [`FS_SampAudioStream_Demo.pwn`](FS_SampAudioStream_Demo.pwn) for a complete plug-and-play English showcase filterscript (`/audiomenu` / `/sa`) demonstrating all 73 `SA_*` natives, hooked vanilla functions, player mute/source tracking, global pause, stream listing/stats, playlist import, seeking, queue item moving, listener skip voting, previous-track history, live radio text inspection/overrides, boombox/vehicle attachment, volume/position/distance controls, and synchronized radio channels.
+See [`FS_SampAudioStream_Demo.pwn`](FS_SampAudioStream_Demo.pwn) for a complete plug-and-play English showcase filterscript (`/audiomenu` / `/sa`) demonstrating all 82 `SA_*` natives, hooked vanilla functions, player mute/source tracking, global pause, stream listing/stats, playlist import, seeking, queue item moving, listener skip voting, previous-track history, live radio text inspection/overrides, boombox/vehicle attachment, volume/position/distance controls, local music library browsing, channel playlist mode, sound effects, on-screen stream text toggle, persistent or temporary channels, and synchronized radio channels.
 
 ---
 
@@ -152,6 +152,9 @@ ctest --test-dir build -R core_tests --output-on-failure
 - **Sound Effects Folder (`audio.sound_dir`) & `SA_PlayAudioStreamSoundForPlayer`**:
   - New `audio.sound_dir` folder (`"scriptfiles/SampAudioStream/sound"`, created on startup) for short sound effects such as alerts, notifications, jingles and gameplay sounds, kept apart from the music library (a startup warning is logged when it overlaps `audio.music_dir`).
   - New `SA_PlayAudioStreamSoundForPlayer(playerid, sound[], posX, posY, posZ, distance, usepos)` serves `.mp3`, `.ogg` and `.wav` files up to 5 MB as-is from memory through the new `/f/<code>` route (no transcoder, immediate start), plays them above every other source (`SA_SOURCE_SOUND`) and then resumes what the player was hearing: channels and radios continue live and interrupted transcoded personal streams resume where they were cut.
+- **Demo Filterscript Updated to 2.2.0/2.3.0 Features (`FS_SampAudioStream_Demo.pwn`)**:
+  - Added a Music Library menu (refresh, folders, tracks, private/global/channel playback and whole-folder import via `library://`), channel playlist mode (toggle, highlighted current item, play any item), a sound effect player, an on-screen stream text toggle (`stream_text`), a persistent/temporary step in channel creation and the `SA_SOURCE_SOUND` label.
+  - Fixed the dialog range check that ignored the live radio text, global live text and queue item dialogs.
 
 ### 2.2.0 — 20/11/2026
 - **Cleaner On-Screen Text & Preserved Apostrophes**:

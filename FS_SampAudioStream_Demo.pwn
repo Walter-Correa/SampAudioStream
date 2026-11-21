@@ -9,12 +9,19 @@
  * Commands:
  *   /audiomenu  or  /sa   - Open the interactive SampAudioStream Control Center
  *
- * Demonstrates ALL 73 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
+ * Demonstrates ALL 82 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
  * and ALL 19 plugin callbacks cleanly from in-game menus (no shadow arrays).
+ *
+ * Server Folders (plugin config):
+ *  - audio.music_dir (scriptfiles/SampAudioStream/music): local music library browsed in
+ *    "Music Library" and played through library:// references.
+ *  - audio.sound_dir (scriptfiles/SampAudioStream/sound): short sound effects (.mp3/.ogg/.wav up to 5 MB)
+ *    played from "Personal Playback Controls > Play Sound Effect".
  *
  * Persistence & Permissions:
  *  - Reuses the persistent server radio channel ("SampAudioStream FM") across restarts/reloads;
- *    channels created in Manual mode also stay saved on disk until explicitly destroyed.
+ *    channels created as "Persistent" (persistent = true) stay saved on disk until explicitly destroyed,
+ *    while "Temporary" channels live only in memory and are destroyed on GMX/restart.
  *  - Never destroys channels in OnFilterScriptExit, keeping channel persistence intact.
  *  - Players cannot control another player's stream or channel; server-owned streams and
  *    channels ("Server" creator) are free for all. Channel ownership compares player name
@@ -36,6 +43,8 @@
 #define DEMO_MAX_QUEUE_VIEW_ITEMS  (10)
 #define DEMO_MAX_HIST_CHANNELS     (16)
 #define DEMO_HIST_DEPTH            (5)
+#define DEMO_MAX_LIBRARY_FOLDERS   (40)
+#define DEMO_MAX_LIBRARY_TRACKS    (40)
 #define DEMO_SERVER_RADIO_NAME     "SampAudioStream FM"
 
 enum
@@ -86,7 +95,14 @@ enum
     DLG_SA_CH_LIVE_VIEW,
     DLG_SA_CH_LIVE_SET,
     DLG_SA_GLOBAL_LIVE_SET_ID,
-    DLG_SA_CH_QUEUE_ITEM
+    DLG_SA_CH_QUEUE_ITEM,
+    DLG_SA_CH_CREATE_PERSIST,
+    DLG_SA_LIB_FOLDERS,
+    DLG_SA_LIB_FOLDER,
+    DLG_SA_LIB_TRACK,
+    DLG_SA_SOUND_INPUT,
+    DLG_SA_SOUND_MODE,
+    DLG_SA_LAST
 }
 
 // -----------------------------------------------------------------------------
@@ -105,6 +121,7 @@ static gLastGlobalSid[MAX_PLAYERS];
 static gSeekTargetSid[MAX_PLAYERS];
 static bool:gOptNotify[MAX_PLAYERS];
 static bool:gOptProcessFiles[MAX_PLAYERS];
+static bool:gOptStreamText[MAX_PLAYERS];
 static gSelChannelId[MAX_PLAYERS];
 static bool:gSelChanAutoListen[MAX_PLAYERS];
 
@@ -136,6 +153,13 @@ static gTrackedGlobalOwner[DEMO_MAX_TRACKED_GLOBALS];
 // Temporary channel creation wizard state per player
 static gNewChName[MAX_PLAYERS][48];
 static gNewChPass[MAX_PLAYERS][32];
+static E_SA_CHANNEL_DESTROY_MODE:gNewChMode[MAX_PLAYERS];
+static gNewChTimeout[MAX_PLAYERS];
+
+// Music library browser & sound effect selection per player
+static gLibFolder[MAX_PLAYERS];
+static gLibTrack[MAX_PLAYERS];
+static gSoundName[MAX_PLAYERS][64];
 
 // Official server channel created on startup
 static gServerRadioId = INVALID_AUDIO_CHANNEL_ID;
@@ -221,6 +245,7 @@ static stock GetSourceTypeLabel(E_SA_AUDIO_STREAM_SOURCE:stype, out[], len = siz
         case SA_SOURCE_CHANNEL:       format(out, len, "Channel");
         case SA_SOURCE_GLOBAL:        format(out, len, "Global");
         case SA_SOURCE_CHANNEL_RANGE: format(out, len, "Channel 3D");
+        case SA_SOURCE_SOUND:         format(out, len, "Sound");
         default:                      format(out, len, "None");
     }
 }
@@ -483,6 +508,7 @@ static stock ResetPlayerDemoState(playerid)
     gSeekTargetSid[playerid] = INVALID_AUDIO_STREAM_ID;
     gOptNotify[playerid] = true;
     gOptProcessFiles[playerid] = false;
+    gOptStreamText[playerid] = true;
     gSelChannelId[playerid] = gServerRadioId;
     gChListCount[playerid] = 0;
     gQueueViewCount[playerid] = 0;
@@ -492,6 +518,11 @@ static stock ResetPlayerDemoState(playerid)
     gVoteSerial[playerid] = 0;
     gNewChName[playerid][0] = EOS;
     gNewChPass[playerid][0] = EOS;
+    gNewChMode[playerid] = SA_CHANNEL_DESTROY_MANUAL;
+    gNewChTimeout[playerid] = 0;
+    gLibFolder[playerid] = -1;
+    gLibTrack[playerid] = -1;
+    gSoundName[playerid][0] = EOS;
 }
 
 // -----------------------------------------------------------------------------
@@ -514,17 +545,21 @@ static stock ShowSaMainMenu(playerid)
 {00CCFF}2. Global & 3D Spatial Streams {AAAAAA}(Last Created: %d)\n\
 {FFCC00}3. Search Music by Name {AAAAAA}(Async YouTube Search)\n\
 {FF88FF}4. Synchronized Radio Channels {AAAAAA}(Channels: %d | Joined: %d)\n\
-{FFFFFF}5. Vanilla Hook Demo {AAAAAA}(Hooked PlayAudioStreamForPlayer)\n\
-{FFFFFF}6. Toggle: OnAudioStreamProcessing Callback [%s{FFFFFF}]\n\
-{FFFFFF}7. Toggle: Process Direct Audio Files [%s{FFFFFF}]\n\
-{FFFFFF}8. Toggle: Mute Streams (SA_SetPlayerAudioStreamMuted) [%s{FFFFFF}]\n\
-{CCCCCC}9. Plugin Diagnostics & Stats {AAAAAA}(Heard: %s #%d)",
+{00CCFF}5. Music Library {AAAAAA}(audio.music_dir | Folders: %d)\n\
+{FFFFFF}6. Vanilla Hook Demo {AAAAAA}(Hooked PlayAudioStreamForPlayer)\n\
+{FFFFFF}7. Toggle: OnAudioStreamProcessing Callback [%s{FFFFFF}]\n\
+{FFFFFF}8. Toggle: Process Direct Audio Files [%s{FFFFFF}]\n\
+{FFFFFF}9. Toggle: On-Screen Stream Text (stream_text) [%s{FFFFFF}]\n\
+{FFFFFF}10. Toggle: Mute Streams (SA_SetPlayerAudioStreamMuted) [%s{FFFFFF}]\n\
+{CCCCCC}11. Plugin Diagnostics & Stats {AAAAAA}(Heard: %s #%d)",
         sid,
         gLastGlobalSid[playerid],
         ch_count,
         cid,
+        SA_GetAudioLibraryFolderCount(),
         gOptNotify[playerid] ? "{00FF88}ON" : "{FF5555}OFF",
         gOptProcessFiles[playerid] ? "{00FF88}TRUE" : "{FFAA00}FALSE",
+        gOptStreamText[playerid] ? "{00FF88}SHOWN" : "{FFAA00}HIDDEN",
         muted ? "{FF5555}MUTED" : "{00FF88}UNMUTED",
         src_lbl,
         src_id
@@ -551,7 +586,8 @@ Set Personal Volume 0-200%% {AAAAAA}(SA_SetPlayerAudioStreamVolume)\n\
 Set Personal Range Distance {AAAAAA}(SA_SetPlayerAudioStreamDistance)\n\
 Move Personal Stream Here (3D) {AAAAAA}(SA_SetPlayerAudioStreamPos)\n\
 Stop Personal Stream {AAAAAA}(SA_StopAudioStreamForPlayer)\n\
-Inspect Personal Stream Info {AAAAAA}(SA_GetAudioStreamInfo) [ID: %d]",
+Inspect Personal Stream Info {AAAAAA}(SA_GetAudioStreamInfo) [ID: %d]\n\
+{00CCFF}Play Sound Effect {AAAAAA}(SA_PlayAudioStreamSoundForPlayer | audio.sound_dir)",
         is_paused ? "Resume" : "Pause",
         sid
     );
@@ -684,6 +720,7 @@ static stock ShowChannelManageMenu(playerid, channelid)
 
     new hslot = FindHistSlot(channelid);
     new hist_cnt = (hslot != -1) ? gHistCount[hslot] : 0;
+    new bool:playlist_on = SA_IsAudioStreamChannelPlaylist(channelid);
 
     new title[96], body[2048];
     format(title, sizeof(title), "{FF88FF}Channel #%d: %s", channelid, cname);
@@ -708,6 +745,7 @@ Radio Now Playing {AAAAAA}(SA_GetAudioStreamChannelLiveTitle)\n\
 Set Radio Text {AAAAAA}(SA_SetAudioStreamChannelLiveTitle)\n\
 Vote to Skip Track {AAAAAA}(listeners vote)\n\
 Previous Track {AAAAAA}(history: %d)\n\
+Toggle Playlist Mode {AAAAAA}(SA_SetAudioStreamChannelPlaylist: %s | Now: #%d)\n\
 {CCCCCC}--- %s (%ds) | Listeners: %d | Track: %s%s%s ---",
         joined ? "Leave" : "Join",
         joined ? "SA_LeaveAudioStreamChannel" : "SA_JoinAudioStreamChannel",
@@ -723,6 +761,8 @@ Previous Track {AAAAAA}(history: %d)\n\
         ccreator,
         cre_online ? "Online" : "Offline",
         hist_cnt,
+        playlist_on ? "ON" : "OFF",
+        SA_GetAudioStreamChannelQueuePos(channelid),
         st_lbl,
         (elapsed < 0) ? 0 : elapsed,
         listeners,
@@ -810,6 +850,8 @@ static stock ShowChannelQueueDialog(playerid, channelid)
         return;
     }
 
+    new bool:playlist_on = SA_IsAudioStreamChannelPlaylist(channelid);
+    new playlist_pos = playlist_on ? SA_GetAudioStreamChannelQueuePos(channelid) : -1;
     new body[2048], item[132], line[160];
     format(body, sizeof(body),
         "{00FF88}+ Insert URL at Index 0 (Play Next) {AAAAAA}(SA_InsertAudioStreamChannelQueue)\n\
@@ -824,7 +866,14 @@ static stock ShowChannelQueueDialog(playerid, channelid)
     {
         if (GetChannelQueueDisplayText(channelid, i, item, sizeof(item)))
         {
-            format(line, sizeof(line), "{FFCC00}#%d: {FFFFFF}%s\n", i, item);
+            if (i == playlist_pos)
+            {
+                format(line, sizeof(line), "{EEDD82}> #%d: %s\n", i, item);
+            }
+            else
+            {
+                format(line, sizeof(line), "{FFCC00}#%d: {FFFFFF}%s\n", i, item);
+            }
             if (strlen(body) + strlen(line) >= sizeof(body)) break;
             strcat(body, line);
             gQueueViewHash[playerid][gQueueViewCount[playerid]] = HashStringDjb2(item);
@@ -833,7 +882,8 @@ static stock ShowChannelQueueDialog(playerid, channelid)
     }
 
     ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_VIEW, DIALOG_STYLE_LIST,
-        "{FF88FF}Channel Queue Actions", body, "Run", "Back");
+        playlist_on ? "{FF88FF}Channel Playlist Actions (current item highlighted)" : "{FF88FF}Channel Queue Actions",
+        body, "Run", "Back");
 }
 
 static stock ShowChannelQueueItemDialog(playerid, channelid, idx)
@@ -848,7 +898,7 @@ static stock ShowChannelQueueItemDialog(playerid, channelid, idx)
         format(title, sizeof(title), "{00CCFF}Queue Item #%d Actions", idx);
     }
     ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_ITEM, DIALOG_STYLE_LIST, title,
-        "Move to Top\nMove Up\nMove Down\n{FF8888}Remove", "Apply", "Back");
+        "Move to Top\nMove Up\nMove Down\n{FF8888}Remove\n{00FF88}Play This Item Now {AAAAAA}(SA_PlayAudioStreamChannelQueue)", "Apply", "Back");
 }
 
 static stock HandleChannelVoteSkip(playerid, cid)
@@ -1045,6 +1095,137 @@ static stock ShowChannelListenersDialog(playerid, channelid)
         "{FF88FF}Channel Subscribers", body, "Back", "");
 }
 
+static stock ShowChannelPersistDialog(playerid)
+{
+    ShowPlayerDialog(playerid, DLG_SA_CH_CREATE_PERSIST, DIALOG_STYLE_LIST,
+        "{00FF88}Create Channel (4/4) - Persistence",
+        "Persistent {AAAAAA}(persistent = true: saved to disk and restored after restarts)\n\
+Temporary {AAAAAA}(persistent = false: memory only, destroyed on GMX / restart)",
+        "Create", "Back");
+}
+
+static stock bool:GetLibraryFolderRef(folder_index, out[], len = sizeof(out))
+{
+    new folder[64], tracks;
+    if (!SA_GetAudioLibraryFolder(folder_index, folder, sizeof(folder), tracks))
+    {
+        return false;
+    }
+    if (folder[0] == EOS)
+    {
+        format(out, len, "library://");
+    }
+    else
+    {
+        format(out, len, "library://%s", folder);
+    }
+    return true;
+}
+
+static stock bool:GetLibraryTrackRef(folder_index, track_index, out[], len, name[], name_len)
+{
+    new folder[64], tracks, track[128];
+    if (!SA_GetAudioLibraryFolder(folder_index, folder, sizeof(folder), tracks) ||
+        !SA_GetAudioLibraryTrack(folder_index, track_index, track, sizeof(track)))
+    {
+        return false;
+    }
+    if (folder[0] == EOS)
+    {
+        format(out, len, "library:///%s", track);
+    }
+    else
+    {
+        format(out, len, "library://%s/%s", folder, track);
+    }
+    format(name, name_len, "%s", track);
+    return true;
+}
+
+static stock ShowLibraryFolderList(playerid)
+{
+    new count = SA_GetAudioLibraryFolderCount();
+    new body[2048], line[112], name[64], tracks;
+    format(body, sizeof(body), "{00FF88}Refresh Library {AAAAAA}(SA_RefreshAudioLibrary | %d folders cached)\n", count);
+    if (count == 0)
+    {
+        strcat(body, "{666666}(Empty: add audio files to audio.music_dir, then Refresh)\n");
+    }
+    for (new i = 0; i < count && i < DEMO_MAX_LIBRARY_FOLDERS; i++)
+    {
+        if (!SA_GetAudioLibraryFolder(i, name, sizeof(name), tracks)) break;
+        SanitizeDialogField(name);
+        format(line, sizeof(line), "{FFFFFF}%s {AAAAAA}(%d tracks)\n", (name[0] == EOS) ? "(root files)" : name, tracks);
+        if (strlen(body) + strlen(line) >= sizeof(body)) break;
+        strcat(body, line);
+    }
+    ShowPlayerDialog(playerid, DLG_SA_LIB_FOLDERS, DIALOG_STYLE_LIST,
+        "{00CCFF}Music Library (SA_GetAudioLibraryFolder)", body, "Open", "Back");
+}
+
+static stock ShowLibraryFolderMenu(playerid)
+{
+    new fidx = gLibFolder[playerid];
+    new name[64], tracks;
+    if (fidx < 0 || !SA_GetAudioLibraryFolder(fidx, name, sizeof(name), tracks))
+    {
+        SendClientMessage(playerid, 0xFFAA00FF, "[Library] The library changed; pick the folder again.");
+        ShowLibraryFolderList(playerid);
+        return;
+    }
+    SanitizeDialogField(name);
+
+    new body[3072], line[160], track[128];
+    format(body, sizeof(body),
+        "{00CCFF}+ Import Whole Folder into Channel #%d {AAAAAA}(SA_QueueChannelAudioStreamPlaylist)\n",
+        gSelChannelId[playerid]);
+    for (new i = 0; i < tracks && i < DEMO_MAX_LIBRARY_TRACKS; i++)
+    {
+        if (!SA_GetAudioLibraryTrack(fidx, i, track, sizeof(track))) break;
+        SanitizeDialogField(track);
+        format(line, sizeof(line), "{FFFFFF}%s\n", track);
+        if (strlen(body) + strlen(line) >= sizeof(body)) break;
+        strcat(body, line);
+    }
+
+    new title[96];
+    format(title, sizeof(title), "{00CCFF}%s (%d tracks%s)",
+        (name[0] == EOS) ? "(root files)" : name, tracks,
+        (tracks > DEMO_MAX_LIBRARY_TRACKS) ? ", first 40 shown" : "");
+    ShowPlayerDialog(playerid, DLG_SA_LIB_FOLDER, DIALOG_STYLE_LIST, title, body, "Select", "Back");
+}
+
+static stock ShowLibraryTrackMenu(playerid)
+{
+    new ref[256], track[128];
+    if (!GetLibraryTrackRef(gLibFolder[playerid], gLibTrack[playerid], ref, sizeof(ref), track, sizeof(track)))
+    {
+        SendClientMessage(playerid, 0xFFAA00FF, "[Library] The library changed; pick the track again.");
+        ShowLibraryFolderList(playerid);
+        return;
+    }
+    SanitizeDialogField(track);
+    new title[96], body[512];
+    format(title, sizeof(title), "{00CCFF}Track: %.60s", track);
+    format(body, sizeof(body),
+        "Play Privately {AAAAAA}(SA_PlayAudioStreamForPlayer)\n\
+Play Global 3D Here {AAAAAA}(SA_PlayAudioStream, 45m)\n\
+Add to Channel #%d Queue {AAAAAA}(SA_QueueChannelAudioStream)\n\
+Play Now on Channel #%d {AAAAAA}(SA_PlayChannelAudioStream)",
+        gSelChannelId[playerid], gSelChannelId[playerid]);
+    ShowPlayerDialog(playerid, DLG_SA_LIB_TRACK, DIALOG_STYLE_LIST, title, body, "Run", "Back");
+}
+
+static stock ShowSoundInputDialog(playerid)
+{
+    ShowPlayerDialog(playerid, DLG_SA_SOUND_INPUT, DIALOG_STYLE_INPUT,
+        "{00CCFF}Play Sound Effect (SA_PlayAudioStreamSoundForPlayer)",
+        "{FFFFFF}Enter a file name inside audio.sound_dir (scriptfiles/SampAudioStream/sound):\n\n\
+{AAAAAA}Examples: beep.mp3  or  alerts/siren.wav  (.mp3, .ogg, .wav up to 5 MB)\n\
+{AAAAAA}The sound plays over whatever you hear, then your previous audio resumes.",
+        "Next", "Back");
+}
+
 static stock ShowDiagnosticsDialog(playerid)
 {
     new sid = SA_GetPlayerAudioStreamID(playerid);
@@ -1189,7 +1370,7 @@ public OnFilterScriptInit()
     }
     else
     {
-        gServerRadioId = SA_CreateAudioStreamChannel(DEMO_SERVER_RADIO_NAME);
+        gServerRadioId = SA_CreateAudioStreamChannel(DEMO_SERVER_RADIO_NAME, .persistent = true);
     }
 
     for (new p = 0; p < MAX_PLAYERS; p++)
@@ -1247,7 +1428,7 @@ public OnPlayerCommandText(playerid, cmdtext[])
 
 public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
 {
-    if (dialogid < DEMO_DLG_BASE || dialogid > DLG_SA_DIAGNOSTICS)
+    if (dialogid < DEMO_DLG_BASE || dialogid >= DLG_SA_LAST)
     {
         return 0;
     }
@@ -1276,14 +1457,15 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                         "Search", "Back");
                 }
                 case 3: ShowChannelListMenu(playerid);
-                case 4:
+                case 4: ShowLibraryFolderList(playerid);
+                case 5:
                 {
                     ShowPlayerDialog(playerid, DLG_SA_VANILLA_PLAY, DIALOG_STYLE_INPUT,
                         "{FFFFFF}Hooked PlayAudioStreamForPlayer Demo",
                         "{FFFFFF}Calls standard PlayAudioStreamForPlayer with extended plugin volume=80.0:\n\n{AAAAAA}Enter a YouTube URL, direct MP3/radio link, or song name:",
                         "Play", "Back");
                 }
-                case 5:
+                case 6:
                 {
                     gOptNotify[playerid] = !gOptNotify[playerid];
                     SendClientMessage(playerid, 0x00CCFFFF,
@@ -1292,7 +1474,7 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                         "[Options] OnAudioStreamProcessing callback DISABLED (.notify_processing = false).");
                     ShowSaMainMenu(playerid);
                 }
-                case 6:
+                case 7:
                 {
                     gOptProcessFiles[playerid] = !gOptProcessFiles[playerid];
                     SendClientMessage(playerid, 0x00CCFFFF,
@@ -1301,7 +1483,21 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                         "[Options] Direct audio files use zero-slot passthrough (default).");
                     ShowSaMainMenu(playerid);
                 }
-                case 7:
+                case 8:
+                {
+                    gOptStreamText[playerid] = !gOptStreamText[playerid];
+                    SendClientMessage(playerid, 0x00CCFFFF,
+                        gOptStreamText[playerid] ?
+                        "[Options] On-screen stream text SHOWN for your plays (.stream_text = true)." :
+                        "[Options] On-screen stream text HIDDEN for server-processed plays (.stream_text = false).");
+                    if (!gOptStreamText[playerid] && !gOptProcessFiles[playerid])
+                    {
+                        SendClientMessage(playerid, 0xAAAAAAFF,
+                            "[Options] Direct links on passthrough still show the radio's own text; enable Process Direct Audio Files to hide it.");
+                    }
+                    ShowSaMainMenu(playerid);
+                }
+                case 9:
                 {
                     new bool:next_mute = !SA_IsPlayerAudioStreamMuted(playerid);
                     SA_SetPlayerAudioStreamMuted(playerid, next_mute, false);
@@ -1311,7 +1507,7 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                         "[Mute] Audio streams UNMUTED.");
                     ShowSaMainMenu(playerid);
                 }
-                case 8: ShowDiagnosticsDialog(playerid);
+                case 10: ShowDiagnosticsDialog(playerid);
             }
             return 1;
         }
@@ -1399,6 +1595,7 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                     ShowPersonalMenu(playerid);
                 }
                 case 6: ShowDiagnosticsDialog(playerid);
+                case 7: ShowSoundInputDialog(playerid);
             }
             return 1;
         }
@@ -1414,7 +1611,8 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                 playerid,
                 inputtext,
                 .notify_processing = gOptNotify[playerid],
-                .process_direct_audio_files = gOptProcessFiles[playerid]
+                .process_direct_audio_files = gOptProcessFiles[playerid],
+                .stream_text = gOptStreamText[playerid]
             );
             if (sid == INVALID_AUDIO_STREAM_ID)
             {
@@ -1652,7 +1850,8 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                 GetPlayerInterior(playerid),
                 100.0,
                 gOptNotify[playerid],
-                gOptProcessFiles[playerid]
+                gOptProcessFiles[playerid],
+                gOptStreamText[playerid]
             );
             if (sid != INVALID_AUDIO_STREAM_ID)
             {
@@ -1691,7 +1890,8 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                 GetPlayerInterior(playerid),
                 100.0,
                 gOptNotify[playerid],
-                gOptProcessFiles[playerid]
+                gOptProcessFiles[playerid],
+                gOptStreamText[playerid]
             );
             if (sid != INVALID_AUDIO_STREAM_ID)
             {
@@ -1950,7 +2150,8 @@ Play Now on Selected Channel #%d {AAAAAA}(SA_PlayChannelAudioStream)",
             {
                 case 0:
                 {
-                    SA_PlayAudioStreamForPlayer(playerid, url, .notify_processing = gOptNotify[playerid]);
+                    SA_PlayAudioStreamForPlayer(playerid, url, .notify_processing = gOptNotify[playerid],
+                        .stream_text = gOptStreamText[playerid]);
                     SendClientMessage(playerid, 0x00FF88FF, "[Search] Starting selected track privately...");
                 }
                 case 1:
@@ -1958,7 +2159,8 @@ Play Now on Selected Channel #%d {AAAAAA}(SA_PlayChannelAudioStream)",
                     new Float:x, Float:y, Float:z;
                     GetPlayerPos(playerid, x, y, z);
                     new sid = SA_PlayAudioStream(url, x, y, z, 45.0, true,
-                        GetPlayerVirtualWorld(playerid), GetPlayerInterior(playerid), 100.0, gOptNotify[playerid]);
+                        GetPlayerVirtualWorld(playerid), GetPlayerInterior(playerid), 100.0, gOptNotify[playerid],
+                        .stream_text = gOptStreamText[playerid]);
                     if (sid != INVALID_AUDIO_STREAM_ID)
                     {
                         if (!TrackGlobalStream(sid, playerid))
@@ -2056,7 +2258,7 @@ Play Now on Selected Channel #%d {AAAAAA}(SA_PlayChannelAudioStream)",
             if (listitem == 0)
             {
                 ShowPlayerDialog(playerid, DLG_SA_CH_CREATE_NAME, DIALOG_STYLE_INPUT,
-                    "{00FF88}Create Channel (1/3) - Name",
+                    "{00FF88}Create Channel (1/4) - Name",
                     "{FFFFFF}Enter a name for the new synchronized channel:",
                     "Next", "Back");
                 return 1;
@@ -2099,14 +2301,14 @@ Play Now on Selected Channel #%d {AAAAAA}(SA_PlayChannelAudioStream)",
                 SendClientMessage(playerid, 0xFF5555FF,
                     "[Channel] That name is reserved for the official server radio.");
                 ShowPlayerDialog(playerid, DLG_SA_CH_CREATE_NAME, DIALOG_STYLE_INPUT,
-                    "{00FF88}Create Channel (1/3) - Name",
+                    "{00FF88}Create Channel (1/4) - Name",
                     "{FFFFFF}Enter a name for the new synchronized channel:",
                     "Next", "Back");
                 return 1;
             }
             format(gNewChName[playerid], 48, "%s", inputtext);
             ShowPlayerDialog(playerid, DLG_SA_CH_CREATE_PASS, DIALOG_STYLE_PASSWORD,
-                "{00FF88}Create Channel (2/3) - Password",
+                "{00FF88}Create Channel (2/4) - Password",
                 "{FFFFFF}Enter an optional password for your channel:\n\n{AAAAAA}Leave blank to create an open (public) channel.",
                 "Next", "Back");
             return 1;
@@ -2121,12 +2323,12 @@ Play Now on Selected Channel #%d {AAAAAA}(SA_PlayChannelAudioStream)",
             }
             format(gNewChPass[playerid], 32, "%s", inputtext);
             ShowPlayerDialog(playerid, DLG_SA_CH_CREATE_MODE, DIALOG_STYLE_LIST,
-                "{00FF88}Create Channel (3/3) - Auto-Destroy Policy",
+                "{00FF88}Create Channel (3/4) - Auto-Destroy Policy",
                 "Manual {AAAAAA}(Never expires automatically)\n\
 On Creator Disconnect {AAAAAA}(Destroyed when you leave)\n\
 Offline Timeout (60s) {AAAAAA}(Timer resets whenever you are online)\n\
 Offline Timeout (Custom seconds)",
-                "Create", "Back");
+                "Next", "Back");
             return 1;
         }
 
@@ -2142,28 +2344,15 @@ Offline Timeout (Custom seconds)",
                 ShowPlayerDialog(playerid, DLG_SA_CH_CREATE_TIME, DIALOG_STYLE_INPUT,
                     "{00FF88}Custom Offline Timeout",
                     "{FFFFFF}Enter timeout in seconds (only counts down while you are disconnected):",
-                    "Create", "Back");
+                    "Next", "Back");
                 return 1;
             }
 
-            new E_SA_CHANNEL_DESTROY_MODE:mode = SA_CHANNEL_DESTROY_MANUAL;
-            new timeout_sec = 0;
-            if (listitem == 1) mode = SA_CHANNEL_DESTROY_ON_DISCONNECT;
-            else if (listitem == 2) { mode = SA_CHANNEL_DESTROY_ON_TIMEOUT; timeout_sec = 60; }
-
-            new cid = SA_CreateAudioStreamChannel(gNewChName[playerid], playerid, gNewChPass[playerid], mode, timeout_sec);
-            if (cid == INVALID_AUDIO_CHANNEL_ID)
-            {
-                SendClientMessage(playerid, 0xFF5555FF, "[Channel] Failed to create channel.");
-                ShowChannelListMenu(playerid);
-            }
-            else
-            {
-                new msg[112];
-                format(msg, sizeof(msg), "[Channel] Created channel #%d (%s).", cid, gNewChName[playerid]);
-                SendClientMessage(playerid, 0x00FF88FF, msg);
-                ShowChannelManageMenu(playerid, cid);
-            }
+            gNewChMode[playerid] = SA_CHANNEL_DESTROY_MANUAL;
+            gNewChTimeout[playerid] = 0;
+            if (listitem == 1) gNewChMode[playerid] = SA_CHANNEL_DESTROY_ON_DISCONNECT;
+            else if (listitem == 2) { gNewChMode[playerid] = SA_CHANNEL_DESTROY_ON_TIMEOUT; gNewChTimeout[playerid] = 60; }
+            ShowChannelPersistDialog(playerid);
             return 1;
         }
 
@@ -2176,8 +2365,22 @@ Offline Timeout (Custom seconds)",
             }
             new timeout_sec = strval(inputtext);
             if (timeout_sec <= 0) timeout_sec = 30;
+            gNewChMode[playerid] = SA_CHANNEL_DESTROY_ON_TIMEOUT;
+            gNewChTimeout[playerid] = timeout_sec;
+            ShowChannelPersistDialog(playerid);
+            return 1;
+        }
+
+        case DLG_SA_CH_CREATE_PERSIST:
+        {
+            if (!response)
+            {
+                ShowChannelListMenu(playerid);
+                return 1;
+            }
+            new bool:persistent = (listitem == 0);
             new cid = SA_CreateAudioStreamChannel(gNewChName[playerid], playerid, gNewChPass[playerid],
-                SA_CHANNEL_DESTROY_ON_TIMEOUT, timeout_sec);
+                gNewChMode[playerid], gNewChTimeout[playerid], persistent);
             if (cid == INVALID_AUDIO_CHANNEL_ID)
             {
                 SendClientMessage(playerid, 0xFF5555FF, "[Channel] Failed to create channel.");
@@ -2185,9 +2388,11 @@ Offline Timeout (Custom seconds)",
             }
             else
             {
-                new msg[128];
-                format(msg, sizeof(msg), "[Channel] Created #%d (%s) with %ds offline timeout.",
-                    cid, gNewChName[playerid], timeout_sec);
+                new msg[144], d_lbl[20];
+                GetDestroyLabel(gNewChMode[playerid], d_lbl, sizeof(d_lbl));
+                format(msg, sizeof(msg), "[Channel] Created #%d (%s) | %s | %s.",
+                    cid, gNewChName[playerid], d_lbl,
+                    persistent ? "Persistent (saved to disk)" : "Temporary (memory only)");
                 SendClientMessage(playerid, 0x00FF88FF, msg);
                 ShowChannelManageMenu(playerid, cid);
             }
@@ -2417,6 +2622,19 @@ Offline Timeout (Custom seconds)",
                 }
                 case 18: HandleChannelVoteSkip(playerid, cid);
                 case 19: HandleChannelPreviousTrack(playerid, cid);
+                case 20:
+                {
+                    if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+                    new bool:enable = !SA_IsAudioStreamChannelPlaylist(cid);
+                    if (SA_SetAudioStreamChannelPlaylist(cid, enable))
+                    {
+                        SendClientMessage(playerid, 0x00FF88FF,
+                            enable ?
+                            "[Channel] Playlist mode ON: items stay in the list after playing and Skip advances the position." :
+                            "[Channel] Playlist mode OFF: classic queue (items are consumed as they play).");
+                    }
+                    ShowChannelManageMenu(playerid, cid);
+                }
                 default: ShowChannelManageMenu(playerid, cid);
             }
             return 1;
@@ -2620,6 +2838,20 @@ Offline Timeout (Custom seconds)",
                     {
                         format(msg, sizeof(msg), "[Channel] Removed queue item #%d.", idx);
                         SendClientMessage(playerid, 0x00FF88FF, msg);
+                    }
+                }
+                case 4:
+                {
+                    if (SA_PlayAudioStreamChannelQueue(cid, idx))
+                    {
+                        format(msg, sizeof(msg), SA_IsAudioStreamChannelPlaylist(cid) ?
+                            "[Channel] Playing playlist item #%d now." :
+                            "[Channel] Playing queue item #%d now (removed from the queue).", idx);
+                        SendClientMessage(playerid, 0x00FF88FF, msg);
+                    }
+                    else
+                    {
+                        SendClientMessage(playerid, 0xFF5555FF, "[Channel] Could not start that item (stream limit reached?).");
                     }
                 }
             }
@@ -2944,7 +3176,8 @@ Offline Timeout (Custom seconds)",
                 0.0, 0.0, 0.0, 50.0, false,
                 -1, -1, 80.0,
                 gOptNotify[playerid],
-                gOptProcessFiles[playerid]
+                gOptProcessFiles[playerid],
+                gOptStreamText[playerid]
             );
             SendClientMessage(playerid, 0x00FF88FF,
                 "[Hook] Called hooked PlayAudioStreamForPlayer(..., volume = 80.0).");
@@ -3065,6 +3298,198 @@ Offline Timeout (Custom seconds)",
                 SendClientMessage(playerid, 0xFF5555FF, "[Channel] Failed to update radio text (no active track playing).");
             }
             ShowChannelManageMenu(playerid, cid);
+            return 1;
+        }
+
+        // ---------------- Music Library ----------------
+        case DLG_SA_LIB_FOLDERS:
+        {
+            if (!response)
+            {
+                ShowSaMainMenu(playerid);
+                return 1;
+            }
+            if (listitem == 0)
+            {
+                new folders = SA_RefreshAudioLibrary();
+                new msg[96];
+                format(msg, sizeof(msg), "[Library] Rescanned audio.music_dir: %d folder(s) with audio files.", folders);
+                SendClientMessage(playerid, 0x00FF88FF, msg);
+                ShowLibraryFolderList(playerid);
+                return 1;
+            }
+            new idx = listitem - 1;
+            new name[64], tracks;
+            if (!SA_GetAudioLibraryFolder(idx, name, sizeof(name), tracks))
+            {
+                ShowLibraryFolderList(playerid);
+                return 1;
+            }
+            gLibFolder[playerid] = idx;
+            ShowLibraryFolderMenu(playerid);
+            return 1;
+        }
+
+        case DLG_SA_LIB_FOLDER:
+        {
+            if (!response)
+            {
+                ShowLibraryFolderList(playerid);
+                return 1;
+            }
+            if (listitem == 0)
+            {
+                new cid = gSelChannelId[playerid];
+                if (!EnsureSelectedChannelExists(playerid, cid)) return 1;
+                if (!EnsureChannelManagePermission(playerid, cid, false))
+                {
+                    ShowLibraryFolderMenu(playerid);
+                    return 1;
+                }
+                new ref[96];
+                if (!GetLibraryFolderRef(gLibFolder[playerid], ref, sizeof(ref)))
+                {
+                    ShowLibraryFolderList(playerid);
+                    return 1;
+                }
+                if (SA_QueueChannelAudioStreamPlaylist(cid, ref, 50))
+                {
+                    SendClientMessage(playerid, 0x00FF88FF,
+                        "[Library] Folder import scheduled; OnAudioStreamChannelPlaylistQueued reports the result.");
+                }
+                else
+                {
+                    SendClientMessage(playerid, 0xFF5555FF, "[Library] Import refused (channel busy importing or unavailable).");
+                }
+                ShowLibraryFolderMenu(playerid);
+                return 1;
+            }
+            gLibTrack[playerid] = listitem - 1;
+            ShowLibraryTrackMenu(playerid);
+            return 1;
+        }
+
+        case DLG_SA_LIB_TRACK:
+        {
+            if (!response)
+            {
+                ShowLibraryFolderMenu(playerid);
+                return 1;
+            }
+            new ref[256], track[128];
+            if (!GetLibraryTrackRef(gLibFolder[playerid], gLibTrack[playerid], ref, sizeof(ref), track, sizeof(track)))
+            {
+                SendClientMessage(playerid, 0xFFAA00FF, "[Library] The library changed; pick the track again.");
+                ShowLibraryFolderList(playerid);
+                return 1;
+            }
+            new cid = gSelChannelId[playerid];
+            switch (listitem)
+            {
+                case 0:
+                {
+                    new sid = SA_PlayAudioStreamForPlayer(playerid, ref,
+                        .notify_processing = gOptNotify[playerid],
+                        .stream_text = gOptStreamText[playerid]);
+                    SendClientMessage(playerid, (sid != INVALID_AUDIO_STREAM_ID) ? 0x00FF88FF : 0xFF5555FF,
+                        (sid != INVALID_AUDIO_STREAM_ID) ? "[Library] Playing the track privately." : "[Library] Failed to start the track.");
+                }
+                case 1:
+                {
+                    new Float:x, Float:y, Float:z;
+                    GetPlayerPos(playerid, x, y, z);
+                    new sid = SA_PlayAudioStream(ref, x, y, z, 45.0, true,
+                        GetPlayerVirtualWorld(playerid), GetPlayerInterior(playerid), 100.0, gOptNotify[playerid],
+                        .stream_text = gOptStreamText[playerid]);
+                    if (sid == INVALID_AUDIO_STREAM_ID)
+                    {
+                        SendClientMessage(playerid, 0xFF5555FF, "[Library] Failed to start global stream.");
+                    }
+                    else if (!TrackGlobalStream(sid, playerid))
+                    {
+                        SA_StopAudioStream(sid);
+                        SendClientMessage(playerid, 0xFF5555FF,
+                            "[Global] Too many active global streams in this demo; stop one first.");
+                    }
+                    else
+                    {
+                        gLastGlobalSid[playerid] = sid;
+                        SendClientMessage(playerid, 0x00FF88FF, "[Library] Playing the track globally in a 45m radius.");
+                    }
+                }
+                case 2:
+                {
+                    if (SA_QueueChannelAudioStream(cid, ref, track))
+                    {
+                        SendClientMessage(playerid, 0x00FF88FF, "[Library] Track added to the channel queue.");
+                    }
+                    else
+                    {
+                        SendClientMessage(playerid, 0xFF5555FF, "[Library] Selected channel unavailable or queue full.");
+                    }
+                }
+                case 3:
+                {
+                    if (!EnsureSelectedChannelExists(playerid, cid)) return 1;
+                    if (!EnsureChannelManagePermission(playerid, cid, false))
+                    {
+                        ShowLibraryTrackMenu(playerid);
+                        return 1;
+                    }
+                    SendClientMessage(playerid, SA_PlayChannelAudioStream(cid, ref) ? 0x00FF88FF : 0xFF5555FF,
+                        "[Library] Channel playback requested.");
+                }
+            }
+            ShowLibraryTrackMenu(playerid);
+            return 1;
+        }
+
+        // ---------------- Sound Effects ----------------
+        case DLG_SA_SOUND_INPUT:
+        {
+            if (!response || inputtext[0] == EOS)
+            {
+                ShowPersonalMenu(playerid);
+                return 1;
+            }
+            format(gSoundName[playerid], sizeof(gSoundName[]), "%s", inputtext);
+            ShowPlayerDialog(playerid, DLG_SA_SOUND_MODE, DIALOG_STYLE_LIST,
+                "{00CCFF}Sound Effect Position",
+                "2D {AAAAAA}(Heard anywhere, like an interface sound)\n\
+3D at My Position {AAAAAA}(usepos = true, 30m)",
+                "Play", "Back");
+            return 1;
+        }
+
+        case DLG_SA_SOUND_MODE:
+        {
+            if (!response)
+            {
+                ShowSoundInputDialog(playerid);
+                return 1;
+            }
+            new bool:ok;
+            if (listitem == 1)
+            {
+                new Float:x, Float:y, Float:z;
+                GetPlayerPos(playerid, x, y, z);
+                ok = SA_PlayAudioStreamSoundForPlayer(playerid, gSoundName[playerid], x, y, z, 30.0, true);
+            }
+            else
+            {
+                ok = SA_PlayAudioStreamSoundForPlayer(playerid, gSoundName[playerid]);
+            }
+            if (ok)
+            {
+                SendClientMessage(playerid, 0x00FF88FF,
+                    "[Sound] Playing over your current audio; it resumes by itself when the sound ends.");
+            }
+            else
+            {
+                SendClientMessage(playerid, 0xFF5555FF,
+                    "[Sound] Not played: file missing, unsupported or over 5 MB, or your personal audio is muted (see server log).");
+            }
+            ShowPersonalMenu(playerid);
             return 1;
         }
 
