@@ -702,6 +702,17 @@ public:
     }
 
     std::unordered_map<std::int32_t, Vector3> vehicles;
+    std::unordered_map<std::int32_t, std::pair<std::int32_t, std::int32_t>> vehicle_worlds;
+    bool GetVehicleWorldInterior(std::int32_t veh_id, std::int32_t& out_world, std::int32_t& out_interior) const override {
+        std::lock_guard<std::mutex> lock(mtx);
+        out_world = -1;
+        out_interior = -1;
+        auto it = vehicle_worlds.find(veh_id);
+        if (it == vehicle_worlds.end()) return false;
+        out_world = it->second.first;
+        out_interior = it->second.second;
+        return true;
+    }
     std::int32_t GetPlayerVehicleId(PlayerId) const override { return 0; }
     bool GetVehiclePos(std::int32_t veh_id, Vector3& out_pos) const override {
         if (std::this_thread::get_id() != expected_host_thread) {
@@ -7364,6 +7375,37 @@ static void TestRound33AuditedFixes() {
                 TEST_CHECK(p7_types[0] == static_cast<std::int32_t>(AudioStreamSourceType::Channel));
                 TEST_CHECK(p7_types[1] == static_cast<std::int32_t>(AudioStreamSourceType::ChannelRange));
             }
+            host.events.clear();
+            host.source_changes.clear();
+        }
+
+        // The attached car follows its virtual world: moved to world 5 it is no longer heard from world 0, back in world 0 it is
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            host.vehicle_worlds[77] = {5, 0};
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        PumpEngineTicks(engine, 4);
+        {
+            AudioStreamSourceType w_type = AudioStreamSourceType::None;
+            std::int32_t w_id = -1;
+            TEST_CHECK(!engine.GetPlayerAudioStreamSource(7, w_type, w_id));
+        }
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            host.vehicle_worlds[77] = {0, 0};
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        PumpEngineTicks(engine, 4);
+        {
+            AudioStreamSourceType w_type = AudioStreamSourceType::None;
+            std::int32_t w_id = -1;
+            TEST_CHECK(engine.GetPlayerAudioStreamSource(7, w_type, w_id));
+            TEST_CHECK(w_type == AudioStreamSourceType::ChannelRange && w_id == ch_car);
+        }
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            host.vehicle_worlds.erase(77);
             host.events.clear();
             host.source_changes.clear();
         }

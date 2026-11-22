@@ -151,6 +151,8 @@ ctest --test-dir build -R core_tests --output-on-failure
 ### 2.3.1 — 22/11/2026
 - **Attach With Range in One Update**:
   - `SA_AttachAudioStreamChannelToPlayer` and `SA_AttachAudioStreamChannelToVehicle` take an optional `Float:distance`. A value above `0.0` sets the hearing range together with the attachment, so listeners get one re-dispatch instead of the two caused by `SA_SetAudioStreamChannelPos` followed by an attach (which could make the SA-MP client play two streams at once). `0.0` keeps the current range; non-finite values are rejected.
+- **Vehicle Attachments Follow World and Interior**:
+  - Streams and channels attached with `SA_AttachAudioStreamToVehicle` / `SA_AttachAudioStreamChannelToVehicle` now follow the vehicle's virtual world (and interior on open.mp; SA-MP 0.3.7 has no `GetVehicleInterior`), so a sound car moved into another world is no longer heard by players in the original world at the same coordinates. Player attachments already tracked world and interior.
 - **HTTP Port List (`network.http_port`)**:
   - `network.http_port` is now a list of TCP ports, single ports and ascending ranges separated by commas, tried in order (default `"7778-7785"`, e.g. `"7778-7780,7785,7792"`). The first free port is used immediately; when every port is busy, as happens right after a quick server restart, the list is retried every 250 ms for up to 3 s before falling back to an OS-assigned port with a warning.
   - Legacy integers keep working (`7778` is a one-port list, `0` the default list); invalid lists fall back to the default.

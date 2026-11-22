@@ -45,6 +45,8 @@ void SampHost::CaptureServerNatives(AMX* amx) {
     if (!fn_get_player_interior_) fn_get_player_interior_ = FindNativeFunc(amx, "GetPlayerInterior");
     if (!fn_get_player_vehicle_) fn_get_player_vehicle_ = FindNativeFunc(amx, "GetPlayerVehicleID");
     if (!fn_get_vehicle_pos_) fn_get_vehicle_pos_ = FindNativeFunc(amx, "GetVehiclePos");
+    if (!fn_get_vehicle_vw_) fn_get_vehicle_vw_ = FindNativeFunc(amx, "GetVehicleVirtualWorld");
+    if (!fn_get_vehicle_interior_) fn_get_vehicle_interior_ = FindNativeFunc(amx, "GetVehicleInterior");
     if (!fn_get_player_ip_) fn_get_player_ip_ = FindNativeFunc(amx, "GetPlayerIp");
     if (!fn_get_player_name_) fn_get_player_name_ = FindNativeFunc(amx, "GetPlayerName");
     if (!fn_get_server_var_int_) {
@@ -384,6 +386,19 @@ bool SampHost::GetVehiclePos(std::int32_t vehicle_id, Vector3& out_pos) const {
     out_pos.z = amx_ctof(phys[2]);
     amx_Release(amx, amx_addr);
     return ret != 0;
+}
+
+bool SampHost::GetVehicleWorldInterior(std::int32_t vehicle_id, std::int32_t& out_world, std::int32_t& out_interior) const {
+    out_world = -1;
+    out_interior = -1;
+    AMX* amx = GetPrimaryAmx();
+    if (!amx || !fn_get_vehicle_vw_ || vehicle_id <= 0) return false;
+    cell params[2] = {sizeof(cell), static_cast<cell>(vehicle_id)};
+    out_world = static_cast<std::int32_t>(fn_get_vehicle_vw_(amx, params));
+    if (fn_get_vehicle_interior_) {
+        out_interior = static_cast<std::int32_t>(fn_get_vehicle_interior_(amx, params));
+    }
+    return true;
 }
 
 std::string SampHost::GetPlayerIp(PlayerId player_id) const {

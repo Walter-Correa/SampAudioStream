@@ -70,6 +70,7 @@ public:
     std::int32_t GetPlayerInterior(PlayerId player_id) const override;
     std::int32_t GetPlayerVehicleId(PlayerId player_id) const override;
     bool GetVehiclePos(std::int32_t vehicle_id, sampaudiostream::Vector3& out_pos) const override;
+    bool GetVehicleWorldInterior(std::int32_t vehicle_id, std::int32_t& out_world, std::int32_t& out_interior) const override;
     std::string GetPlayerIp(PlayerId player_id) const override;
     std::string GetPlayerName(PlayerId player_id) const override;
 

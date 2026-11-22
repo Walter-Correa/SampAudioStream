@@ -428,6 +428,17 @@ bool OmpHost::GetVehiclePos(std::int32_t vehicle_id, sampaudiostream::Vector3& o
     return true;
 }
 
+bool OmpHost::GetVehicleWorldInterior(std::int32_t vehicle_id, std::int32_t& out_world, std::int32_t& out_interior) const {
+    out_world = -1;
+    out_interior = -1;
+    if (!vehicles_ || vehicle_id <= 0) return false;
+    IVehicle* veh = vehicles_->get(vehicle_id);
+    if (!veh) return false;
+    out_world = static_cast<std::int32_t>(veh->getVirtualWorld());
+    out_interior = static_cast<std::int32_t>(veh->getInterior());
+    return true;
+}
+
 std::string OmpHost::GetPlayerIp(PlayerId player_id) const {
     if (!core_) return "";
     IPlayer* player = core_->getPlayers().get(player_id);

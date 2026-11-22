@@ -4614,6 +4614,9 @@ bool AudioEngine::AttachStreamToVehicle(StreamId stream_id, std::int32_t vehicle
     if (vehicle_id <= 0 || !host_.GetVehiclePos(vehicle_id, veh_pos)) {
         return false;
     }
+    std::int32_t veh_world = -1;
+    std::int32_t veh_interior = -1;
+    const bool has_veh_vw = host_.GetVehicleWorldInterior(vehicle_id, veh_world, veh_interior);
     std::vector<PlayerSnapshot> snapshots = host_.GetConnectedPlayerSnapshots();
 
     std::vector<PlayerAudioCommand> cmds;
@@ -4630,6 +4633,10 @@ bool AudioEngine::AttachStreamToVehicle(StreamId stream_id, std::int32_t vehicle
         it->second->options.attach_player_id = INVALID_PLAYER_ID;
         it->second->options.use_position = true;
         it->second->options.position = veh_pos;
+        if (has_veh_vw) {
+            it->second->options.world_id = veh_world;
+            it->second->options.interior_id = veh_interior;
+        }
         RefreshActiveSessionSpatialLocked(it->second, it->second->is_global ? &snapshots : nullptr, cmds);
     }
     ApplyPlayerAudioCommands(cmds);
@@ -4716,6 +4723,13 @@ void AudioEngine::UpdateSpatialStreams(const std::vector<PlayerSnapshot>* precom
             if (host_.GetVehiclePos(attach_vid, vpos)) {
                 tr.has_pos = true;
                 tr.pos = vpos;
+                std::int32_t vw = -1;
+                std::int32_t vi = -1;
+                if (host_.GetVehicleWorldInterior(attach_vid, vw, vi)) {
+                    tr.has_vw = true;
+                    tr.world_id = vw;
+                    tr.interior_id = vi;
+                }
             } else if (allow_vehicle_detach) {
                 tr.detach_vehicle = true;
             }
@@ -6394,6 +6408,9 @@ bool AudioEngine::AttachChannelToVehicle(ChannelId channel_id, std::int32_t vehi
     if (vehicle_id <= 0 || !host_.GetVehiclePos(vehicle_id, veh_pos)) {
         return false;
     }
+    std::int32_t veh_world = -1;
+    std::int32_t veh_interior = -1;
+    const bool has_veh_vw = host_.GetVehicleWorldInterior(vehicle_id, veh_world, veh_interior);
     std::vector<PlayerSnapshot> snapshots = host_.GetConnectedPlayerSnapshots();
 
     std::vector<PlayerAudioCommand> cmds;
@@ -6409,6 +6426,10 @@ bool AudioEngine::AttachChannelToVehicle(ChannelId channel_id, std::int32_t vehi
         }
         ch.spatial.use_position = true;
         ch.spatial.position = veh_pos;
+        if (has_veh_vw) {
+            ch.spatial.world_id = veh_world;
+            ch.spatial.interior_id = veh_interior;
+        }
         ch.spatial.attach_vehicle_id = vehicle_id;
         ch.spatial.attach_player_id = INVALID_PLAYER_ID;
         ++ch.spatial_version;

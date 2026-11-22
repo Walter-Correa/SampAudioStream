@@ -51,6 +51,7 @@ public:
     std::int32_t GetPlayerInterior(PlayerId player_id) const override;
     std::int32_t GetPlayerVehicleId(PlayerId player_id) const override;
     bool GetVehiclePos(std::int32_t vehicle_id, Vector3& out_pos) const override;
+    bool GetVehicleWorldInterior(std::int32_t vehicle_id, std::int32_t& out_world, std::int32_t& out_interior) const override;
     std::string GetPlayerIp(PlayerId player_id) const override;
     std::string GetPlayerName(PlayerId player_id) const override;
 
@@ -89,6 +90,8 @@ private:
     AMX_NATIVE fn_get_player_interior_{nullptr};
     AMX_NATIVE fn_get_player_vehicle_{nullptr};
     AMX_NATIVE fn_get_vehicle_pos_{nullptr};
+    AMX_NATIVE fn_get_vehicle_vw_{nullptr};
+    AMX_NATIVE fn_get_vehicle_interior_{nullptr}; // open.mp only; SA-MP 0.3.7 has no GetVehicleInterior
     AMX_NATIVE fn_get_player_ip_{nullptr};
     AMX_NATIVE fn_get_player_name_{nullptr};
     AMX_NATIVE fn_get_server_var_int_{nullptr};

@@ -56,6 +56,13 @@ public:
     }
     virtual std::int32_t GetPlayerVehicleId(PlayerId player_id) const = 0;
     virtual bool GetVehiclePos(std::int32_t vehicle_id, Vector3& out_pos) const = 0;
+    // Virtual world and interior of a vehicle; -1 means unknown (any). Returns false if the vehicle does not exist.
+    virtual bool GetVehicleWorldInterior(std::int32_t vehicle_id, std::int32_t& out_world, std::int32_t& out_interior) const {
+        (void)vehicle_id;
+        out_world = -1;
+        out_interior = -1;
+        return false;
+    }
     virtual std::string GetPlayerIp(PlayerId player_id) const = 0;
     virtual std::string GetPlayerName(PlayerId player_id) const { (void)player_id; return ""; }
 
