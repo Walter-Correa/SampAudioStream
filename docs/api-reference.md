@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.0`), covering all **83 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.1`), covering all **83 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -370,15 +370,19 @@ Removes spatial positioning from `channelid`. Range-only listeners stop hearing 
 
 ### `SA_AttachAudioStreamChannelToPlayer`
 ```pawn
-native SA_AttachAudioStreamChannelToPlayer(channelid, target_playerid);
+native SA_AttachAudioStreamChannelToPlayer(channelid, target_playerid, Float:distance = 0.0);
 ```
 Dynamically attaches `channelid`'s position (and `worldid`/`interiorid`) to `target_playerid`. Because the SA-MP client cannot move 3D audio coordinates after `PlayAudioStreamForPlayer` starts, attached channels send `usepos = false` to the client (playing at full volume inside range and stopping outside range), whereas fixed-position channels (`SA_SetAudioStreamChannelPos`) use `usepos = true` with distance attenuation. If `target_playerid` disconnects, attachment clears and playback stays fixed (`usepos = true`) at their last known coordinates. Player attachments do not survive server restarts or GMX (the last fixed position is kept/persisted instead).
+* **`distance`** (`2.3.1`): a value above `0.0` sets the hearing range in the same update as the attachment, so players already hearing the channel receive a single re-dispatch (calling `SA_SetAudioStreamChannelPos` and then attaching sends two updates in a row, and the SA-MP client can play both streams at once when the second arrives while the first is still connecting). `0.0` (default) keeps the current range (`50.0` unless `SA_SetAudioStreamChannelPos` set another).
+* **Returns:** `0` if the channel or target does not exist, or `distance` is not finite.
 
 ### `SA_AttachAudioStreamChannelToVehicle`
 ```pawn
-native SA_AttachAudioStreamChannelToVehicle(channelid, vehicleid);
+native SA_AttachAudioStreamChannelToVehicle(channelid, vehicleid, Float:distance = 0.0);
 ```
 Dynamically attaches `channelid`'s position to `vehicleid` (ideal for mobile sound cars). Because the SA-MP client cannot move 3D audio coordinates after `PlayAudioStreamForPlayer` starts, attached channels send `usepos = false` to the client (playing at full volume inside range and stopping outside range), whereas fixed-position channels (`SA_SetAudioStreamChannelPos`) use `usepos = true` with distance attenuation. If the vehicle ceases to exist, attachment clears and playback stays fixed (`usepos = true`) at its last position. Vehicle attachments are not persisted across server restarts or GMX because vehicle IDs are reassigned on reload; the last fixed position is kept and scripts can re-attach inside `OnAudioStreamChannelRestored`.
+* **`distance`** (`2.3.1`): a value above `0.0` sets the hearing range in the same update as the attachment, so players already hearing the channel receive a single re-dispatch (calling `SA_SetAudioStreamChannelPos` and then attaching sends two updates in a row, and the SA-MP client can play both streams at once when the second arrives while the first is still connecting). `0.0` (default) keeps the current range (`50.0` unless `SA_SetAudioStreamChannelPos` set another).
+* **Returns:** `0` if the channel or target does not exist, or `distance` is not finite.
 
 ### `SA_RemoveAudioStreamChannelQueue`
 ```pawn
@@ -864,9 +868,9 @@ public OnAudioStreamChannelLiveTitleChange(channelid, const title[])
 ### Constants
 ```pawn
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
-#define SAMPAUDIOSTREAM_VERSION_MINOR  (2)
-#define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.3.0"
+#define SAMPAUDIOSTREAM_VERSION_MINOR  (3)
+#define SAMPAUDIOSTREAM_VERSION_PATCH  (1)
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.3.1"
 
 #define INVALID_AUDIO_STREAM_ID  (-1)
 #define INVALID_AUDIO_CHANNEL_ID (-1)

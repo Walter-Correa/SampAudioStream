@@ -7301,6 +7301,25 @@ static void TestRound33AuditedFixes() {
             host.events.clear();
         }
 
+        // Attach with a range: one re-dispatch per listener carrying the new distance, NaN rejected
+        TEST_CHECK(engine.AttachChannelToVehicle(ch_car, 77, 35.0f));
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            int p7_plays = 0;
+            bool p7_range = false;
+            for (const auto& ev : host.events) {
+                if (ev.player_id == 7 && ev.play) {
+                    ++p7_plays;
+                    p7_range = std::abs(ev.distance - 35.0f) < 0.01f && !ev.use_pos;
+                }
+            }
+            TEST_CHECK(p7_plays == 1);
+            TEST_CHECK(p7_range);
+            host.events.clear();
+        }
+        TEST_CHECK(!engine.AttachChannelToVehicle(ch_car, 77, std::numeric_limits<float>::quiet_NaN()));
+        TEST_CHECK(!engine.AttachChannelToPlayer(ch_car, 7, std::numeric_limits<float>::infinity()));
+
         // Re-attach to vehicle before Shutdown and verify saved JSON does NOT contain attach_vehicle_id
         TEST_CHECK(engine.AttachChannelToVehicle(ch_car, 77));
         engine.Shutdown();

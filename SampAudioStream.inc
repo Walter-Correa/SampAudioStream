@@ -1,6 +1,6 @@
 /*
  * SampAudioStream - Universal Audio Streaming Plugin/Component for SA-MP & open.mp
- * Version: 2.3.0
+ * Version: 2.3.1
  *
  * Features:
  *  - YouTube, SoundCloud, Twitch, Vimeo, TikTok, Direct MP3/OGG/WAV/FLAC & HLS streams
@@ -26,8 +26,8 @@
 
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
 #define SAMPAUDIOSTREAM_VERSION_MINOR  (3)
-#define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.3.0"
+#define SAMPAUDIOSTREAM_VERSION_PATCH  (1)
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.3.1"
 
 // -----------------------------------------------------------------------------
 // Constants & Enums
@@ -172,8 +172,9 @@ native SA_ClearAudioStreamChannelQueue(channelid);
 // Positional / spatial channel configuration. For password-restricted areas, pass auto_listen = false.
 native SA_SetAudioStreamChannelPos(channelid, Float:x, Float:y, Float:z, Float:distance = 50.0, worldid = -1, interiorid = -1, bool:auto_listen = true);
 native SA_ClearAudioStreamChannelPos(channelid);
-native SA_AttachAudioStreamChannelToPlayer(channelid, target_playerid);
-native SA_AttachAudioStreamChannelToVehicle(channelid, vehicleid);
+// distance > 0 sets the hearing range in the same update as the attachment; 0 keeps the current range.
+native SA_AttachAudioStreamChannelToPlayer(channelid, target_playerid, Float:distance = 0.0);
+native SA_AttachAudioStreamChannelToVehicle(channelid, vehicleid, Float:distance = 0.0);
 native SA_RemoveAudioStreamChannelQueue(channelid, index);
 native SA_InsertAudioStreamChannelQueue(channelid, index, const url[], const label[] = "");
 native SA_MoveAudioStreamChannelQueue(channelid, from_index, to_index);

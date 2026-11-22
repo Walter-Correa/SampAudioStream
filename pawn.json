@@ -1,7 +1,7 @@
 {
     "user": "Walter-Correa",
     "repo": "SampAudioStream",
-    "version": "2.3.0",
+    "version": "2.3.1",
     "entry": "FS_SampAudioStream_Demo.pwn",
     "output": "FS_SampAudioStream_Demo.amx",
     "dependencies": [

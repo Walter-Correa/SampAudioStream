@@ -6277,7 +6277,10 @@ bool AudioEngine::ClearChannelPos(ChannelId channel_id) {
     return true;
 }
 
-bool AudioEngine::AttachChannelToPlayer(ChannelId channel_id, PlayerId target_player_id) {
+bool AudioEngine::AttachChannelToPlayer(ChannelId channel_id, PlayerId target_player_id, float distance) {
+    if (!std::isfinite(distance)) {
+        return false;
+    }
     if (target_player_id < 0 || target_player_id == PAWN_INVALID_PLAYER_ID ||
         !host_.IsPlayerConnected(target_player_id)) {
         return false;
@@ -6296,7 +6299,9 @@ bool AudioEngine::AttachChannelToPlayer(ChannelId channel_id, PlayerId target_pl
         auto it = channels_.find(channel_id);
         if (it == channels_.end() || !it->second) return false;
         auto& ch = *it->second;
-        if (!std::isfinite(ch.spatial.distance) || ch.spatial.distance <= 0.0f) {
+        if (distance > 0.0f) {
+            ch.spatial.distance = distance;
+        } else if (!std::isfinite(ch.spatial.distance) || ch.spatial.distance <= 0.0f) {
             ch.spatial.distance = 50.0f;
         }
         ch.spatial.use_position = true;
@@ -6313,7 +6318,10 @@ bool AudioEngine::AttachChannelToPlayer(ChannelId channel_id, PlayerId target_pl
     return true;
 }
 
-bool AudioEngine::AttachChannelToVehicle(ChannelId channel_id, std::int32_t vehicle_id) {
+bool AudioEngine::AttachChannelToVehicle(ChannelId channel_id, std::int32_t vehicle_id, float distance) {
+    if (!std::isfinite(distance)) {
+        return false;
+    }
     Vector3 veh_pos{};
     if (vehicle_id <= 0 || !host_.GetVehiclePos(vehicle_id, veh_pos)) {
         return false;
@@ -6326,7 +6334,9 @@ bool AudioEngine::AttachChannelToVehicle(ChannelId channel_id, std::int32_t vehi
         auto it = channels_.find(channel_id);
         if (it == channels_.end() || !it->second) return false;
         auto& ch = *it->second;
-        if (!std::isfinite(ch.spatial.distance) || ch.spatial.distance <= 0.0f) {
+        if (distance > 0.0f) {
+            ch.spatial.distance = distance;
+        } else if (!std::isfinite(ch.spatial.distance) || ch.spatial.distance <= 0.0f) {
             ch.spatial.distance = 50.0f;
         }
         ch.spatial.use_position = true;

@@ -168,14 +168,14 @@ When you start the server, SampAudioStream waits up to **1.5 seconds (`1500 ms`)
    * SA-MP:
      ```text
      [SampAudioStream] HTTP audio streaming server listening on 0.0.0.0:7778 (connection limit 264 for 100 player slots)
-     [SampAudioStream] SampAudioStream v2.3.0 [SA-MP] loaded (config: scriptfiles/SampAudioStream/config.json, HTTP port: 7778)
+     [SampAudioStream] SampAudioStream v2.3.1 [SA-MP] loaded (config: scriptfiles/SampAudioStream/config.json, HTTP port: 7778)
      [SampAudioStream] Audio extractor subsystem ready.
      [SampAudioStream] Detected public server IPv4: 203.0.113.10
      ```
    * open.mp:
      ```text
      [SampAudioStream] HTTP audio streaming server listening on 0.0.0.0:7778 (connection limit 264 for 100 player slots)
-     [SampAudioStream] SampAudioStream v2.3.0 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: 7778)
+     [SampAudioStream] SampAudioStream v2.3.1 [open.mp] initialized (config: config.json [sampaudiostream], HTTP port: 7778)
      [SampAudioStream] Audio extractor subsystem ready.
      [SampAudioStream] Detected public server IPv4: 203.0.113.10
      ```

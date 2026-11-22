@@ -575,24 +575,28 @@ cell AMX_NATIVE_CALL n_SA_ClearAudioStreamChannelPos(AMX*, cell* params) {
     return g_engine->ClearChannelPos(static_cast<ChannelId>(params[1])) ? 1 : 0;
 }
 
-// SA_AttachAudioStreamChannelToPlayer(channelid, target_playerid)
+// SA_AttachAudioStreamChannelToPlayer(channelid, target_playerid, Float:distance = 0.0)
 cell AMX_NATIVE_CALL n_SA_AttachAudioStreamChannelToPlayer(AMX*, cell* params) {
     if (!g_engine) return 0;
     std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
     if (argc < 2) return 0;
+    const float distance = (argc >= 3) ? amx_ctof(params[3]) : 0.0f;
     return g_engine->AttachChannelToPlayer(
         static_cast<ChannelId>(params[1]),
-        static_cast<PlayerId>(params[2])) ? 1 : 0;
+        static_cast<PlayerId>(params[2]),
+        distance) ? 1 : 0;
 }
 
-// SA_AttachAudioStreamChannelToVehicle(channelid, vehicleid)
+// SA_AttachAudioStreamChannelToVehicle(channelid, vehicleid, Float:distance = 0.0)
 cell AMX_NATIVE_CALL n_SA_AttachAudioStreamChannelToVehicle(AMX*, cell* params) {
     if (!g_engine) return 0;
     std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
     if (argc < 2) return 0;
+    const float distance = (argc >= 3) ? amx_ctof(params[3]) : 0.0f;
     return g_engine->AttachChannelToVehicle(
         static_cast<ChannelId>(params[1]),
-        static_cast<std::int32_t>(params[2])) ? 1 : 0;
+        static_cast<std::int32_t>(params[2]),
+        distance) ? 1 : 0;
 }
 
 // SA_RemoveAudioStreamChannelQueue(channelid, index)

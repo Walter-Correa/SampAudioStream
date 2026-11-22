@@ -148,6 +148,10 @@ ctest --test-dir build -R core_tests --output-on-failure
 <details>
 <summary>Show the version history</summary>
 
+### 2.3.1 — 22/11/2026
+- **Attach With Range in One Update**:
+  - `SA_AttachAudioStreamChannelToPlayer` and `SA_AttachAudioStreamChannelToVehicle` take an optional `Float:distance`. A value above `0.0` sets the hearing range together with the attachment, so listeners get one re-dispatch instead of the two caused by `SA_SetAudioStreamChannelPos` followed by an attach (which could make the SA-MP client play two streams at once). `0.0` keeps the current range; non-finite values are rejected.
+
 ### 2.3.0 — 21/11/2026
 - **Sound Effects Folder (`audio.sound_dir`) & `SA_PlayAudioStreamSoundForPlayer`**:
   - New `audio.sound_dir` folder (`"scriptfiles/SampAudioStream/sound"`, created on startup) for short sound effects such as alerts, notifications, jingles and gameplay sounds, kept apart from the music library (a startup warning is logged when it overlaps `audio.music_dir`).

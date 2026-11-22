@@ -376,8 +376,10 @@ public:
         std::int32_t interior_id = -1,
         bool auto_listen = true);
     bool ClearChannelPos(ChannelId channel_id);
-    bool AttachChannelToPlayer(ChannelId channel_id, PlayerId target_player_id);
-    bool AttachChannelToVehicle(ChannelId channel_id, std::int32_t vehicle_id);
+    // distance > 0 sets the hearing range in the same update as the attachment (one client re-dispatch);
+    // 0 keeps the current range. Non-finite distances are rejected.
+    bool AttachChannelToPlayer(ChannelId channel_id, PlayerId target_player_id, float distance = 0.0f);
+    bool AttachChannelToVehicle(ChannelId channel_id, std::int32_t vehicle_id, float distance = 0.0f);
     bool RemoveChannelQueueItem(ChannelId channel_id, std::size_t index);
     bool InsertChannelQueueItem(
         ChannelId channel_id,
