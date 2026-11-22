@@ -9,7 +9,7 @@
  * Commands:
  *   /audiomenu  or  /sa   - Open the interactive SampAudioStream Control Center
  *
- * Demonstrates ALL 83 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
+ * Demonstrates ALL 87 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
  * and ALL 19 plugin callbacks cleanly from in-game menus (no shadow arrays).
  *
  * Server Folders (plugin config):
@@ -107,6 +107,8 @@ enum
     DLG_SA_LIB_TRACK,
     DLG_SA_SOUND_INPUT,
     DLG_SA_SOUND_MODE,
+    DLG_SA_GROUP_MUTE,
+    DLG_SA_CH_GROUP_SET,
     DLG_SA_LAST
 }
 
@@ -571,7 +573,8 @@ static stock ShowSaMainMenu(playerid)
 {FFFFFF}8. Toggle: Process Direct Audio Files [%s{FFFFFF}]\n\
 {FFFFFF}9. Toggle: On-Screen Stream Text (stream_text) [%s{FFFFFF}]\n\
 {FFFFFF}10. Toggle: Mute Streams (SA_SetPlayerAudioStreamMuted) [%s{FFFFFF}]\n\
-{CCCCCC}11. Plugin Diagnostics & Stats {AAAAAA}(Heard: %s #%d)",
+{FFFFFF}11. Toggle: Mute a Range Group (SA_SetPlayerAudioStreamGroupMuted)\n\
+{CCCCCC}12. Plugin Diagnostics & Stats {AAAAAA}(Heard: %s #%d)",
         sid,
         gLastGlobalSid[playerid],
         ch_count,
@@ -1652,8 +1655,40 @@ public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
                         "[Mute] Audio streams UNMUTED.");
                     ShowSaMainMenu(playerid);
                 }
-                case 10: ShowDiagnosticsDialog(playerid);
+                case 10:
+                {
+                    ShowPlayerDialog(playerid, DLG_SA_GROUP_MUTE, DIALOG_STYLE_INPUT,
+                        "{FFFFFF}Mute a Range Group (SA_SetPlayerAudioStreamGroupMuted)",
+                        "{FFFFFF}Enter a range group (1..31) to toggle.\n\n\
+{AAAAAA}While a group is muted you stop hearing positioned channels of that group just by being in range;\n\
+{AAAAAA}channels you joined keep playing. Assign groups in Channel > Spatial > Set Range Group.",
+                        "Toggle", "Back");
+                }
+                case 11: ShowDiagnosticsDialog(playerid);
             }
+            return 1;
+        }
+
+        case DLG_SA_GROUP_MUTE:
+        {
+            if (!response || inputtext[0] == EOS)
+            {
+                ShowSaMainMenu(playerid);
+                return 1;
+            }
+            new group = strval(inputtext);
+            new bool:next_mute = !SA_IsPlayerAudioStreamGroupMuted(playerid, group);
+            if (SA_SetPlayerAudioStreamGroupMuted(playerid, group, next_mute))
+            {
+                new msg[112];
+                format(msg, sizeof(msg), "[Mute] Range group %d is now %s for you.", group, next_mute ? "MUTED" : "UNMUTED");
+                SendClientMessage(playerid, 0x00CCFFFF, msg);
+            }
+            else
+            {
+                SendClientMessage(playerid, 0xFF5555FF, "[Mute] Invalid group; use 1..31.");
+            }
+            ShowSaMainMenu(playerid);
             return 1;
         }
 
@@ -2688,7 +2723,8 @@ Offline Timeout (Custom seconds)",
 Set Private Spatial Zone Here (auto_listen = false)\n\
 Attach Channel to My Vehicle (Sound Car)\n\
 Attach Channel to Me\n\
-Clear Spatial Mode (Global Channel Again)",
+Clear Spatial Mode (Global Channel Again)\n\
+Set Range Group (SA_SetAudioStreamChannelGroup)",
                         "Select", "Back");
                 }
                 case 9: ShowChannelListenersDialog(playerid, cid);
@@ -3147,6 +3183,40 @@ Offline Timeout (Custom seconds)",
                         SendClientMessage(playerid, 0x00FF88FF, "[Channel] Cleared spatial mode; subscribers now hear globally.");
                     }
                 }
+                case 5:
+                {
+                    new body[200];
+                    format(body, sizeof(body),
+                        "{FFFFFF}Current range group: {FFCC00}%d{FFFFFF}\nEnter 0 (no group) or 1..31. Players can mute a group in the main menu.",
+                        SA_GetAudioStreamChannelGroup(cid));
+                    ShowPlayerDialog(playerid, DLG_SA_CH_GROUP_SET, DIALOG_STYLE_INPUT,
+                        "{FF88FF}Set Channel Range Group", body, "Apply", "Back");
+                    return 1;
+                }
+            }
+            ShowChannelManageMenu(playerid, cid);
+            return 1;
+        }
+
+        case DLG_SA_CH_GROUP_SET:
+        {
+            new cid = gSelChannelId[playerid];
+            if (!response || inputtext[0] == EOS)
+            {
+                if (!EnsureSelectedChannelExists(playerid, cid)) return 1;
+                ShowChannelManageMenu(playerid, cid);
+                return 1;
+            }
+            if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+            if (SA_SetAudioStreamChannelGroup(cid, strval(inputtext)))
+            {
+                new msg[96];
+                format(msg, sizeof(msg), "[Channel] Range group set to %d.", SA_GetAudioStreamChannelGroup(cid));
+                SendClientMessage(playerid, 0x00FF88FF, msg);
+            }
+            else
+            {
+                SendClientMessage(playerid, 0xFF5555FF, "[Channel] Invalid group; use 0..31.");
             }
             ShowChannelManageMenu(playerid, cid);
             return 1;

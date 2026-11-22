@@ -174,6 +174,27 @@ cell AMX_NATIVE_CALL n_SA_SetPlayerAudioStreamMuted(AMX*, cell* params) {
         include_personal) ? 1 : 0;
 }
 
+// SA_SetPlayerAudioStreamGroupMuted(playerid, group, bool:mute)
+cell AMX_NATIVE_CALL n_SA_SetPlayerAudioStreamGroupMuted(AMX*, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 3) return 0;
+    return g_engine->SetPlayerRangeGroupMuted(
+        static_cast<PlayerId>(params[1]),
+        static_cast<std::int32_t>(params[2]),
+        params[3] != 0) ? 1 : 0;
+}
+
+// SA_IsPlayerAudioStreamGroupMuted(playerid, group)
+cell AMX_NATIVE_CALL n_SA_IsPlayerAudioStreamGroupMuted(AMX*, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
+    return g_engine->IsPlayerRangeGroupMuted(
+        static_cast<PlayerId>(params[1]),
+        static_cast<std::int32_t>(params[2])) ? 1 : 0;
+}
+
 // SA_IsPlayerAudioStreamMuted(playerid)
 cell AMX_NATIVE_CALL n_SA_IsPlayerAudioStreamMuted(AMX*, cell* params) {
     if (!g_engine) return 0;
@@ -573,6 +594,24 @@ cell AMX_NATIVE_CALL n_SA_ClearAudioStreamChannelPos(AMX*, cell* params) {
     std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
     if (argc < 1) return 0;
     return g_engine->ClearChannelPos(static_cast<ChannelId>(params[1])) ? 1 : 0;
+}
+
+// SA_SetAudioStreamChannelGroup(channelid, group)
+cell AMX_NATIVE_CALL n_SA_SetAudioStreamChannelGroup(AMX*, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
+    return g_engine->SetChannelRangeGroup(
+        static_cast<ChannelId>(params[1]),
+        static_cast<std::int32_t>(params[2])) ? 1 : 0;
+}
+
+// SA_GetAudioStreamChannelGroup(channelid)
+cell AMX_NATIVE_CALL n_SA_GetAudioStreamChannelGroup(AMX*, cell* params) {
+    if (!g_engine) return -1;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return -1;
+    return static_cast<cell>(g_engine->GetChannelRangeGroup(static_cast<ChannelId>(params[1])));
 }
 
 // SA_AttachAudioStreamChannelToPlayer(channelid, target_playerid, Float:distance = 0.0)
@@ -1119,6 +1158,8 @@ const std::vector<AMX_NATIVE_INFO>& GetPluginNatives() {
         {"SA_SeekAudioStream", n_SA_SeekAudioStream},
         {"SA_SetPlayerAudioStreamMuted", n_SA_SetPlayerAudioStreamMuted},
         {"SA_IsPlayerAudioStreamMuted", n_SA_IsPlayerAudioStreamMuted},
+        {"SA_SetPlayerAudioStreamGroupMuted", n_SA_SetPlayerAudioStreamGroupMuted},
+        {"SA_IsPlayerAudioStreamGroupMuted", n_SA_IsPlayerAudioStreamGroupMuted},
         {"SA_GetPlayerAudioStreamSource", n_SA_GetPlayerAudioStreamSource},
         {"SA_SetPlayerAudioStreamVolume", n_SA_SetPlayerAudioStreamVolume},
         {"SA_SetAudioStreamVolume", n_SA_SetAudioStreamVolume},
@@ -1157,6 +1198,8 @@ const std::vector<AMX_NATIVE_INFO>& GetPluginNatives() {
         {"SA_ClearAudioStreamChannelQueue", n_SA_ClearAudioStreamChannelQueue},
         {"SA_SetAudioStreamChannelPos", n_SA_SetAudioStreamChannelPos},
         {"SA_ClearAudioStreamChannelPos", n_SA_ClearAudioStreamChannelPos},
+        {"SA_SetAudioStreamChannelGroup", n_SA_SetAudioStreamChannelGroup},
+        {"SA_GetAudioStreamChannelGroup", n_SA_GetAudioStreamChannelGroup},
         {"SA_AttachAudioStreamChannelToPlayer", n_SA_AttachAudioStreamChannelToPlayer},
         {"SA_AttachAudioStreamChannelToVehicle", n_SA_AttachAudioStreamChannelToVehicle},
         {"SA_RemoveAudioStreamChannelQueue", n_SA_RemoveAudioStreamChannelQueue},

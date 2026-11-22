@@ -983,6 +983,7 @@ void AudioEngine::Reset() {
         // Keep connected players' mute flags across GMX; prune idle unmuted entries.
         for (auto it = player_arbitration_.begin(); it != player_arbitration_.end();) {
             if (!it->second.muted &&
+                it->second.muted_range_groups == 0 &&
                 it->second.personal_stream_id == INVALID_STREAM_ID &&
                 it->second.channel_id == INVALID_CHANNEL_ID &&
                 it->second.global_sources.empty() &&
@@ -2174,6 +2175,7 @@ void AudioEngine::ReconcilePlayerLocked(
                         auto cit = channels_.find(gsrc.id);
                         if (cit == channels_.end()) continue;
                         const auto& ch = *cit->second;
+                        if (IsRangeGroupMutedLocked(player_id, ch.range_group)) continue;
                         StreamState st = ch.state.load();
                         if (ch.spatial.use_position && ch.auto_listen && !ch.pause_flag.load()) {
                             const bool in_range = snapshot
@@ -2231,6 +2233,7 @@ void AudioEngine::ReconcilePlayerLocked(
             arb.client_url.clear();
         }
         if (!arb.muted &&
+            arb.muted_range_groups == 0 &&
             arb.personal_stream_id == INVALID_STREAM_ID &&
             arb.channel_id == INVALID_CHANNEL_ID &&
             arb.global_sources.empty()) {
@@ -6227,7 +6230,8 @@ void AudioEngine::RefreshChannelSpatialLocked(
 
         for (const auto& snap : *snapshots) {
             if (channel->listeners.count(snap.id) > 0) continue;
-            bool in_range = MatchesSpatialFilterSnapshot(snap, channel->spatial);
+            bool in_range = MatchesSpatialFilterSnapshot(snap, channel->spatial) &&
+                            !IsRangeGroupMutedLocked(snap.id, channel->range_group);
             bool was_range = channel->range_listeners.count(snap.id) > 0;
             if (in_range && !was_range) {
                 channel->range_listeners.insert(snap.id);
@@ -7064,6 +7068,79 @@ bool AudioEngine::IsPlayerAudioStreamMuted(PlayerId player_id) const {
     return it != player_arbitration_.end() && it->second.muted;
 }
 
+bool AudioEngine::IsRangeGroupMutedLocked(PlayerId player_id, std::int32_t group) const {
+    if (group <= 0 || group > 31) {
+        return false;
+    }
+    auto it = player_arbitration_.find(player_id);
+    return it != player_arbitration_.end() && (it->second.muted_range_groups & (1u << group)) != 0;
+}
+
+bool AudioEngine::SetChannelRangeGroup(ChannelId channel_id, std::int32_t group) {
+    if (group < 0 || group > 31) {
+        return false;
+    }
+    std::vector<PlayerSnapshot> snapshots = host_.GetConnectedPlayerSnapshots();
+    std::vector<PlayerAudioCommand> cmds;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        auto it = channels_.find(channel_id);
+        if (it == channels_.end() || !it->second) return false;
+        if (it->second->range_group != group) {
+            it->second->range_group = group;
+            MarkChannelDirtyLocked(*it->second);
+            if (it->second->spatial.use_position && it->second->auto_listen) {
+                RefreshChannelSpatialLocked(it->second, &snapshots, cmds);
+            }
+        }
+    }
+    ApplyPlayerAudioCommands(cmds);
+    return true;
+}
+
+std::int32_t AudioEngine::GetChannelRangeGroup(ChannelId channel_id) const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = channels_.find(channel_id);
+    if (it == channels_.end() || !it->second) return -1;
+    return it->second->range_group;
+}
+
+bool AudioEngine::SetPlayerRangeGroupMuted(PlayerId player_id, std::int32_t group, bool mute) {
+    if (!initialized_.load() || shutting_down_.load() || group <= 0 || group > 31 ||
+        player_id < 0 || !host_.IsPlayerConnected(player_id)) {
+        return false;
+    }
+    std::vector<PlayerSnapshot> snapshots = host_.GetConnectedPlayerSnapshots();
+    std::vector<PlayerAudioCommand> cmds;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        auto& arb = player_arbitration_[player_id];
+        const std::uint32_t bit = 1u << group;
+        const std::uint32_t before = arb.muted_range_groups;
+        if (mute) arb.muted_range_groups |= bit;
+        else arb.muted_range_groups &= ~bit;
+        if (arb.muted_range_groups != before) {
+            for (const auto& [cid, ch] : channels_) {
+                (void)cid;
+                if (ch && ch->range_group == group && ch->spatial.use_position && ch->auto_listen) {
+                    RefreshChannelSpatialLocked(ch, &snapshots, cmds);
+                }
+            }
+        }
+        ReconcilePlayerLocked(player_id, nullptr, cmds);
+    }
+    ApplyPlayerAudioCommands(cmds);
+    return true;
+}
+
+bool AudioEngine::IsPlayerRangeGroupMuted(PlayerId player_id, std::int32_t group) const {
+    if (player_id < 0 || !host_.IsPlayerConnected(player_id)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return IsRangeGroupMutedLocked(player_id, group);
+}
+
 bool AudioEngine::GetPlayerAudioStreamSource(
     PlayerId player_id,
     AudioStreamSourceType& out_type,
@@ -7614,6 +7691,7 @@ AudioEngine::ChannelPersistSnapshot AudioEngine::CaptureChannelPersistSnapshotLo
     snap.spatial.attach_player_id = INVALID_PLAYER_ID; // Player/vehicle IDs do not survive server restarts
     snap.spatial.attach_vehicle_id = 0;
     snap.auto_listen = ch.auto_listen;
+    snap.range_group = ch.range_group;
     snap.persistent = ch.persistent;
     snap.revision = ch.persist_revision;
     snap.cancelled = ch.persist_cancelled;
@@ -7687,7 +7765,8 @@ bool AudioEngine::WriteChannelPersistFile(const ChannelPersistSnapshot& snap, st
             {"distance", snap.spatial.distance},
             {"world_id", snap.spatial.world_id},
             {"interior_id", snap.spatial.interior_id},
-            {"auto_listen", snap.auto_listen}
+            {"auto_listen", snap.auto_listen},
+            {"range_group", snap.range_group}
         }},
         {"saved_at", FormatUtcIso8601Now()}
     };
@@ -8023,6 +8102,10 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
             if (sp.contains("auto_listen") && sp["auto_listen"].is_boolean()) {
                 snap.auto_listen = sp["auto_listen"].get<bool>();
             }
+            if (sp.contains("range_group") && sp["range_group"].is_number_integer()) {
+                const std::int32_t g = sp["range_group"].get<std::int32_t>();
+                snap.range_group = (g >= 0 && g <= 31) ? g : 0;
+            }
             if (!std::isfinite(snap.spatial.position.x) ||
                 !std::isfinite(snap.spatial.position.y) ||
                 !std::isfinite(snap.spatial.position.z)) {
@@ -8131,6 +8214,7 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
             }
             ch->spatial = s.spatial;
             ch->auto_listen = s.auto_listen;
+            ch->range_group = s.range_group;
             ch->state.store(StreamState::Idle);
             if (s.was_playing && !s.current_input.utf8_url.empty()) {
                 ch->restore_wanted = true;

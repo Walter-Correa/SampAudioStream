@@ -131,6 +131,7 @@ struct PlayerArbitrationState {
     std::vector<GlobalAudioSourceRef> global_sources;
     bool muted{false};
     bool mute_include_personal{false};
+    std::uint32_t muted_range_groups{0}; // bit N set: channels in group N are not heard through their range
     std::chrono::steady_clock::time_point personal_muted_since{};
 
     AudioSourcePriority client_source_kind{AudioSourcePriority::None};
@@ -188,6 +189,7 @@ struct SyncChannel {
     std::unordered_set<PlayerId> range_listeners;
     StreamOptions spatial{};
     bool auto_listen{true};
+    std::int32_t range_group{0}; // 0 = no group; 1..31 can be muted per player for range listening
     std::uint64_t spatial_version{1};
     std::shared_ptr<AudioStreamBuffer> buffer; // Lazily allocated on first PlayChannel
     std::uint64_t next_generation{0};
@@ -317,6 +319,12 @@ public:
     bool PauseAudioStream(StreamId stream_id, bool pause);
     bool SetPlayerAudioStreamMuted(PlayerId player_id, bool mute, bool include_personal = false);
     bool IsPlayerAudioStreamMuted(PlayerId player_id) const;
+    // Range groups (1..31): a muted group stops the player from hearing those channels through their range;
+    // channels the player joined are not affected.
+    bool SetChannelRangeGroup(ChannelId channel_id, std::int32_t group);
+    std::int32_t GetChannelRangeGroup(ChannelId channel_id) const;
+    bool SetPlayerRangeGroupMuted(PlayerId player_id, std::int32_t group, bool mute);
+    bool IsPlayerRangeGroupMuted(PlayerId player_id, std::int32_t group) const;
     bool GetPlayerAudioStreamSource(PlayerId player_id, AudioStreamSourceType& out_type, std::int32_t& out_source_id) const;
     bool SeekAudioStream(StreamId stream_id, std::int32_t seconds);
     bool SetPlayerAudioVolume(PlayerId player_id, float volume);
@@ -513,6 +521,7 @@ private:
         const std::shared_ptr<SyncChannel>& channel,
         const std::vector<PlayerSnapshot>* snapshots,
         std::vector<PlayerAudioCommand>& out_cmds);
+    bool IsRangeGroupMutedLocked(PlayerId player_id, std::int32_t group) const;
     void DetachChannelRangeListenersLocked(
         const std::shared_ptr<SyncChannel>& channel,
         std::vector<PlayerAudioCommand>& out_cmds);
@@ -598,6 +607,7 @@ private:
         std::vector<ChannelQueueEntry> queue;
         StreamOptions spatial{};
         bool auto_listen{true};
+        std::int32_t range_group{0};
         bool persistent{true};
         std::uint64_t revision{0};
         std::shared_ptr<std::atomic<bool>> cancelled;

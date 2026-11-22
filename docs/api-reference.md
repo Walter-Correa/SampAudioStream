@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.1`), covering all **83 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.1`), covering all **87 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -95,6 +95,19 @@ Mutes (`true`) or unmutes (`false`) audio stream delivery for `playerid` without
 native bool:SA_IsPlayerAudioStreamMuted(playerid);
 ```
 Returns `true` if `playerid` is connected and currently muted via `SA_SetPlayerAudioStreamMuted`, or `false` otherwise.
+
+### `SA_SetPlayerAudioStreamGroupMuted`
+```pawn
+native SA_SetPlayerAudioStreamGroupMuted(playerid, group, bool:mute);
+```
+Mutes (`true`) or unmutes (`false`) range listening of channel group `group` (`1..31`, see `SA_SetAudioStreamChannelGroup`) for `playerid` (`2.3.1`). While muted, positioned `auto_listen` channels of that group are not heard just by being inside their range, so another source (or silence) takes over; channels the player joined with `SA_JoinAudioStreamChannel` keep playing normally. Typical use: separate "hear boomboxes" and "hear car speakers" options without muting everything with `SA_SetPlayerAudioStreamMuted`. Lasts until disconnect (kept across GMX) and is not saved to disk.
+* **Returns:** `1` on success, `0` if `playerid` is not connected or `group` is outside `1..31`.
+
+### `SA_IsPlayerAudioStreamGroupMuted`
+```pawn
+native bool:SA_IsPlayerAudioStreamGroupMuted(playerid, group);
+```
+Returns `true` if `playerid` is connected and has range group `group` muted, or `false` otherwise.
 
 ### `SA_GetPlayerAudioStreamSource`
 ```pawn
@@ -361,6 +374,19 @@ Configures 3D positional playback and world/interior filtering on `channelid` (c
 * **`auto_listen = true`** (e.g. public club/bar): any player within `distance` hears the channel automatically without `SA_JoinAudioStreamChannel` (competing in the `global` arbitration tier in order of range entry), while explicitly joined players stay in the `channel` tier inside range.
 * **`auto_listen = false`** (restricted/password-protected area): only explicitly subscribed players (`SA_JoinAudioStreamChannel`) **and** within range hear audio; players out of range remain silently subscribed. Setting a channel password only restricts `SA_JoinAudioStreamChannel`, so use `auto_listen = false` to restrict physical access to an area.
 * **Returns:** `0` if the channel does not exist, any coordinate/distance is non-finite, or `distance <= 0.0`.
+
+### `SA_SetAudioStreamChannelGroup`
+```pawn
+native SA_SetAudioStreamChannelGroup(channelid, group);
+```
+Assigns `channelid` to range group `group` (`0` = no group, the default; `1..31`) (`2.3.1`). Players who muted that group with `SA_SetPlayerAudioStreamGroupMuted` stop hearing the channel through its range; joined listeners are not affected. The group is saved with persistent channels.
+* **Returns:** `1` on success, `0` if the channel does not exist or `group` is outside `0..31`.
+
+### `SA_GetAudioStreamChannelGroup`
+```pawn
+native SA_GetAudioStreamChannelGroup(channelid);
+```
+* **Returns:** the channel's range group (`0..31`), or `-1` if `channelid` does not exist.
 
 ### `SA_ClearAudioStreamChannelPos`
 ```pawn

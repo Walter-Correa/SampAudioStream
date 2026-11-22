@@ -7671,6 +7671,53 @@ static void TestRound35FeaturesPart1To8() {
     TEST_CHECK(engine.GetPlayerAudioStreamSource(1, src_t, src_id));
     TEST_CHECK(src_t == AudioStreamSourceType::ChannelRange && src_id == ch_range);
 
+    // Range groups: muting the channel's group stops range listening for that player only; unmuting restores it
+    TEST_CHECK(engine.GetChannelRangeGroup(ch_range) == 0);
+    TEST_CHECK(engine.SetChannelRangeGroup(ch_range, 2));
+    TEST_CHECK(engine.GetChannelRangeGroup(ch_range) == 2);
+    TEST_CHECK(!engine.SetChannelRangeGroup(ch_range, 32));
+    TEST_CHECK(engine.GetChannelRangeGroup(99999) == -1);
+    TEST_CHECK(!engine.IsPlayerRangeGroupMuted(1, 2));
+    TEST_CHECK(!engine.SetPlayerRangeGroupMuted(1, 0, true));
+    {
+        std::lock_guard<std::mutex> lk(host.mtx);
+        host.events.clear();
+    }
+    TEST_CHECK(engine.SetPlayerRangeGroupMuted(1, 3, true));
+    TEST_CHECK(engine.GetPlayerAudioStreamSource(1, src_t, src_id));
+    TEST_CHECK(src_t == AudioStreamSourceType::ChannelRange && src_id == ch_range);
+    TEST_CHECK(engine.SetPlayerRangeGroupMuted(1, 2, true));
+    TEST_CHECK(engine.IsPlayerRangeGroupMuted(1, 2));
+    TEST_CHECK(!engine.GetPlayerAudioStreamSource(1, src_t, src_id));
+    {
+        std::lock_guard<std::mutex> lk(host.mtx);
+        bool p1_stopped = false;
+        for (const auto& ev : host.events) {
+            if (ev.player_id == 1 && !ev.play) p1_stopped = true;
+        }
+        TEST_CHECK(p1_stopped);
+        host.events.clear();
+    }
+    TEST_CHECK(engine.SetPlayerRangeGroupMuted(1, 2, false));
+    TEST_CHECK(engine.SetPlayerRangeGroupMuted(1, 3, false));
+    TEST_CHECK(engine.GetPlayerAudioStreamSource(1, src_t, src_id));
+    TEST_CHECK(src_t == AudioStreamSourceType::ChannelRange && src_id == ch_range);
+    {
+        std::lock_guard<std::mutex> lk(host.mtx);
+        bool p1_played = false;
+        for (const auto& ev : host.events) {
+            if (ev.player_id == 1 && ev.play) p1_played = true;
+        }
+        TEST_CHECK(p1_played);
+        host.events.clear();
+    }
+    TEST_CHECK(engine.SetChannelRangeGroup(ch_range, 0));
+    PumpEngineTicks(engine, 2);
+    {
+        std::lock_guard<std::mutex> lk(host.mtx);
+        host.source_changes.clear();
+    }
+
     // Move player 1 out of range -> callback NONE (-1), query returns false
     {
         std::lock_guard<std::mutex> lk(host.mtx);

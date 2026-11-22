@@ -116,6 +116,9 @@ native SA_PauseAudioStream(streamid, bool:pause);
 native SA_SeekAudioStream(streamid, seconds);
 native SA_SetPlayerAudioStreamMuted(playerid, bool:mute, bool:include_personal = false);
 native bool:SA_IsPlayerAudioStreamMuted(playerid);
+// Range groups (1..31): stop hearing positioned channels of a group through their range (joined channels keep playing).
+native SA_SetPlayerAudioStreamGroupMuted(playerid, group, bool:mute);
+native bool:SA_IsPlayerAudioStreamGroupMuted(playerid, group);
 native SA_GetPlayerAudioStreamSource(playerid, &E_SA_AUDIO_STREAM_SOURCE:source_type, &source_id);
 native SA_SetPlayerAudioStreamVolume(playerid, Float:volume);
 native SA_SetAudioStreamVolume(streamid, Float:volume);
@@ -172,6 +175,9 @@ native SA_ClearAudioStreamChannelQueue(channelid);
 // Positional / spatial channel configuration. For password-restricted areas, pass auto_listen = false.
 native SA_SetAudioStreamChannelPos(channelid, Float:x, Float:y, Float:z, Float:distance = 50.0, worldid = -1, interiorid = -1, bool:auto_listen = true);
 native SA_ClearAudioStreamChannelPos(channelid);
+// 0 = no group (default); 1..31 lets players mute this channel's range listening with SA_SetPlayerAudioStreamGroupMuted.
+native SA_SetAudioStreamChannelGroup(channelid, group);
+native SA_GetAudioStreamChannelGroup(channelid);
 // distance > 0 sets the hearing range in the same update as the attachment; 0 keeps the current range.
 native SA_AttachAudioStreamChannelToPlayer(channelid, target_playerid, Float:distance = 0.0);
 native SA_AttachAudioStreamChannelToVehicle(channelid, vehicleid, Float:distance = 0.0);
