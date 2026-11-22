@@ -28,7 +28,7 @@ enum class ConfigFieldType {
     String,
     Bool,
     Uint32,
-    PortUint16
+    PortList
 };
 
 struct ConfigFieldSpec {
@@ -42,25 +42,24 @@ struct ConfigFieldSpec {
     std::string PluginConfig::* str_member{nullptr};
     bool PluginConfig::* bool_member{nullptr};
     std::uint32_t PluginConfig::* uint_member{nullptr};
-    std::uint16_t PluginConfig::* port_member{nullptr};
 };
 
 constexpr ConfigFieldSpec StrSpec(const char* g, const char* k, const char* fk, std::string PluginConfig::* m) {
-    return {g, k, fk, ConfigFieldType::String, 0, 0, false, m, nullptr, nullptr, nullptr};
+    return {g, k, fk, ConfigFieldType::String, 0, 0, false, m, nullptr, nullptr};
 }
 
 constexpr ConfigFieldSpec BoolSpec(const char* g, const char* k, const char* fk, bool PluginConfig::* m) {
-    return {g, k, fk, ConfigFieldType::Bool, 0, 0, false, nullptr, m, nullptr, nullptr};
+    return {g, k, fk, ConfigFieldType::Bool, 0, 0, false, nullptr, m, nullptr};
 }
 
 constexpr ConfigFieldSpec UintSpec(const char* g, const char* k, const char* fk,
                                    std::int64_t min_v, std::int64_t max_v, bool snap,
                                    std::uint32_t PluginConfig::* m) {
-    return {g, k, fk, ConfigFieldType::Uint32, min_v, max_v, snap, nullptr, nullptr, m, nullptr};
+    return {g, k, fk, ConfigFieldType::Uint32, min_v, max_v, snap, nullptr, nullptr, m};
 }
 
-constexpr ConfigFieldSpec PortSpec(const char* g, const char* k, const char* fk, std::uint16_t PluginConfig::* m) {
-    return {g, k, fk, ConfigFieldType::PortUint16, 0, 65535, false, nullptr, nullptr, nullptr, m};
+constexpr ConfigFieldSpec PortListSpec(const char* g, const char* k, const char* fk, std::string PluginConfig::* m) {
+    return {g, k, fk, ConfigFieldType::PortList, 0, 0, false, m, nullptr, nullptr};
 }
 
 // Single authoritative schema shared by SA-MP JSON, open.mp flat/dotted config, and Sanitize().
@@ -68,7 +67,7 @@ constexpr ConfigFieldSpec kConfigSchema[] = {
     // network
     StrSpec("network", "bind_ip", "network.bind_ip", &PluginConfig::bind_ip),
     StrSpec("network", "public_ip", "network.public_ip", &PluginConfig::public_ip),
-    PortSpec("network", "http_port", "network.http_port", &PluginConfig::http_port),
+    PortListSpec("network", "http_port", "network.http_port", &PluginConfig::http_port),
     BoolSpec("network", "lan_aware_urls", "network.lan_aware_urls", &PluginConfig::lan_aware_urls),
     BoolSpec("network", "allow_private_network_urls", "network.allow_private_network_urls", &PluginConfig::allow_private_network_urls),
     UintSpec("network", "max_connections_per_ip", "network.max_connections_per_ip", 1, 4096, false, &PluginConfig::max_connections_per_ip),
@@ -121,17 +120,27 @@ constexpr ConfigFieldSpec kConfigSchema[] = {
     BoolSpec("logging", "extractor_status", "logging.extractor_status", &PluginConfig::log_extractor_status)
 };
 
+// Accepts a port list string, or an integer as a single port (0 = default list); invalid values fall back to the default.
+void ApplyPortListValue(const ConfigFieldSpec& spec, const std::string& value, PluginConfig& cfg) {
+    std::vector<std::uint16_t> ports;
+    std::string err;
+    if (!ParseHttpPortList(value, ports, err)) {
+        Logger::Instance().Warn(
+            std::string("Config key '") + spec.full_key + "' value '" + value + "' is invalid (" + err +
+            "); using default ('" + kDefaultHttpPortList + "').");
+        cfg.*(spec.str_member) = kDefaultHttpPortList;
+        return;
+    }
+    cfg.*(spec.str_member) = (value.empty() || value == "0") ? std::string(kDefaultHttpPortList) : value;
+}
+
 void ApplyValidatedRawInt(
     const ConfigFieldSpec& spec,
     std::int64_t raw,
     const PluginConfig& def,
     PluginConfig& cfg) {
-    if (spec.type == ConfigFieldType::PortUint16) {
-        std::uint32_t port_val = def.*(spec.port_member);
-        ConfigManager::ParseValidatedInt(
-            spec.full_key, raw, spec.min_val, spec.max_val,
-            static_cast<std::uint32_t>(def.*(spec.port_member)), port_val);
-        cfg.*(spec.port_member) = static_cast<std::uint16_t>(port_val);
+    if (spec.type == ConfigFieldType::PortList) {
+        ApplyPortListValue(spec, std::to_string(raw), cfg);
         return;
     }
     const std::uint32_t def_val = def.*(spec.uint_member);
@@ -181,20 +190,25 @@ void ApplyJsonToConfig(const nlohmann::json& j, PluginConfig& cfg) {
                     cfg.*(spec.bool_member) = def_bool;
                 }
                 break;
-            case ConfigFieldType::Uint32:
-            case ConfigFieldType::PortUint16: {
-                const std::uint32_t def_num = (spec.type == ConfigFieldType::PortUint16)
-                    ? static_cast<std::uint32_t>(def.*(spec.port_member))
-                    : def.*(spec.uint_member);
+            case ConfigFieldType::PortList:
+                if (val.is_string()) {
+                    ApplyPortListValue(spec, val.get<std::string>(), cfg);
+                } else if (val.is_number_integer()) {
+                    ApplyPortListValue(spec, std::to_string(val.get<std::int64_t>()), cfg);
+                } else {
+                    Logger::Instance().Warn(
+                        std::string("Config key '") + spec.full_key +
+                        "' must be a port list string such as \"7778-7785\"; using default ('" + kDefaultHttpPortList + "').");
+                    cfg.*(spec.str_member) = kDefaultHttpPortList;
+                }
+                break;
+            case ConfigFieldType::Uint32: {
+                const std::uint32_t def_num = def.*(spec.uint_member);
                 if (!val.is_number_integer()) {
                     Logger::Instance().Warn(
                         std::string("Config key '") + spec.full_key +
                         "' must be an integer; using default (" + std::to_string(def_num) + ").");
-                    if (spec.type == ConfigFieldType::PortUint16) {
-                        cfg.*(spec.port_member) = static_cast<std::uint16_t>(def_num);
-                    } else {
-                        cfg.*(spec.uint_member) = def_num;
-                    }
+                    cfg.*(spec.uint_member) = def_num;
                     break;
                 }
                 ApplyValidatedRawInt(spec, val.get<std::int64_t>(), def, cfg);
@@ -286,8 +300,8 @@ AllmanJsonNode BuildConfigTree(const PluginConfig& cfg) {
             case ConfigFieldType::Uint32:
                 group_node.children.emplace_back(spec.key, AllmanJsonNode::MakeInt(static_cast<std::int64_t>(cfg.*(spec.uint_member))));
                 break;
-            case ConfigFieldType::PortUint16:
-                group_node.children.emplace_back(spec.key, AllmanJsonNode::MakeInt(static_cast<std::int64_t>(cfg.*(spec.port_member))));
+            case ConfigFieldType::PortList:
+                group_node.children.emplace_back(spec.key, AllmanJsonNode::MakeString(cfg.*(spec.str_member)));
                 break;
         }
     }
@@ -344,8 +358,17 @@ PluginConfig ConfigManager::LoadFromOmp(const OmpConfigReader& reader) {
                     }
                 }
                 break;
+            case ConfigFieldType::PortList: {
+                std::string sval;
+                std::int64_t raw = 0;
+                if (reader.get_string && reader.get_string(omp_key.c_str(), sval)) {
+                    ApplyPortListValue(spec, sval, cfg);
+                } else if (reader.get_int && reader.get_int(omp_key.c_str(), raw)) {
+                    ApplyPortListValue(spec, std::to_string(raw), cfg);
+                }
+                break;
+            }
             case ConfigFieldType::Uint32:
-            case ConfigFieldType::PortUint16:
                 if (reader.get_int) {
                     std::int64_t raw = 0;
                     if (reader.get_int(omp_key.c_str(), raw)) {
@@ -379,9 +402,9 @@ void ConfigManager::ProvideOmpDefaults(const OmpConfigWriter& writer) {
                     writer.set_int(omp_key.c_str(), static_cast<std::int32_t>(def.*(spec.uint_member)));
                 }
                 break;
-            case ConfigFieldType::PortUint16:
-                if (writer.set_int) {
-                    writer.set_int(omp_key.c_str(), static_cast<std::int32_t>(def.*(spec.port_member)));
+            case ConfigFieldType::PortList:
+                if (writer.set_string) {
+                    writer.set_string(omp_key.c_str(), def.*(spec.str_member));
                 }
                 break;
         }
@@ -399,6 +422,18 @@ std::vector<ConfigSchemaFieldInfo> ConfigManager::GetUnifiedSchemaFields() {
 
 void ConfigManager::Sanitize(PluginConfig& cfg) {
     const PluginConfig def;
+    {
+        std::vector<std::uint16_t> ports;
+        std::string err;
+        if (!ParseHttpPortList(cfg.http_port, ports, err)) {
+            Logger::Instance().Warn(
+                "Config key 'network.http_port' value '" + cfg.http_port + "' is invalid (" + err +
+                "); using default ('" + kDefaultHttpPortList + "').");
+            cfg.http_port = kDefaultHttpPortList;
+        } else if (cfg.http_port.empty() || cfg.http_port == "0") {
+            cfg.http_port = kDefaultHttpPortList;
+        }
+    }
     for (const auto& spec : kConfigSchema) {
         if (spec.type != ConfigFieldType::Uint32 || spec.snap_nearest) {
             continue;
@@ -868,6 +903,128 @@ std::string PathToUtf8(const std::filesystem::path& path) {
 #else
     return path.string();
 #endif
+}
+
+bool ParseHttpPortList(const std::string& spec, std::vector<std::uint16_t>& out_ports, std::string& out_error) {
+    out_ports.clear();
+    out_error.clear();
+    std::string compact;
+    for (char c : spec) {
+        if (c != ' ' && c != '\t') compact.push_back(c);
+    }
+    if (compact.empty() || compact == "0") {
+        compact = kDefaultHttpPortList;
+    }
+    constexpr std::size_t kMaxPorts = 64;
+    auto parse_port = [](const std::string& text, std::uint32_t& out) -> bool {
+        if (text.empty() || text.size() > 5) return false;
+        std::uint32_t v = 0;
+        for (char c : text) {
+            if (c < '0' || c > '9') return false;
+            v = v * 10u + static_cast<std::uint32_t>(c - '0');
+        }
+        if (v < 1 || v > 65535) return false;
+        out = v;
+        return true;
+    };
+    std::size_t start = 0;
+    while (start <= compact.size()) {
+        std::size_t comma = compact.find(',', start);
+        if (comma == std::string::npos) comma = compact.size();
+        const std::string token = compact.substr(start, comma - start);
+        if (token.empty()) {
+            out_error = "empty entry";
+            out_ports.clear();
+            return false;
+        }
+        std::uint32_t first = 0;
+        std::uint32_t last = 0;
+        const std::size_t dash = token.find('-');
+        if (dash == std::string::npos) {
+            if (!parse_port(token, first)) {
+                out_error = "'" + token + "' is not a port between 1 and 65535";
+                out_ports.clear();
+                return false;
+            }
+            last = first;
+        } else {
+            if (!parse_port(token.substr(0, dash), first) || !parse_port(token.substr(dash + 1), last) || last < first) {
+                out_error = "'" + token + "' is not an ascending range of ports between 1 and 65535";
+                out_ports.clear();
+                return false;
+            }
+        }
+        for (std::uint32_t port = first; port <= last; ++port) {
+            const std::uint16_t p16 = static_cast<std::uint16_t>(port);
+            if (std::find(out_ports.begin(), out_ports.end(), p16) != out_ports.end()) continue;
+            if (out_ports.size() >= kMaxPorts) {
+                out_error = "more than 64 ports";
+                out_ports.clear();
+                return false;
+            }
+            out_ports.push_back(p16);
+        }
+        start = comma + 1;
+        if (comma == compact.size()) break;
+    }
+    return !out_ports.empty();
+}
+
+std::string DescribeSystemError(const std::error_code& ec) {
+    if (!ec) {
+        return "no error";
+    }
+    struct Entry {
+        std::errc code;
+        const char* text;
+    };
+    static const Entry kEntries[] = {
+        {std::errc::address_in_use, "address already in use"},
+        {std::errc::address_not_available, "address not available"},
+        {std::errc::permission_denied, "permission denied"},
+        {std::errc::operation_not_permitted, "operation not permitted"},
+        {std::errc::connection_refused, "connection refused"},
+        {std::errc::connection_reset, "connection reset by peer"},
+        {std::errc::connection_aborted, "connection aborted"},
+        {std::errc::timed_out, "timed out"},
+        {std::errc::host_unreachable, "host unreachable"},
+        {std::errc::network_unreachable, "network unreachable"},
+        {std::errc::network_down, "network is down"},
+        {std::errc::not_connected, "not connected"},
+        {std::errc::broken_pipe, "broken pipe"},
+        {std::errc::operation_canceled, "operation canceled"},
+        {std::errc::resource_unavailable_try_again, "resource temporarily unavailable"},
+        {std::errc::no_such_file_or_directory, "no such file or directory"},
+        {std::errc::file_exists, "file exists"},
+        {std::errc::directory_not_empty, "directory not empty"},
+        {std::errc::not_a_directory, "not a directory"},
+        {std::errc::is_a_directory, "is a directory"},
+        {std::errc::no_space_on_device, "no space left on device"},
+        {std::errc::read_only_file_system, "read-only file system"},
+        {std::errc::device_or_resource_busy, "device or resource busy"},
+        {std::errc::too_many_files_open, "too many open files"},
+        {std::errc::filename_too_long, "file name too long"},
+        {std::errc::cross_device_link, "cross-device link"},
+        {std::errc::invalid_argument, "invalid argument"},
+    };
+    const std::error_condition cond = ec.default_error_condition();
+    for (const auto& entry : kEntries) {
+        if (cond == std::make_error_condition(entry.code)) {
+            return std::string(entry.text) + " (" + std::to_string(ec.value()) + ")";
+        }
+    }
+#ifdef _WIN32
+    return std::string(ec.category().name()) + " error " + std::to_string(ec.value());
+#else
+    return ec.message();
+#endif
+}
+
+std::string DescribeException(const std::exception& ex) {
+    if (const auto* se = dynamic_cast<const std::system_error*>(&ex)) {
+        return DescribeSystemError(se->code());
+    }
+    return ex.what();
 }
 
 bool IsSupportedAudioFileExtension(const std::string& lower_ext) {

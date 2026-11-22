@@ -1,5 +1,6 @@
 #include "sampaudiostream/extractor/binary_manager.hpp"
 
+#include "sampaudiostream/core/config.hpp"
 #include "sampaudiostream/core/logger.hpp"
 #include "sampaudiostream/network/http_client.hpp"
 
@@ -1180,7 +1181,7 @@ bool BinaryManager::EnsureJsRuntime() {
     std::filesystem::rename(stage_path, path, ec);
     if (ec) {
         std::filesystem::remove(stage_path, ec);
-        Logger::Instance().Warn("Failed to install verified QuickJS-ng binary: " + ec.message());
+        Logger::Instance().Warn("Failed to install verified QuickJS-ng binary: " + DescribeSystemError(ec));
         return false;
     }
 
@@ -1466,7 +1467,7 @@ void BinaryManager::EnsureDenoBackground() {
             std::filesystem::remove_all(extract_stage, ec);
             Logger::Instance().Warn(
                 "Failed to replace previous Deno directory (existing Deno may be in use); keeping current Deno until next restart: " +
-                ec.message());
+                DescribeSystemError(ec));
             return;
         }
         moved_old = true;
@@ -1480,7 +1481,7 @@ void BinaryManager::EnsureDenoBackground() {
             std::filesystem::rename(bak_dir, target_dir, r_ec);
         }
         std::filesystem::remove_all(extract_stage, ec);
-        Logger::Instance().Warn("Failed to install Deno directory atomically: " + ec.message());
+        Logger::Instance().Warn("Failed to install Deno directory atomically: " + DescribeSystemError(ec));
         return;
     }
     std::filesystem::remove_all(bak_dir, ec);

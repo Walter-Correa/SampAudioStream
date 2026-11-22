@@ -156,13 +156,13 @@ bool AtomicReplaceFile(const std::filesystem::path& tmp_path, const std::filesys
     std::error_code ec;
     std::filesystem::rename(tmp_path, final_path, ec);
     if (!ec) return true;
-    out_err = "MoveFileExW failed (" + std::to_string(err_code) + "), rename failed: " + ec.message();
+    out_err = "MoveFileExW failed (" + std::to_string(err_code) + "), rename failed: " + DescribeSystemError(ec);
     return false;
 #else
     std::error_code ec;
     std::filesystem::rename(tmp_path, final_path, ec);
     if (!ec) return true;
-    out_err = ec.message();
+    out_err = DescribeSystemError(ec);
     return false;
 #endif
 }
@@ -386,14 +386,14 @@ bool AudioEngine::Initialize() {
         std::error_code dir_ec;
         std::filesystem::create_directories(Utf8ToPath(config_.music_dir), dir_ec);
         if (dir_ec) {
-            Logger::Instance().Warn("Failed to create audio.music_dir: " + dir_ec.message());
+            Logger::Instance().Warn("Failed to create audio.music_dir: " + DescribeSystemError(dir_ec));
         }
     }
     if (!config_.sound_dir.empty()) {
         std::error_code dir_ec;
         std::filesystem::create_directories(Utf8ToPath(config_.sound_dir), dir_ec);
         if (dir_ec) {
-            Logger::Instance().Warn("Failed to create audio.sound_dir: " + dir_ec.message());
+            Logger::Instance().Warn("Failed to create audio.sound_dir: " + DescribeSystemError(dir_ec));
         }
         if (!config_.music_dir.empty()) {
             std::error_code canon_ec;
@@ -420,11 +420,12 @@ bool AudioEngine::Initialize() {
     extraction_pool_.Start(ext_workers, 512 * 1024);
     transcode_scheduler_.Start(max_transcoders, 256 * 1024);
 
-    std::uint16_t port = config_.http_port;
-    bool auto_port = (port == 0);
-    if (auto_port) {
-        std::int32_t samp_port = host_.GetServerPort();
-        port = static_cast<std::uint16_t>(samp_port > 0 ? samp_port + 1 : 7778);
+    std::vector<std::uint16_t> http_ports;
+    {
+        std::string port_err;
+        if (!ParseHttpPortList(config_.http_port, http_ports, port_err)) {
+            ParseHttpPortList(kDefaultHttpPortList, http_ports, port_err);
+        }
     }
 
     const std::int32_t max_players = host_.GetMaxPlayers();
@@ -433,27 +434,49 @@ bool AudioEngine::Initialize() {
         config_.max_connections_per_ip > 0 ? config_.max_connections_per_ip : 64,
         max_players);
 
+    // Ports are tried in list order, so the first free one wins without delay. When every port is busy
+    // (typically the previous server process still releasing its socket after a quick restart), the list is
+    // retried every 250 ms for up to 3 s before falling back to an OS-assigned port.
     std::string err;
-    if (!http_server_.Start(config_.bind_ip, port, err, config_.log_http_listen)) {
-        if (!auto_port) {
-            Logger::Instance().Error(
-                "Configured HTTP port " + std::to_string(port) + " is unavailable (" + err +
-                "); failing initialization instead of falling back to an ephemeral port.");
-            Shutdown();
-            return false;
+    std::string first_err;
+    bool http_started = false;
+    const auto port_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
+    for (bool first_pass = true; !http_started; first_pass = false) {
+        for (std::uint16_t candidate : http_ports) {
+            if (http_server_.Start(config_.bind_ip, candidate, err, config_.log_http_listen)) {
+                http_started = true;
+                if (candidate != http_ports.front()) {
+                    Logger::Instance().Warn(
+                        "HTTP port " + std::to_string(http_ports.front()) + " was unavailable (" + first_err +
+                        "); using port " + std::to_string(candidate) + " from network.http_port.");
+                } else if (!first_pass) {
+                    Logger::Instance().Info(
+                        "HTTP port " + std::to_string(candidate) + " became available after retrying (" + first_err + ").");
+                }
+                break;
+            }
+            if (first_err.empty()) {
+                first_err = err;
+            }
         }
+        if (http_started || std::chrono::steady_clock::now() >= port_deadline) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    if (!http_started) {
         Logger::Instance().Warn(
-            "Auto-selected HTTP port " + std::to_string(port) + " unavailable (" + err +
-            "), trying ephemeral port...");
+            "No port from network.http_port ('" + config_.http_port + "') is available (" + first_err +
+            "); using an OS-assigned port instead.");
         if (!http_server_.Start(config_.bind_ip, 0, err, config_.log_http_listen)) {
             Logger::Instance().Error("Failed to start HTTP streaming server: " + err);
             Shutdown();
             return false;
         }
         Logger::Instance().Warn(
-            "HTTP streaming server bound to ephemeral port " +
+            "HTTP streaming server bound to OS-assigned port " +
             std::to_string(http_server_.BoundPort()) +
-            "; set 'http_port' explicitly in config if behind a firewall.");
+            "; players behind a firewall cannot reach it until a port from network.http_port is free and open.");
     }
 
     local_interfaces_ = DiscoverLocalIpv4Interfaces(config_.bind_ip);
@@ -7718,7 +7741,7 @@ bool AudioEngine::WriteChannelPersistFile(const ChannelPersistSnapshot& snap, st
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     if (ec) {
-        out_error = "Failed to create channels directory '" + dir.string() + "': " + ec.message();
+        out_error = "Failed to create channels directory '" + dir.string() + "': " + DescribeSystemError(ec);
         return false;
     }
 
@@ -7916,7 +7939,7 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
     std::filesystem::create_directories(dir, ec);
     if (ec) {
         Logger::Instance().Warn(
-            "Unable to create channel persistence directory '" + dir.string() + "': " + ec.message());
+            "Unable to create channel persistence directory '" + dir.string() + "': " + DescribeSystemError(ec));
         return;
     }
 

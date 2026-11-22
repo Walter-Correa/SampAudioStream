@@ -1,5 +1,6 @@
 #include "sampaudiostream/network/http_client.hpp"
 
+#include "sampaudiostream/core/config.hpp"
 #include "sampaudiostream/core/logger.hpp"
 
 #include <algorithm>
@@ -799,7 +800,7 @@ bool PerformRawHttpIcyRequest(
 
         asio::connect(sock, endpoints, ec);
         if (ec) {
-            out_error = "TCP connect failed: " + ec.message();
+            out_error = "TCP connect failed: " + DescribeSystemError(ec);
             return false;
         }
 
@@ -819,7 +820,7 @@ bool PerformRawHttpIcyRequest(
         std::string req_str = req.str();
         asio::write(sock, asio::buffer(req_str), ec);
         if (ec) {
-            out_error = "TCP write failed: " + ec.message();
+            out_error = "TCP write failed: " + DescribeSystemError(ec);
             return false;
         }
 
@@ -925,13 +926,13 @@ bool PerformRawHttpIcyRequest(
                 break;
             }
             if (ec) {
-                out_error = ec.message();
+                out_error = DescribeSystemError(ec);
                 return false;
             }
         }
         return true;
     } catch (const std::exception& ex) {
-        out_error = ex.what();
+        out_error = DescribeException(ex);
         return false;
     }
 }
@@ -2032,7 +2033,7 @@ bool ValidateRemoteUrlWithClass(
         }
         return true;
     } catch (const std::exception& ex) {
-        out_error = std::string("DNS resolution failed for ") + host + ": " + ex.what();
+        out_error = std::string("DNS resolution failed for ") + host + ": " + DescribeException(ex);
         return false;
     } catch (...) {
         out_error = "DNS resolution failed for " + host;
@@ -2138,7 +2139,7 @@ bool HttpClient::DownloadToFile(
         ec.clear();
         std::filesystem::rename(temp, target, ec);
         if (ec) {
-            out_error = "Failed to move downloaded file: " + ec.message();
+            out_error = "Failed to move downloaded file: " + DescribeSystemError(ec);
             return false;
         }
     }

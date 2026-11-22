@@ -57,4 +57,4 @@ Find immediate guidance based on your goal:
   * Community Pawn Compiler `3.10.x` (`qawno` / `sampctl`).
 * **Network Requirements:**
   * Outbound HTTPS access on the host server (to fetch extractor binaries on first boot and resolve media streams).
-  * One open TCP port for client audio streaming (default: `server_port + 1`, e.g. `7778`, configurable via `network.http_port`).
+  * Open TCP ports for client audio streaming (default list `7778-7785`, configurable via `network.http_port`; the first free port is used).

@@ -1111,7 +1111,7 @@ bool HttpStreamingServer::Start(const std::string& bind_ip, std::uint16_t port, 
         }
         return true;
     } catch (const std::exception& ex) {
-        out_error = ex.what();
+        out_error = DescribeException(ex);
         Stop();
         return false;
     }

@@ -68,7 +68,7 @@ Follow these 5 steps to install SampAudioStream and play your first track:
    > [!IMPORTANT]
    > Copy **only one** binary folder (`plugins/` **or** `components/`). Loading both in the same server process is rejected.
 
-4. **Open the streaming TCP port:** allow inbound TCP traffic on `server_port + 1` (default `7778` when your server runs on `7777`, or your custom `http_port`) in your OS firewall and VPS security group (note: LAN players automatically receive local/loopback URLs when `lan_aware_urls` is `true`, while remote players require port-forwarding). Start the server and confirm `HTTP audio streaming server listening on ...` appears in the console log. ([Firewall & verification steps](docs/getting-started.md#3-open-the-audio-port-firewall))
+4. **Open the streaming TCP port:** allow inbound TCP traffic on every port of `network.http_port` (default `7778-7785`, the first free one is used) in your OS firewall and VPS security group (note: LAN players automatically receive local/loopback URLs when `lan_aware_urls` is `true`, while remote players require port-forwarding). Start the server and confirm `HTTP audio streaming server listening on ...` appears in the console log. ([Firewall & verification steps](docs/getting-started.md#3-open-the-audio-port-firewall))
 5. **Include `<SampAudioStream>` in your Pawn script and compile:** place `#include <SampAudioStream>` **after** `<open.mp>` or `<a_samp>`, then recompile and start playing audio. Confirm `yt-dlp ... downloaded and SHA-256 verified` and `QuickJS-ng downloaded and SHA-256 verified` appear on first boot. ([First startup log](docs/getting-started.md#4-first-startup-what-the-log-should-show))
 
 ```pawn
@@ -151,6 +151,12 @@ ctest --test-dir build -R core_tests --output-on-failure
 ### 2.3.1 — 22/11/2026
 - **Attach With Range in One Update**:
   - `SA_AttachAudioStreamChannelToPlayer` and `SA_AttachAudioStreamChannelToVehicle` take an optional `Float:distance`. A value above `0.0` sets the hearing range together with the attachment, so listeners get one re-dispatch instead of the two caused by `SA_SetAudioStreamChannelPos` followed by an attach (which could make the SA-MP client play two streams at once). `0.0` keeps the current range; non-finite values are rejected.
+- **HTTP Port List (`network.http_port`)**:
+  - `network.http_port` is now a list of TCP ports, single ports and ascending ranges separated by commas, tried in order (default `"7778-7785"`, e.g. `"7778-7780,7785,7792"`). The first free port is used immediately; when every port is busy, as happens right after a quick server restart, the list is retried every 250 ms for up to 3 s before falling back to an OS-assigned port with a warning.
+  - Legacy integers keep working (`7778` is a one-port list, `0` the default list); invalid lists fall back to the default.
+  - A busy fixed port no longer fails initialization; it follows the same retry and fallback.
+- **English System Error Messages**:
+  - Socket and file errors in the log are described in English (for example `address already in use (10048)`) instead of the localized text Windows returns.
 - **Range Groups**:
   - New `SA_SetAudioStreamChannelGroup` / `SA_GetAudioStreamChannelGroup` put a channel in a range group (`1..31`), and `SA_SetPlayerAudioStreamGroupMuted` / `SA_IsPlayerAudioStreamGroupMuted` let a player stop hearing that group through range while joined channels keep playing, so scripts can offer separate "hear boomboxes" and "hear car speakers" options instead of muting everything. The group is saved with persistent channels.
 - **Titles Without File Extensions**:

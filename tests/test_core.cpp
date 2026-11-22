@@ -381,10 +381,10 @@ void TestConfigManager() {
     TEST_CHECK(cfg.hook_native_audio == true);
     TEST_CHECK(std::filesystem::exists(temp_cfg));
 
-    cfg.http_port = 8899;
+    cfg.http_port = "8899";
     TEST_CHECK(ConfigManager::Save(cfg, temp_cfg));
     PluginConfig loaded = ConfigManager::LoadOrCreate(temp_cfg);
-    TEST_CHECK(loaded.http_port == 8899);
+    TEST_CHECK(loaded.http_port == "8899");
 
     // Malformed JSON must not be overwritten and must fall back safely
     {
@@ -420,7 +420,7 @@ void TestConfigManager() {
         oor_ofs << R"({"network":{"http_port":70000},"audio":{"max_concurrent_streams":-5,"transcoder_burst_ms":999999},"scripting":{"pawn_text_encoding":"cp1252"}})";
     }
     PluginConfig oor_loaded = ConfigManager::LoadOrCreate(temp_cfg);
-    TEST_CHECK(oor_loaded.http_port == 0);
+    TEST_CHECK(oor_loaded.http_port == "7778-7785");
     TEST_CHECK(oor_loaded.max_concurrent_streams == 64);
     TEST_CHECK(oor_loaded.transcoder_burst_ms == 6000);
     TEST_CHECK(oor_loaded.pawn_text_encoding == "cp1252");
@@ -946,7 +946,7 @@ void TestAudioEngineArbitrationAndDisconnect() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.auto_download_extractor = false;
     cfg.auto_update_extractor = false;
     cfg.allow_private_network_urls = true;
@@ -1107,7 +1107,7 @@ void TestSpatialPerformanceBenchmark() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.auto_download_extractor = false;
     cfg.auto_update_extractor = false;
     cfg.spatial_update_interval_ms = 0;
@@ -1158,7 +1158,7 @@ void TestRound60Features() {
         PluginConfig c;
         c.bind_ip = "127.0.0.1";
         c.public_ip = "127.0.0.1";
-        c.http_port = 0;
+        c.http_port = "0";
         c.base_dir = temp_dir.string();
         c.bin_dir = (temp_dir / "bin").string();
         c.auto_download_extractor = false;
@@ -1754,7 +1754,7 @@ void TestRound2EngineChecks() {
     MockPlatformHost host;
     host.players = {{0, {0.0f, 0.0f, 0.0f}, 0, 0}};
 
-    // 1. Explicit busy http_port must fail Initialize() cleanly instead of falling back to ephemeral port
+    // 1. A busy network.http_port list is retried for about 3 s, then an OS-assigned port is used
     asio::io_context blocker_io;
     asio::ip::tcp::acceptor blocker(blocker_io, asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), 0));
     std::uint16_t busy_port = blocker.local_endpoint().port();
@@ -1762,18 +1762,36 @@ void TestRound2EngineChecks() {
     PluginConfig busy_cfg;
     busy_cfg.bind_ip = "127.0.0.1";
     busy_cfg.public_ip = "127.0.0.1";
-    busy_cfg.http_port = busy_port;
+    busy_cfg.http_port = std::to_string(busy_port);
     busy_cfg.auto_download_extractor = false;
 
-    AudioEngine busy_engine(host, busy_cfg);
-    TEST_CHECK(!busy_engine.Initialize());
+    {
+        AudioEngine busy_engine(host, busy_cfg);
+        TEST_CHECK(busy_engine.Initialize());
+        TEST_CHECK(busy_engine.GetHttpPort() != 0 && busy_engine.GetHttpPort() != busy_port);
+        busy_engine.Shutdown();
+    }
+    // The next free port of the list is used right away when the first one is busy
+    {
+        asio::ip::tcp::acceptor probe(blocker_io, asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+        const std::uint16_t free_port = probe.local_endpoint().port();
+        probe.close();
+        PluginConfig list_cfg = busy_cfg;
+        list_cfg.http_port = std::to_string(busy_port) + "," + std::to_string(free_port);
+        AudioEngine list_engine(host, list_cfg);
+        const auto t0 = std::chrono::steady_clock::now();
+        TEST_CHECK(list_engine.Initialize());
+        TEST_CHECK(list_engine.GetHttpPort() == free_port);
+        TEST_CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(2000));
+        list_engine.Shutdown();
+    }
     blocker.close();
 
     // 2. SA_PauseChannelAudioStream(id, false) must NOT transition Idle/Stopped channels to Playing
     PluginConfig ok_cfg;
     ok_cfg.bind_ip = "127.0.0.1";
     ok_cfg.public_ip = "127.0.0.1";
-    ok_cfg.http_port = 0;
+    ok_cfg.http_port = "0";
     ok_cfg.auto_download_extractor = false;
 
     AudioEngine engine(host, ok_cfg);
@@ -1797,7 +1815,7 @@ void TestRound2EngineChecks() {
         PluginConfig lim_cfg;
         lim_cfg.bind_ip = "127.0.0.1";
         lim_cfg.public_ip = "127.0.0.1";
-        lim_cfg.http_port = 0;
+        lim_cfg.http_port = "0";
         lim_cfg.auto_download_extractor = false;
         lim_cfg.max_concurrent_streams = 10;
         lim_cfg.max_concurrent_transcoders = 1;
@@ -2068,7 +2086,7 @@ void TestRound5ConcurrencyReplacementAndPreResolvePause() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.auto_download_extractor = false;
     cfg.allow_private_network_urls = true;
     cfg.max_concurrent_streams = 2;
@@ -2326,7 +2344,7 @@ void TestRound6UnpauseBeforeReady() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.auto_download_extractor = false;
     cfg.allow_private_network_urls = true;
 
@@ -2669,7 +2687,7 @@ void TestRound8Fase2Ssrf() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "203.0.113.10";
-    cfg.http_port = 0; // defaults to 7778
+    cfg.http_port = "0"; // defaults to 7778
     cfg.auto_download_extractor = false;
     TEST_CHECK(!cfg.allow_private_network_urls); // Default is false
 
@@ -2874,7 +2892,7 @@ void TestRound8Fase3Fixes() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.auto_download_extractor = false;
         cfg.allow_private_network_urls = true;
 
@@ -4759,7 +4777,7 @@ void TestV120ProcessingCallbackAndToggle() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.auto_download_extractor = false;
 
     AudioEngine engine(host, cfg);
@@ -4897,7 +4915,7 @@ void TestV120SetDistanceAndMp3FrameSync() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.auto_download_extractor = false;
 
     TEST_PHASE("Initialize");
@@ -5142,7 +5160,7 @@ void TestV120ProcessDirectAudioFiles() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.allow_private_network_urls = true;
         cfg.auto_download_extractor = false;
 
@@ -5239,7 +5257,7 @@ void TestV120SetPosAndAutoAttach() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.allow_private_network_urls = true;
     cfg.auto_download_extractor = false;
 
@@ -5423,7 +5441,7 @@ void TestV200CompleteChannelSystem() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.auto_download_extractor = false;
 
     AudioEngine engine(host, cfg);
@@ -5604,7 +5622,7 @@ static void TestV200CreatorReconnectRenameAndPolicyGuards() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.auto_download_extractor = false;
 
     AudioEngine engine(host, cfg);
@@ -5965,7 +5983,7 @@ static void TestV200EncodingPassthroughVolumeAndChannelOps() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.auto_download_extractor = false;
     cfg.pawn_text_encoding = "cp1252";
 
@@ -6208,7 +6226,7 @@ static void TestRound31SkipChannelConcurrencyPreservesQueue() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.auto_download_extractor = false;
     cfg.allow_private_network_urls = true;
     cfg.max_concurrent_streams = 1;
@@ -6370,7 +6388,7 @@ static void TestRound32CallbacksLimitsAndOptionals() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.auto_download_extractor = false;
     cfg.allow_private_network_urls = true;
     cfg.transcoder_burst_ms = 2000;
@@ -6587,7 +6605,7 @@ static void TestRound32PositionalChannelsQueueManipulationAndLoop() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.auto_download_extractor = false;
     cfg.allow_private_network_urls = true;
     cfg.spatial_update_interval_ms = 20;
@@ -6852,7 +6870,7 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.auto_download_extractor = false;
         cfg.base_dir = temp_base.string();
         cfg.pawn_text_encoding = "cp1252";
@@ -6897,7 +6915,7 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.auto_download_extractor = false;
         cfg.base_dir = temp_base.string();
         cfg.pawn_text_encoding = "cp1252";
@@ -6990,7 +7008,7 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.auto_download_extractor = false;
         cfg.base_dir = grace_dir.string();
 
@@ -7010,7 +7028,7 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.auto_download_extractor = false;
         cfg.channel_restore_grace_seconds = 1;
         cfg.base_dir = grace_dir.string();
@@ -7043,7 +7061,7 @@ static void TestRound32ChannelPersistenceAndLifecycle() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.auto_download_extractor = false;
         cfg.max_channels = 2;
         cfg.base_dir = bad_dir.string();
@@ -7184,7 +7202,7 @@ static void TestRound33AuditedFixes() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.auto_download_extractor = false;
         cfg.allow_private_network_urls = true;
         cfg.base_dir = p1345_dir.string();
@@ -7380,7 +7398,7 @@ static void TestRound33AuditedFixes() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.auto_download_extractor = false;
         cfg.base_dir = p2_dir.string();
 
@@ -7453,7 +7471,7 @@ static void TestRound33AuditedFixes() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.auto_download_extractor = false;
         cfg.base_dir = p6_dir.string();
 
@@ -7569,7 +7587,7 @@ static void TestRound35FeaturesPart1To8() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.base_dir = temp_base.string();
     cfg.bin_dir = (temp_base / "bin").string();
     cfg.auto_download_extractor = false;
@@ -8313,7 +8331,7 @@ static void TestRound35SeekAndTranscoder() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.base_dir = temp_base.string();
     cfg.bin_dir = (temp_base / "bin").string();
     cfg.auto_download_extractor = false;
@@ -8527,7 +8545,7 @@ static void TestRound36AuditedFixes() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.base_dir = temp_base.string();
     cfg.bin_dir = (temp_base / "bin").string();
     cfg.auto_download_extractor = false;
@@ -8746,7 +8764,7 @@ static void TestRound37ExtractorSettledErrorMessage() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.base_dir = temp_base.string();
     cfg.bin_dir = (temp_base / "bin").string();
     cfg.auto_download_extractor = false;
@@ -9155,7 +9173,7 @@ void TestRound41ExtractorReResolveAndPersonalLog() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.base_dir = temp_base.string();
     cfg.bin_dir = (temp_base / "bin").string();
     cfg.auto_download_extractor = false;
@@ -11267,7 +11285,7 @@ void TestRound47AvailableAtAndEarly403Retry() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.base_dir = temp_base.string();
     cfg.bin_dir = (temp_base / "bin").string();
     cfg.auto_download_extractor = false;
@@ -11981,7 +11999,7 @@ void TestRound49WaitingCallbacks() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.base_dir = temp_base.string();
     cfg.bin_dir = (temp_base / "bin").string();
     cfg.auto_download_extractor = false;
@@ -13358,7 +13376,7 @@ void TestRound52PartBUnifiedConfig() {
         "    {\n"
         "        \"bind_ip\": \"0.0.0.0\",\n"
         "        \"public_ip\": \"\",\n"
-        "        \"http_port\": 0,\n"
+        "        \"http_port\": \"7778-7785\",\n"
         "        \"lan_aware_urls\": true,\n"
         "        \"allow_private_network_urls\": false,\n"
         "        \"max_connections_per_ip\": 64\n"
@@ -13452,7 +13470,7 @@ void TestRound52PartBUnifiedConfig() {
         PluginConfig custom;
         custom.bind_ip = "127.0.0.1";
         custom.public_ip = "203.0.113.42";
-        custom.http_port = 8123;
+        custom.http_port = "8123";
         custom.lan_aware_urls = false;
         custom.allow_private_network_urls = true;
         custom.max_connections_per_ip = 128;
@@ -13493,7 +13511,7 @@ void TestRound52PartBUnifiedConfig() {
         const PluginConfig read_back = ConfigManager::LoadOrCreate(custom_path.string());
         TEST_CHECK(read_back.bind_ip == custom.bind_ip);
         TEST_CHECK(read_back.public_ip == custom.public_ip);
-        TEST_CHECK(read_back.http_port == 8123);
+        TEST_CHECK(read_back.http_port == "8123");
         TEST_CHECK(!read_back.lan_aware_urls);
         TEST_CHECK(read_back.allow_private_network_urls);
         TEST_CHECK(read_back.max_connections_per_ip == 128);
@@ -13596,6 +13614,8 @@ void TestRound52PartBUnifiedConfig() {
         // Override values across all 7 open.mp dotted groups, including Ajuste 1 bug extractor.js_runtime = "quickjs"
         omp_strings["sampaudiostream.network.bind_ip"] = "10.1.2.3";
         omp_strings["sampaudiostream.network.public_ip"] = "198.51.100.9";
+        // A legacy integer in the server config.json replaces the string default (one value per key, like open.mp)
+        omp_strings.erase("sampaudiostream.network.http_port");
         omp_ints["sampaudiostream.network.http_port"] = 7999;
         omp_bools["sampaudiostream.network.lan_aware_urls"] = false;
         omp_bools["sampaudiostream.network.allow_private_network_urls"] = true;
@@ -13656,7 +13676,7 @@ void TestRound52PartBUnifiedConfig() {
         const PluginConfig omp_loaded = ConfigManager::LoadFromOmp(reader);
         TEST_CHECK(omp_loaded.bind_ip == "10.1.2.3");
         TEST_CHECK(omp_loaded.public_ip == "198.51.100.9");
-        TEST_CHECK(omp_loaded.http_port == 7999);
+        TEST_CHECK(omp_loaded.http_port == "7999");
         TEST_CHECK(!omp_loaded.lan_aware_urls);
         TEST_CHECK(omp_loaded.allow_private_network_urls);
         TEST_CHECK(omp_loaded.max_connections_per_ip == 256);
@@ -14133,7 +14153,7 @@ void TestRound53NetworkRetryAndPortWarn() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.base_dir = temp_b5.string();
         cfg.bin_dir = (temp_b5 / "bin").string();
         cfg.auto_download_extractor = false;
@@ -14271,7 +14291,7 @@ void TestRound53NetworkRetryAndPortWarn() {
             PluginConfig c;
             c.bind_ip = "127.0.0.1";
             c.public_ip = "127.0.0.1";
-            c.http_port = 0;
+            c.http_port = "0";
             c.base_dir = temp_b7.string();
             c.bin_dir = (temp_b7 / "bin").string();
             c.auto_download_extractor = false;
@@ -14737,7 +14757,7 @@ void TestRound54HttpConnectionLimits() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.base_dir = temp_r54.string();
         cfg.bin_dir = (temp_r54 / "bin").string();
         cfg.auto_download_extractor = false;
@@ -15413,7 +15433,7 @@ void TestRound67Features() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.base_dir = dir.string();
         cfg.bin_dir = (dir / "bin").string();
         cfg.auto_download_extractor = false;
@@ -15854,7 +15874,7 @@ void TestRound68Features() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.base_dir = r68_dir.string();
         cfg.auto_download_extractor = false;
         cfg.auto_update_extractor = false;
@@ -16041,7 +16061,7 @@ void TestRound69Features() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.base_dir = r69_dir.string();
         cfg.bin_dir = (r69_dir / "bin").string();
         cfg.auto_download_extractor = false;
@@ -16163,7 +16183,7 @@ void TestRound69Features() {
         PluginConfig cfg;
         cfg.bind_ip = "127.0.0.1";
         cfg.public_ip = "127.0.0.1";
-        cfg.http_port = 0;
+        cfg.http_port = "0";
         cfg.base_dir = (r69_dir / "eng").string();
         cfg.auto_download_extractor = false;
         cfg.auto_update_extractor = false;
@@ -16542,7 +16562,7 @@ void TestRound70Features() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.base_dir = r70_dir.string();
     cfg.bin_dir = (r70_dir / "bin").string();
     cfg.music_dir = music_dir.string();
@@ -17021,7 +17041,7 @@ void TestRound71SoundFiles() {
     PluginConfig cfg;
     cfg.bind_ip = "127.0.0.1";
     cfg.public_ip = "127.0.0.1";
-    cfg.http_port = 0;
+    cfg.http_port = "0";
     cfg.base_dir = r71_dir.string();
     cfg.bin_dir = (r71_dir / "bin").string();
     cfg.music_dir = music_dir.string();
@@ -17352,6 +17372,59 @@ void TestRound75AudioDisplayNames() {
     std::cout << "[PASS] TestRound75AudioDisplayNames\n";
 }
 
+void TestRound77HttpPortList() {
+    std::vector<std::uint16_t> ports;
+    std::string perr;
+    TEST_CHECK(ParseHttpPortList("7778-7780,7785,7792", ports, perr));
+    TEST_CHECK((ports == std::vector<std::uint16_t>{7778, 7779, 7780, 7785, 7792}));
+    TEST_CHECK(ParseHttpPortList(" 8000 , 8000-8001 ", ports, perr));
+    TEST_CHECK((ports == std::vector<std::uint16_t>{8000, 8001}));
+    TEST_CHECK(ParseHttpPortList("0", ports, perr) && ports.size() == 8 && ports.front() == 7778 && ports.back() == 7785);
+    TEST_CHECK(ParseHttpPortList("", ports, perr) && ports.size() == 8);
+    TEST_CHECK(ParseHttpPortList("9000", ports, perr) && ports.size() == 1 && ports[0] == 9000);
+    TEST_CHECK(!ParseHttpPortList("7780-7778", ports, perr) && ports.empty() && !perr.empty());
+    TEST_CHECK(!ParseHttpPortList("70000", ports, perr));
+    TEST_CHECK(!ParseHttpPortList("abc", ports, perr));
+    TEST_CHECK(!ParseHttpPortList("7778,,7779", ports, perr));
+    TEST_CHECK(!ParseHttpPortList("7778-", ports, perr));
+    TEST_CHECK(!ParseHttpPortList("1-100", ports, perr));
+
+    // Defaults and sanitize
+    PluginConfig def_cfg;
+    TEST_CHECK(def_cfg.http_port == "7778-7785");
+    PluginConfig bad_cfg;
+    bad_cfg.http_port = "nope";
+    ConfigManager::Sanitize(bad_cfg);
+    TEST_CHECK(bad_cfg.http_port == "7778-7785");
+    PluginConfig zero_cfg;
+    zero_cfg.http_port = "0";
+    ConfigManager::Sanitize(zero_cfg);
+    TEST_CHECK(zero_cfg.http_port == "7778-7785");
+
+    // JSON accepts a list string or a legacy integer
+    const auto cfg_dir = std::filesystem::temp_directory_path() / "sampaudiostream_test_r77";
+    std::error_code fec;
+    std::filesystem::create_directories(cfg_dir, fec);
+    const std::string cfg_path = (cfg_dir / "cfg.json").string();
+    auto load_with = [&](const std::string& network_json) {
+        {
+            std::ofstream ofs(cfg_path, std::ios::trunc);
+            ofs << "{\"network\":{" << network_json << "}}";
+        }
+        return ConfigManager::LoadOrCreate(cfg_path);
+    };
+    TEST_CHECK(load_with("\"http_port\":\"7790-7791,7800\"").http_port == "7790-7791,7800");
+    TEST_CHECK(load_with("\"http_port\":7801").http_port == "7801");
+    TEST_CHECK(load_with("\"http_port\":0").http_port == "7778-7785");
+    TEST_CHECK(load_with("\"http_port\":\"bad\"").http_port == "7778-7785");
+    std::filesystem::remove_all(cfg_dir, fec);
+
+    // System errors are described in English regardless of the OS language
+    TEST_CHECK(DescribeSystemError(std::make_error_code(std::errc::address_in_use)).rfind("address already in use", 0) == 0);
+    TEST_CHECK(DescribeSystemError(std::error_code()) == "no error");
+    std::cout << "[PASS] TestRound77HttpPortList\n";
+}
+
 void TestRound74LocalFilePullBuffer() {
     std::error_code fec;
     const auto r74_dir = std::filesystem::temp_directory_path() / "sampaudiostream_test_r74";
@@ -17512,6 +17585,7 @@ int main(int argc, char** argv) {
     RUN_TEST(TestRound71SoundFiles);
     RUN_TEST(TestRound74LocalFilePullBuffer);
     RUN_TEST(TestRound75AudioDisplayNames);
+    RUN_TEST(TestRound77HttpPortList);
     g_tests_done.store(true, std::memory_order_release);
     if (watchdog_thread.joinable()) watchdog_thread.join();
     std::cout << "All core unit tests passed!\n";

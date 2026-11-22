@@ -131,28 +131,28 @@ Optional compile-time flags before `#include <SampAudioStream>`:
 ## 3. Open the Audio Port (Firewall)
 
 * **Why:** Each player's GTA client downloads audio over HTTP directly from your server on this TCP port (`http://<public_ip>:<http_port>/stream/<token>`). If this port is blocked, Pawn commands succeed without error, but **no player hears audio**.
-* **Which port:** Check the port printed in `HTTP audio streaming server listening on IP:PORT` (default is `server_port + 1`, e.g. `7778` when your server runs on `7777`).
+* **Which ports:** the plugin uses the first free port of `network.http_port` (default `"7778-7785"`) and prints it in `HTTP audio streaming server listening on IP:PORT`. Open the **whole list** so audio keeps working when the first port is still busy (for example right after a quick server restart, the plugin moves on to the next port of the list).
 
 ### Windows Firewall (PowerShell as Administrator)
 ```powershell
-New-NetFirewallRule -DisplayName "SampAudioStream" -Direction Inbound -Protocol TCP -LocalPort 7778 -Action Allow
+New-NetFirewallRule -DisplayName "SampAudioStream" -Direction Inbound -Protocol TCP -LocalPort 7778-7785 -Action Allow
 ```
 
 ### Linux (`ufw`)
 ```bash
-sudo ufw allow 7778/tcp
+sudo ufw allow 7778:7785/tcp
 ```
 
 ### Linux (`firewalld`)
 ```bash
-sudo firewall-cmd --permanent --add-port=7778/tcp && sudo firewall-cmd --reload
+sudo firewall-cmd --permanent --add-port=7778-7785/tcp && sudo firewall-cmd --reload
 ```
 
 ### VPS / Cloud Security Groups
-If your server runs on AWS, Oracle Cloud, Azure, DigitalOcean, OVH, Hetzner, or a game-hosting VPS, also add an inbound TCP allow rule for port `7778` (or your custom `http_port`) in your provider's network firewall / security group dashboard.
+If your server runs on AWS, Oracle Cloud, Azure, DigitalOcean, OVH, Hetzner, or a game-hosting VPS, also add an inbound TCP allow rule for ports `7778-7785` (or every port of your custom `http_port` list) in your provider's network firewall / security group dashboard.
 
 ### External Connectivity & Local LAN Testing (`lan_aware_urls`)
-* **Remote / Internet players:** if your server is behind a home router, NAT, or cloud firewall, **port-forward TCP `http_port`** (default `7778`) to the server machine and allow it in your VPS security group dashboard.
+* **Remote / Internet players:** if your server is behind a home router, NAT, or cloud firewall, **port-forward every TCP port of `http_port`** (default `7778-7785`) to the server machine and allow it in your VPS security group dashboard.
 * **Local / LAN testing (`lan_aware_urls: true`, default):** if you connect from the same PC (`127.0.0.1`) or the same local subnet (`192.168.x.x`, `10.x.x.x`, `172.16–31.x.x`), SampAudioStream inspects the player's IP via `GetPlayerIp` and automatically builds the URL using `127.0.0.1` or the matching local NIC address instead of the external WAN `public_ip` (preventing NAT hairpinning issues during testing), while still sending `public_ip` to internet players. Set `lan_aware_urls` to `false` if a reverse proxy makes all players look local.
 * **Quick port test:** from a **different network** (for example, your phone on 4G/5G with Wi-Fi disabled), open `http://<YOUR_PUBLIC_IP>:7778/` in a browser:
   * Receiving **`404 Not Found`** (or `400 Bad Request`) confirms the TCP port is open and SampAudioStream's HTTP server is reachable externally.
@@ -199,7 +199,11 @@ The initial download takes a few seconds depending on network speed. Until it co
 
 ### Usually You Only Need to Change
 * **`network.public_ip`**: set your server's public IPv4 or domain manually if auto-detection picks the wrong interface (NAT, multi-homed machines, or reverse proxies). Setting `network.public_ip` also skips external IP lookup requests on startup.
-* **`network.http_port`**: `0` (default) automatically uses `server_port + 1` (e.g. `7778`). Set a fixed port (`1..65535`) if your host only forwards specific ports (a non-zero `network.http_port` fails initialization cleanly if already in use rather than picking an ephemeral port).
+* **`network.http_port`**: TCP ports for the audio HTTP server, as a string of single ports and ranges separated by commas, tried in order. Default `"7778-7785"`.
+  * Examples: `"7778"` (one port), `"7778-7785"` (range), `"7778-7780,7785,7792"` (mixed). Spaces are ignored, duplicates are skipped, ranges must be ascending, ports go from `1` to `65535`, at most 64 ports.
+  * The first free port of the list is used immediately, so the first port has priority whenever it is free. If every port is busy (typically the previous server process still releasing its socket after a quick restart), the list is retried every 250 ms for up to 3 s; only then does the plugin fall back to a random OS-assigned port and log a warning, since players behind a firewall cannot reach that port.
+  * Open every port of the list in your firewall / port forwarding (see [Open the Audio Port](#3-open-the-audio-port-firewall)).
+  * Legacy integer values still work: a number such as `7778` is a one-port list and `0` means the default list. An invalid list falls back to the default with a warning.
 * **`network.lan_aware_urls`**: `true` (default) automatically gives `127.0.0.1` / LAN players a matching local server IP instead of the WAN `network.public_ip`.
 * **`network.allow_private_network_urls`**: keep `false` (default) on public servers for SSRF protection; set `true` only if you intentionally stream audio from trusted LAN/private servers.
 
@@ -211,7 +215,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
 | :--- | :--- | :--- |
 | `network.bind_ip` | `"0.0.0.0"` | Interface IP to bind HTTP streaming socket |
 | `network.public_ip` | `""` | Empty = auto-detect public IPv4 on startup |
-| `network.http_port` | `0` | `0` (`server_port + 1`) or `1..65535` |
+| `network.http_port` | `"7778-7785"` | Port list tried in order: single ports and ascending ranges separated by commas (e.g. `"7778-7780,7785"`), `1..65535`, up to 64 ports; first free port wins, retried up to 3 s, then an OS-assigned port |
 | `network.lan_aware_urls` | `true` | Serve local NIC/`127.0.0.1` URLs to LAN players |
 | `network.allow_private_network_urls` | `false` | Anti-SSRF block on private/loopback/metadata IPs |
 | `network.max_connections_per_ip` | `64` | `1..4096` simultaneous open HTTP audio connections per IP *(raise on CGNAT/mobile/LAN-heavy servers; if your firewall has a per-IP rule such as `iptables connlimit`, set it >= this value)* |
@@ -261,7 +265,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
       {
           "bind_ip": "0.0.0.0",
           "public_ip": "",
-          "http_port": 0,
+          "http_port": "7778-7785",
           "lan_aware_urls": true,
           "allow_private_network_urls": false,
           "max_connections_per_ip": 64
@@ -330,7 +334,7 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
           {
               "bind_ip": "0.0.0.0",
               "public_ip": "",
-              "http_port": 0,
+              "http_port": "7778-7785",
               "lan_aware_urls": true,
               "allow_private_network_urls": false,
               "max_connections_per_ip": 64
@@ -399,14 +403,14 @@ On **SA-MP**, these groups and keys live in `scriptfiles/SampAudioStream/config.
 | Symptom | Probable Cause | Solution |
 | :--- | :--- | :--- |
 | Log shows `32-bit libcurl (libcurl.so.4) not found` | Linux host is missing 32-bit `libcurl` | Run the exact install command printed in the log, or pick your distro in [1. Requirements](#1-requirements), then restart the server |
-| Players hear nothing and no error appears *(log shows `Player <id> did not connect to the audio stream within 15 s (HTTP port <port>/TCP)`)* | The plugin's HTTP TCP port is blocked in the server firewall or `network.public_ip` is wrong | Open TCP `network.http_port` (by default `server_port + 1`, e.g. `7778`) in your host firewall/control panel — e.g. `sudo ufw allow 7778/tcp` or `sudo iptables -A INPUT -p tcp --dport 7778 -j ACCEPT` followed by `sudo netfilter-persistent save` (TCP and UDP are separate ports, so another service using the same port on **UDP** such as sampvoice does **not** conflict) |
+| Players hear nothing and no error appears *(log shows `Player <id> did not connect to the audio stream within 15 s (HTTP port <port>/TCP)`)* | The plugin's HTTP TCP port is blocked in the server firewall or `network.public_ip` is wrong | Open every TCP port of `network.http_port` (by default `7778-7785`) in your host firewall/control panel — e.g. `sudo ufw allow 7778:7785/tcp` or `sudo iptables -A INPUT -p tcp --dport 7778:7785 -j ACCEPT` followed by `sudo netfilter-persistent save` (TCP and UDP are separate ports, so another service using the same port on **UDP** such as sampvoice does **not** conflict) |
 | Some players hear nothing on busy servers / mobile players *(log shows `HTTP audio connection ... rejected: per-IP limit reached` or `total connection limit reached`)* | The server hit `network.max_connections_per_ip` (CGNAT/mobile carriers, LAN houses), a firewall per-IP limit is lower, or non-player connections exhausted the automatic slot-derived total limit (`player slots × 2 + 64`) | Raise `network.max_connections_per_ip` (`1..4096`) in config and ensure any firewall per-IP cap (e.g. `iptables connlimit`) is **>= `network.max_connections_per_ip`**. If `total connection limit reached` appears, inspect incoming traffic for non-player connections. On Linux, if the startup log warns about the open file limit, raise the hard limit (`LimitNOFILE=` in systemd or `nofile` in `/etc/security/limits.conf`) |
 | Only you (on the server machine) hear audio | `network.http_port` is blocked externally / not port-forwarded | Keep `network.lan_aware_urls: true` for LAN testing, and open + port-forward TCP `network.http_port` externally so remote players can reach `network.public_ip` |
 | Error code `6` (`SA_ERR_EXTRACTOR_NOT_READY`) | `yt-dlp` / `qjs` is still downloading or blocked | Wait a few seconds after startup and check the console log; ensure outbound HTTPS access is allowed |
 | Error code `1` (`"URL not allowed"`) | Target resolves to loopback/private IP (anti-SSRF) | Use a public URL, or set `allow_private_network_urls` to `true` only for trusted internal audio servers |
 | Error code `3` (`"DNS resolution failed for <host>"`) | Domain name typo, offline host, or server DNS outage | Verify hostname spelling and server DNS resolution (`nslookup <host>`) |
 | YouTube fails with *"Sign in to confirm you're not a bot"* (`SA_ERR_AUTH_REQUIRED`) | Datacenter/VPS IP challenged by YouTube and automatic cookie fallback found no valid cookies | Follow [the YouTube Cookies Guide](youtube-cookies.md) (sign in with a secondary account in Firefox on the server, or place exported `cookies.txt` at `scriptfiles/SampAudioStream/cookies.txt`) |
-| Log shows `Configured HTTP port N is unavailable` | Port is already bound by another process | Change `http_port` to an unused TCP port (or `0` for `server_port + 1`) and update firewall rules |
+| Log shows `No port from network.http_port (...) is available` or `using an OS-assigned port` | Every port of the list is bound by another process (or still held by a server that did not finish closing) | Add free ports to `http_port` (e.g. `"7778-7785,7790-7795"`), open them in the firewall, and make sure the previous server process has exited before starting a new one |
 | Log shows `already active in this process` | Both `plugins/` and `components/` binaries were loaded | Remove the extra copy so only `plugins/` **or** `components/` is loaded (never both) |
 | Pawn compile error on `SampAudioStream.inc` | Included before `<a_samp>` / `<open.mp>`, or wrong folder | Place `SampAudioStream.inc` in `pawno/include/` (or `qawno/include/`) and include it **after** `<a_samp>` or `<open.mp>` |
 | Platform links (e.g. YouTube) suddenly fail for everyone with error code `2` (`SA_ERR_EXTRACTION_FAILED`), while direct MP3/radio URLs still work | The platform changed and the installed `yt-dlp` is outdated | Wait for the automatic update (`extractor.auto_update`), or force it: stop the server, delete `scriptfiles/SampAudioStream/bin/`, and start again so the latest `yt-dlp` is downloaded |

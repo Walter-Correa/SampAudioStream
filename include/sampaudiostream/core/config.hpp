@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <exception>
+#include <system_error>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -11,7 +13,9 @@ namespace sampaudiostream {
 struct PluginConfig {
     std::string bind_ip{"0.0.0.0"};
     std::string public_ip{""}; // Auto-detected if empty
-    std::uint16_t http_port{0}; // 0 = server_port + 1
+    // TCP ports for the audio HTTP server, tried in order: single ports and ranges separated by commas
+    // ("7778-7785,7790"). Integer 0 / "0" means the default list.
+    std::string http_port{"7778-7785"};
     bool allow_private_network_urls{false};
     bool lan_aware_urls{true};
     std::uint32_t max_connections_per_ip{64};
@@ -124,6 +128,18 @@ bool CanRepresentTextInPawnEncoding(const std::string& utf8, const std::string& 
 // Portable UTF-8 <-> std::filesystem::path conversions (wide UTF-16 on Windows, byte pass-through on POSIX).
 std::filesystem::path Utf8ToPath(const std::string& utf8);
 std::string PathToUtf8(const std::filesystem::path& path);
+
+// Default network.http_port list.
+inline constexpr const char* kDefaultHttpPortList = "7778-7785";
+
+// Parses a network.http_port list ("7778-7785,7790"): comma-separated ports (1..65535) or ascending ranges,
+// spaces ignored, duplicates dropped, order kept, at most 64 ports. Empty or "0" yields the default list.
+bool ParseHttpPortList(const std::string& spec, std::vector<std::uint16_t>& out_ports, std::string& out_error);
+
+// English description of a system error (Windows reports localized messages), e.g. "address already in use (10048)".
+std::string DescribeSystemError(const std::error_code& ec);
+// English description of an exception: system errors go through DescribeSystemError, others use what().
+std::string DescribeException(const std::exception& ex);
 
 // Returns true if lower_ext (including leading '.', e.g. ".mp3") is supported for local playback/direct files.
 bool IsSupportedAudioFileExtension(const std::string& lower_ext);
