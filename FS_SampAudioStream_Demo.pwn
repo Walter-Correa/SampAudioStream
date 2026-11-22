@@ -9,7 +9,7 @@
  * Commands:
  *   /audiomenu  or  /sa   - Open the interactive SampAudioStream Control Center
  *
- * Demonstrates ALL 90 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
+ * Demonstrates ALL 91 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
  * and ALL 19 plugin callbacks cleanly from in-game menus (no shadow arrays).
  *
  * Server Folders (plugin config):
@@ -112,6 +112,7 @@ enum
     DLG_SA_CH_DESC,
     DLG_SA_CH_QUEUE_DESC,
     DLG_SA_CH_QUEUE_REPLACE,
+    DLG_SA_CH_QUEUE_RENAME,
     DLG_SA_LAST
 }
 
@@ -1000,7 +1001,8 @@ static stock ShowChannelQueueItemDialog(playerid, channelid, idx)
     ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_ITEM, DIALOG_STYLE_LIST, title,
         "Move to Top\nMove Up\nMove Down\n{FF8888}Remove\n{00FF88}Play This Item Now {AAAAAA}(SA_PlayAudioStreamChannelQueue)\n\
 Edit Description {AAAAAA}(SA_SetAudioStreamChannelQueueDescription)\n\
-Replace With URL / Query {AAAAAA}(SA_ReplaceAudioStreamChannelQueue)", "Apply", "Back");
+Replace With URL / Query {AAAAAA}(SA_ReplaceAudioStreamChannelQueue)\n\
+Rename Item {AAAAAA}(SA_SetAudioStreamChannelQueueLabel)", "Apply", "Back");
 }
 
 static stock ShowChannelDescriptionDialog(playerid, channelid)
@@ -2941,6 +2943,41 @@ Offline Timeout (Custom seconds)",
             return 1;
         }
 
+        case DLG_SA_CH_QUEUE_RENAME:
+        {
+            new cid = gSelChannelId[playerid];
+            if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+            new idx = gQueueSelIdx[playerid];
+            new cur_item[132];
+            if (idx < 0 || !GetChannelQueueDisplayText(cid, idx, cur_item, sizeof(cur_item)) ||
+                HashStringDjb2(cur_item) != gQueueSelHash[playerid])
+            {
+                SendClientMessage(playerid, 0xFFAA00FF,
+                    "[Channel] Queue changed before renaming; refreshing list.");
+                ShowChannelQueueDialog(playerid, cid);
+                return 1;
+            }
+            if (!response || inputtext[0] == EOS)
+            {
+                ShowChannelQueueItemDialog(playerid, cid, idx);
+                return 1;
+            }
+            if (SA_SetAudioStreamChannelQueueLabel(cid, idx, inputtext))
+            {
+                SendClientMessage(playerid, 0x00FF88FF, "[Channel] Item renamed.");
+                if (GetChannelQueueDisplayText(cid, idx, cur_item, sizeof(cur_item)))
+                {
+                    gQueueSelHash[playerid] = HashStringDjb2(cur_item);
+                }
+            }
+            else
+            {
+                SendClientMessage(playerid, 0xFF5555FF, "[Channel] Failed to rename the item.");
+            }
+            ShowChannelQueueItemDialog(playerid, cid, idx);
+            return 1;
+        }
+
         case DLG_SA_CH_QUEUE_REPLACE:
         {
             new cid = gSelChannelId[playerid];
@@ -3231,6 +3268,15 @@ Offline Timeout (Custom seconds)",
                 case 5:
                 {
                     ShowChannelQueueDescDialog(playerid, cid, idx);
+                    return 1;
+                }
+                case 7:
+                {
+                    new ntitle[64];
+                    format(ntitle, sizeof(ntitle), "{00CCFF}Rename Item #%d", idx);
+                    ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_RENAME, DIALOG_STYLE_INPUT, ntitle,
+                        "{FFFFFF}Enter the new name (label) for this item.\n{AAAAAA}The URL, position and description stay the same; the label is saved with persistent channels.",
+                        "Rename", "Back");
                     return 1;
                 }
                 case 6:

@@ -157,6 +157,7 @@ native SA_GetAudioStreamChannelInfo(channelid, name[], name_len = sizeof(name), 
 native SA_GetAudioStreamChannelTrack(channelid, title[], title_len = sizeof(title), artist[], artist_len = sizeof(artist), &duration);
 native SA_GetAudioStreamChannelQueue(channelid, index, item[], item_len = sizeof(item));
 native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len = sizeof(label));
+native SA_SetAudioStreamChannelQueueLabel(channelid, index, const label[]);
 native SA_SetAudioStreamChannelDescription(channelid, const description[]);
 native SA_GetAudioStreamChannelDescription(channelid, description[], description_len = sizeof(description));
 native SA_SetAudioStreamChannelQueueDescription(channelid, index, const description[]);

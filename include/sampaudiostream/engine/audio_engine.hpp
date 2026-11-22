@@ -441,6 +441,7 @@ public:
     bool GetChannelInfo(ChannelId channel_id, ChannelInfo& out_info) const;
     bool GetChannelQueueItem(ChannelId channel_id, std::size_t index, std::string& out_item) const;
     bool GetChannelQueueItemLabel(ChannelId channel_id, std::size_t index, std::string& out_label) const;
+    bool SetChannelQueueItemLabel(ChannelId channel_id, std::size_t index, const std::string& utf8_label);
     bool SetChannelDescription(ChannelId channel_id, const std::string& utf8_description);
     bool GetChannelDescription(ChannelId channel_id, std::string& out_description) const;
     bool SetChannelQueueItemDescription(ChannelId channel_id, std::size_t index, const std::string& utf8_description);

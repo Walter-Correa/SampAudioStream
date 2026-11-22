@@ -7809,6 +7809,25 @@ bool AudioEngine::GetChannelQueueItemLabel(ChannelId channel_id, std::size_t ind
     return true;
 }
 
+bool AudioEngine::SetChannelQueueItemLabel(ChannelId channel_id, std::size_t index, const std::string& utf8_label) {
+    const std::string clean = SanitizeQueueLabelUtf8(utf8_label);
+    const std::string pawn = clean.empty() ? std::string() : ConvertTextForPawn(clean, config_.pawn_text_encoding);
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = channels_.find(channel_id);
+    if (it == channels_.end() || !it->second || index >= it->second->queue.size()) return false;
+    auto& ch = *it->second;
+    auto& entry = ch.queue[index];
+    if (entry.utf8_label == clean && entry.pawn_label == pawn) return true;
+    entry.utf8_label = clean;
+    entry.pawn_label = pawn;
+    if (ch.playlist_mode && ch.current_from_queue && ch.playlist_pos == static_cast<std::int32_t>(index)) {
+        ch.current_input.utf8_label = clean;
+        ch.current_input.pawn_label = pawn;
+    }
+    MarkChannelDirtyLocked(ch);
+    return true;
+}
+
 bool AudioEngine::SetChannelDescription(ChannelId channel_id, const std::string& utf8_description) {
     const std::string clean = SanitizeDescriptionUtf8(utf8_description);
     const std::string pawn = clean.empty() ? std::string() : ConvertTextForPawn(clean, config_.pawn_text_encoding);

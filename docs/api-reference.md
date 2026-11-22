@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.2`), covering all **90 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.2`), covering all **91 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -367,6 +367,13 @@ native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len =
 ```
 Reads the friendly display label for the `0`-based `index` queue entry on `channelid` (for example, `Artist - Title` from scripts or the entry title populated by `SA_QueueChannelAudioStreamPlaylist`). `label` may be empty (`""`) if no label was supplied or if the channel was restored from an older JSON without `label_hex`.
 * **Returns:** `1` if the channel and index are valid (even when `label` is empty), `0` if `channelid` does not exist or `index` is out of range.
+
+### `SA_SetAudioStreamChannelQueueLabel`
+```pawn
+native SA_SetAudioStreamChannelQueueLabel(channelid, index, const label[]);
+```
+Renames the `0`-based `index` queue entry of `channelid` (`2.3.2`): sets the friendly label read by `SA_GetAudioStreamChannelQueueLabel` without touching its URL, position or description. Tabs and line breaks become spaces and the label is cut to `128` UTF-8 bytes; `""` clears it (scripts then usually fall back to the URL). Renaming the entry that is playing also updates the playing track's label. Persistent channels save the new label. The track title reported by `OnAudioStreamChannelTrackStart` and `SA_GetAudioStreamChannelTrack` still comes from the media metadata; read the label of `SA_GetAudioStreamChannelQueuePos` when you want to show the custom name.
+* **Returns:** `1` on success, `0` if `channelid` does not exist or `index` is out of range.
 
 ### `SA_SetAudioStreamChannelDescription`
 ```pawn
