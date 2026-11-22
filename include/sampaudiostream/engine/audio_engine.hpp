@@ -151,6 +151,7 @@ struct PlayerAudioCommand {
     bool source_changed{false};
     AudioStreamSourceType new_source_type{AudioStreamSourceType::None};
     std::int32_t new_source_id{-1};
+    bool send{true}; // false: only the source changed, the client keeps the stream it already plays
 };
 
 struct ChannelQueueEntry {

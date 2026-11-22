@@ -7320,6 +7320,36 @@ static void TestRound33AuditedFixes() {
         TEST_CHECK(!engine.AttachChannelToVehicle(ch_car, 77, std::numeric_limits<float>::quiet_NaN()));
         TEST_CHECK(!engine.AttachChannelToPlayer(ch_car, 7, std::numeric_limits<float>::infinity()));
 
+        // Entering and leaving the car while inside the speaker range keeps the same stream on the client:
+        // no play/stop is sent, only OnPlayerAudioStreamSourceChange moves between channel and range tiers.
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            host.events.clear();
+            host.source_changes.clear();
+        }
+        TEST_CHECK(engine.JoinChannel(7, ch_car));
+        TEST_CHECK(engine.LeaveChannel(7));
+        PumpEngineTicks(engine, 4);
+        {
+            std::lock_guard<std::mutex> lk(host.mtx);
+            bool p7_touched = false;
+            for (const auto& ev : host.events) {
+                if (ev.player_id == 7) p7_touched = true;
+            }
+            TEST_CHECK(!p7_touched);
+            std::vector<std::int32_t> p7_types;
+            for (const auto& sc : host.source_changes) {
+                if (sc.player_id == 7) p7_types.push_back(sc.source_type);
+            }
+            TEST_CHECK(p7_types.size() >= 2);
+            if (p7_types.size() >= 2) {
+                TEST_CHECK(p7_types[0] == static_cast<std::int32_t>(AudioStreamSourceType::Channel));
+                TEST_CHECK(p7_types[1] == static_cast<std::int32_t>(AudioStreamSourceType::ChannelRange));
+            }
+            host.events.clear();
+            host.source_changes.clear();
+        }
+
         // Re-attach to vehicle before Shutdown and verify saved JSON does NOT contain attach_vehicle_id
         TEST_CHECK(engine.AttachChannelToVehicle(ch_car, 77));
         engine.Shutdown();

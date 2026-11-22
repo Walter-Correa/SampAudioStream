@@ -151,6 +151,8 @@ ctest --test-dir build -R core_tests --output-on-failure
 ### 2.3.1 — 22/11/2026
 - **Attach With Range in One Update**:
   - `SA_AttachAudioStreamChannelToPlayer` and `SA_AttachAudioStreamChannelToVehicle` take an optional `Float:distance`. A value above `0.0` sets the hearing range together with the attachment, so listeners get one re-dispatch instead of the two caused by `SA_SetAudioStreamChannelPos` followed by an attach (which could make the SA-MP client play two streams at once). `0.0` keeps the current range; non-finite values are rejected.
+- **No Restart When Joining or Leaving a Channel Inside Its Range**:
+  - Joining (`SA_JoinAudioStreamChannel`) or leaving (`SA_LeaveAudioStreamChannel`) a positioned channel while standing inside its range no longer restarts the audio: the client already plays the same stream, so the plugin only moves the player between the channel and range tiers and fires `OnPlayerAudioStreamSourceChange`. Typical case: getting in or out of a car whose speakers are on.
 
 ### 2.3.0 — 21/11/2026
 - **Sound Effects Folder (`audio.sound_dir`) & `SA_PlayAudioStreamSoundForPlayer`**:

@@ -245,13 +245,13 @@ Sets volume (`0.0` to `200.0`, clamped) on `channelid`.
 ```pawn
 native SA_JoinAudioStreamChannel(playerid, channelid, const password[] = "");
 ```
-Subscribes `playerid` to `channelid` (automatically stops any personal stream or previous channel). Returns `0` if the channel is password-protected and `password` does not match. If `channelid` is currently playing, the player immediately starts listening at the live position.
+Subscribes `playerid` to `channelid` (automatically stops any personal stream or previous channel). Returns `0` if the channel is password-protected and `password` does not match. If `channelid` is currently playing, the player immediately starts listening at the live position. If the player was already hearing this same channel through its range (positioned channel with `auto_listen`), the stream keeps playing without a restart and only `OnPlayerAudioStreamSourceChange` fires.
 
 ### `SA_LeaveAudioStreamChannel`
 ```pawn
 native SA_LeaveAudioStreamChannel(playerid);
 ```
-Unsubscribes `playerid` from their current channel and stops audio playback.
+Unsubscribes `playerid` from their current channel and stops audio playback. If the channel is positioned with `auto_listen` and the player is inside its range, they keep hearing it through the range without a restart (only `OnPlayerAudioStreamSourceChange` fires).
 
 ### `SA_IsPlayerInAudioStreamChannel`
 ```pawn

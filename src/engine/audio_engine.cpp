@@ -2262,6 +2262,47 @@ void AudioEngine::ReconcilePlayerLocked(
     const bool identity_changed =
         (desired_kind != arb.client_source_kind || desired_id != arb.client_source_id);
 
+    // Joining or leaving a positioned channel while inside its range only moves the player between the
+    // channel and range tiers of the same channel. The client already plays exactly this stream (same URL,
+    // generation, options and distance), so re-sending it would only restart the audio.
+    auto channel_of_source = [](AudioSourcePriority kind, std::uint64_t id, std::uint64_t& out_channel) -> bool {
+        if (kind == AudioSourcePriority::Channel) {
+            out_channel = id;
+            return true;
+        }
+        if (kind == AudioSourcePriority::Global && (id & (1ULL << 62)) != 0) {
+            out_channel = id & ~(1ULL << 62);
+            return true;
+        }
+        return false;
+    };
+    std::uint64_t desired_channel = 0;
+    std::uint64_t client_channel = 0;
+    if (identity_changed &&
+        channel_of_source(desired_kind, desired_id, desired_channel) &&
+        channel_of_source(arb.client_source_kind, arb.client_source_id, client_channel) &&
+        desired_channel == client_channel &&
+        desired_gen == arb.client_generation &&
+        desired_opt_ver == arb.client_options_version &&
+        desired_url == arb.client_url &&
+        std::abs(desired_dist - arb.client_distance) <= 0.001f) {
+        PlayerAudioCommand cmd{player_id, true, desired_url, desired_pos, desired_dist, desired_use_pos};
+        cmd.send = false;
+        cmd.source_changed = true;
+        DecodeClientSource(desired_kind, desired_id, cmd.new_source_type, cmd.new_source_id);
+        out_cmds.push_back(std::move(cmd));
+        auto pit = pending_connect_checks_.find(player_id);
+        if (pit != pending_connect_checks_.end() &&
+            pit->second.source_kind == arb.client_source_kind &&
+            pit->second.source_id == arb.client_source_id) {
+            pit->second.source_kind = desired_kind;
+            pit->second.source_id = desired_id;
+        }
+        arb.client_source_kind = desired_kind;
+        arb.client_source_id = desired_id;
+        return;
+    }
+
     if (identity_changed ||
         desired_gen != arb.client_generation ||
         desired_opt_ver != arb.client_options_version ||
@@ -2296,7 +2337,7 @@ void AudioEngine::ReconcilePlayerLocked(
 
 void AudioEngine::ApplyPlayerAudioCommands(const std::vector<PlayerAudioCommand>& cmds) {
     for (const auto& cmd : cmds) {
-        if (!host_.IsPlayerConnected(cmd.player_id)) {
+        if (!cmd.send || !host_.IsPlayerConnected(cmd.player_id)) {
             continue;
         }
         if (cmd.play) {
