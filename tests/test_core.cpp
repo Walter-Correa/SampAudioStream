@@ -15845,7 +15845,7 @@ void TestRound68Features() {
         {
             std::lock_guard<std::mutex> lk(host.mtx);
             TEST_CHECK(host.channel_track_starts.size() == 1);
-            TEST_CHECK(host.channel_track_starts[0].title == "live.mp3");
+            TEST_CHECK(host.channel_track_starts[0].title == "live");
         }
 
         TEST_CHECK(wait_until([&]() {
@@ -15959,11 +15959,11 @@ void TestRound69Features() {
     // 1. ExtractUrlFileNameTitle checks
     TEST_PHASE("1. ExtractUrlFileNameTitle decodes, strips query/fragment, validates UTF-8 and rejects empty trailing slash");
     {
-        TEST_CHECK(StreamResolver::ExtractUrlFileNameTitle("http://h/a/Minha%20Musica.mp3?x=1#y") == "Minha Musica.mp3");
+        TEST_CHECK(StreamResolver::ExtractUrlFileNameTitle("http://h/a/Minha%20Musica.mp3?x=1#y") == "Minha Musica");
         TEST_CHECK(StreamResolver::ExtractUrlFileNameTitle("http://h/").empty());
         TEST_CHECK(StreamResolver::ExtractUrlFileNameTitle("http://h").empty());
-        TEST_CHECK(StreamResolver::ExtractUrlFileNameTitle("http://h/a/%E2%9C%93.mp3") == "\xE2\x9C\x93.mp3");
-        TEST_CHECK(StreamResolver::ExtractUrlFileNameTitle("http://h/a/%ZZ.mp3") == "%ZZ.mp3");
+        TEST_CHECK(StreamResolver::ExtractUrlFileNameTitle("http://h/a/%E2%9C%93.mp3") == "\xE2\x9C\x93");
+        TEST_CHECK(StreamResolver::ExtractUrlFileNameTitle("http://h/a/%ZZ.mp3") == "%ZZ");
     }
 
     // 2 & 4 & 6. Resolve direct .mp3 -> filename placeholder; yt-dlp -> non-placeholder; StreamOptions default stream_text=true
@@ -16011,13 +16011,13 @@ void TestRound69Features() {
         const ResolveResult mp3_res = engine.ResolverForTesting().Resolve(
             "http://127.0.0.1:9/sub/track%2001.mp3?token=abc#frag");
         TEST_CHECK(mp3_res.success);
-        TEST_CHECK(mp3_res.metadata.title == "track 01.mp3");
+        TEST_CHECK(mp3_res.metadata.title == "track 01");
         TEST_CHECK(mp3_res.metadata.title_is_placeholder);
 
         const ResolveResult mp3_cached = engine.ResolverForTesting().Resolve(
             "http://127.0.0.1:9/sub/track%2001.mp3?token=abc#frag");
         TEST_CHECK(mp3_cached.success);
-        TEST_CHECK(mp3_cached.metadata.title == "track 01.mp3");
+        TEST_CHECK(mp3_cached.metadata.title == "track 01");
         TEST_CHECK(mp3_cached.metadata.title_is_placeholder);
 
         engine.ResolverForTesting().SetYtDlpTestHook([](
@@ -16153,7 +16153,7 @@ void TestRound69Features() {
         {
             std::lock_guard<std::mutex> lk(host.mtx);
             TEST_CHECK(host.channel_track_starts.size() == 1);
-            TEST_CHECK(host.channel_track_starts[0].title == "live_radio.mp3");
+            TEST_CHECK(host.channel_track_starts[0].title == "live_radio");
         }
         TEST_CHECK(wait_until([&]() {
             std::lock_guard<std::mutex> lk(host.mtx);
@@ -16222,7 +16222,7 @@ void TestRound69Features() {
         TrackMetadata silent_meta{};
         StreamState silent_st = StreamState::Idle;
         TEST_CHECK(engine.GetStreamInfo(sid_silent, silent_meta, silent_st));
-        TEST_CHECK(silent_meta.title == "silent_fx.mp3");
+        TEST_CHECK(silent_meta.title == "silent_fx");
 
         engine.PollLiveTitlesAtForTesting(std::chrono::steady_clock::now() + std::chrono::seconds(60));
         PumpEngineTicks(engine, 6);
@@ -16584,12 +16584,12 @@ void TestRound70Features() {
 
         const ResolveResult ok = resolver.Resolve("library://Rock/b.mp3");
         TEST_CHECK(ok.success);
-        TEST_CHECK(ok.metadata.title == "b.mp3");
+        TEST_CHECK(ok.metadata.title == "b");
         TEST_CHECK(!ok.metadata.title_is_placeholder);
 
         const ResolveResult root_ok = resolver.Resolve("library:///solta.wav");
         TEST_CHECK(root_ok.success);
-        TEST_CHECK(root_ok.metadata.title == "solta.wav");
+        TEST_CHECK(root_ok.metadata.title == "solta");
     }
 
     // 4. Personal session from the library uses a short /s/ code and reports the file name
@@ -16606,7 +16606,7 @@ void TestRound70Features() {
         TrackMetadata meta{};
         StreamState state = StreamState::Idle;
         TEST_CHECK(engine.GetStreamInfo(sid, meta, state));
-        TEST_CHECK(meta.title == "solta.wav");
+        TEST_CHECK(meta.title == "solta");
         std::string play_url;
         TEST_CHECK(wait_until([&]() {
             std::lock_guard<std::mutex> lk(host.mtx);
@@ -16647,9 +16647,9 @@ void TestRound70Features() {
             return engine.GetChannelState(ch) == StreamState::Playing && engine.GetChannelQueuePos(ch) == 0;
         }));
         TEST_CHECK(queue_count(ch) == 3);
-        TEST_CHECK(queue_label(ch, 0) == "one.wav");
-        TEST_CHECK(queue_label(ch, 1) == "three.wav");
-        TEST_CHECK(queue_label(ch, 2) == "two.wav");
+        TEST_CHECK(queue_label(ch, 0) == "one");
+        TEST_CHECK(queue_label(ch, 1) == "three");
+        TEST_CHECK(queue_label(ch, 2) == "two");
 
         std::string ch_url;
         TEST_CHECK(wait_until([&]() {
@@ -16684,17 +16684,17 @@ void TestRound70Features() {
 
         TEST_CHECK(engine.MoveChannelQueueItem(ch, 0, 2));
         TEST_CHECK(engine.GetChannelQueuePos(ch) == 2);
-        TEST_CHECK(queue_label(ch, 2) == "one.wav");
+        TEST_CHECK(queue_label(ch, 2) == "one");
 
         TEST_CHECK(engine.RemoveChannelQueueItem(ch, 0));
         TEST_CHECK(engine.GetChannelQueuePos(ch) == 1);
         TEST_CHECK(queue_count(ch) == 2);
-        TEST_CHECK(queue_label(ch, 1) == "one.wav");
+        TEST_CHECK(queue_label(ch, 1) == "one");
 
         TEST_CHECK(engine.ShuffleChannelQueue(ch));
         const std::int32_t pos_after_shuffle = engine.GetChannelQueuePos(ch);
         TEST_CHECK(pos_after_shuffle >= 0 && pos_after_shuffle < 2);
-        TEST_CHECK(queue_label(ch, static_cast<std::size_t>(pos_after_shuffle)) == "one.wav");
+        TEST_CHECK(queue_label(ch, static_cast<std::size_t>(pos_after_shuffle)) == "one");
 
         TEST_CHECK(engine.StopChannel(ch));
         TEST_CHECK(wait_until([&]() { return engine.GetChannelState(ch) != StreamState::Playing; }));
@@ -16733,9 +16733,9 @@ void TestRound70Features() {
         const auto titles = track_starts();
         TEST_CHECK(titles.size() >= 3);
         if (titles.size() >= 3) {
-            TEST_CHECK(titles[0] == "s1.wav");
-            TEST_CHECK(titles[1] == "s2.wav");
-            TEST_CHECK(titles[2] == "s1.wav");
+            TEST_CHECK(titles[0] == "s1");
+            TEST_CHECK(titles[1] == "s2");
+            TEST_CHECK(titles[2] == "s1");
         }
         TEST_CHECK(queue_count(ch) == 2);
         engine.DestroyChannel(ch);
@@ -17292,6 +17292,19 @@ void TestRound71SoundFiles() {
     std::cout << "[PASS] TestRound71SoundFiles\n";
 }
 
+void TestRound75AudioDisplayNames() {
+    // Display titles drop a trailing supported audio extension, case-insensitively
+    TEST_CHECK(StripSupportedAudioExtension("Artist - Song.mp3") == "Artist - Song");
+    TEST_CHECK(StripSupportedAudioExtension("Track.FLAC") == "Track");
+    TEST_CHECK(StripSupportedAudioExtension("a.b.ogg") == "a.b");
+    TEST_CHECK(StripSupportedAudioExtension("Notes.txt") == "Notes.txt");
+    TEST_CHECK(StripSupportedAudioExtension("No Extension") == "No Extension");
+    TEST_CHECK(StripSupportedAudioExtension(".mp3") == ".mp3");
+    TEST_CHECK(StripSupportedAudioExtension("") == "");
+    TEST_CHECK(StreamResolver::ExtractUrlFileNameTitle("http://example.com/music/Song%20One.mp3?x=1") == "Song One");
+    std::cout << "[PASS] TestRound75AudioDisplayNames\n";
+}
+
 void TestRound74LocalFilePullBuffer() {
     std::error_code fec;
     const auto r74_dir = std::filesystem::temp_directory_path() / "sampaudiostream_test_r74";
@@ -17451,6 +17464,7 @@ int main(int argc, char** argv) {
     RUN_TEST(TestRound70Features);
     RUN_TEST(TestRound71SoundFiles);
     RUN_TEST(TestRound74LocalFilePullBuffer);
+    RUN_TEST(TestRound75AudioDisplayNames);
     g_tests_done.store(true, std::memory_order_release);
     if (watchdog_thread.joinable()) watchdog_thread.join();
     std::cout << "All core unit tests passed!\n";

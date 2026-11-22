@@ -128,4 +128,8 @@ std::string PathToUtf8(const std::filesystem::path& path);
 // Returns true if lower_ext (including leading '.', e.g. ".mp3") is supported for local playback/direct files.
 bool IsSupportedAudioFileExtension(const std::string& lower_ext);
 
+// Display name for an audio file: drops a trailing supported extension ("Song.mp3" -> "Song").
+// Returns the input unchanged when it has no supported extension or would become empty.
+std::string StripSupportedAudioExtension(const std::string& name);
+
 } // namespace sampaudiostream

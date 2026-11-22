@@ -876,6 +876,21 @@ bool IsSupportedAudioFileExtension(const std::string& lower_ext) {
            lower_ext == ".m4a";
 }
 
+std::string StripSupportedAudioExtension(const std::string& name) {
+    const std::size_t dot = name.rfind('.');
+    if (dot == std::string::npos || dot == 0) {
+        return name;
+    }
+    std::string ext = name.substr(dot);
+    for (char& c : ext) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    if (!IsSupportedAudioFileExtension(ext)) {
+        return name;
+    }
+    return name.substr(0, dot);
+}
+
 ServerCfgInfo ConfigManager::LoadServerCfg(const std::string& path) {
     ServerCfgInfo info;
     std::ifstream ifs(path);

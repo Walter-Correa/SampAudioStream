@@ -129,6 +129,7 @@ static bool:gOptProcessFiles[MAX_PLAYERS];
 static bool:gOptStreamText[MAX_PLAYERS];
 static gSelChannelId[MAX_PLAYERS];
 static bool:gSelChanAutoListen[MAX_PLAYERS];
+static gSelChanPosMode[MAX_PLAYERS]; // 0 = fixed zone here, 1 = attach to my vehicle, 2 = attach to me
 
 // Last channel list & queue snapshot shown to each player (race-condition guard)
 static gChListIds[MAX_PLAYERS][DEMO_MAX_LISTED_CHANNELS];
@@ -1181,6 +1182,23 @@ static stock bool:GetLibraryFolderRef(folder_index, out[], len = sizeof(out))
     return true;
 }
 
+// Display name for a library file: drops a trailing audio extension ("Song.mp3" -> "Song").
+static stock StripAudioFileExtension(name[])
+{
+    for (new i = strlen(name) - 1; i > 0; i--)
+    {
+        if (name[i] != '.') continue;
+        if (!strcmp(name[i], ".mp3", true) || !strcmp(name[i], ".ogg", true) || !strcmp(name[i], ".opus", true) ||
+            !strcmp(name[i], ".wav", true) || !strcmp(name[i], ".flac", true) || !strcmp(name[i], ".aac", true) ||
+            !strcmp(name[i], ".m4a", true))
+        {
+            name[i] = EOS;
+        }
+        break;
+    }
+    return 1;
+}
+
 static stock bool:GetLibraryTrackRef(folder_index, track_index, out[], len, name[], name_len)
 {
     new folder[64], tracks, track[128];
@@ -1198,6 +1216,7 @@ static stock bool:GetLibraryTrackRef(folder_index, track_index, out[], len, name
         format(out, len, "library://%s/%s", folder, track);
     }
     format(name, name_len, "%s", track);
+    StripAudioFileExtension(name);
     return true;
 }
 
@@ -1281,6 +1300,7 @@ static stock ShowLibraryFolderMenu(playerid)
         }
         // One native call per track: the plugin searches the whole channel queue in C++.
         new queued = SA_FindAudioStreamChannelQueue(cid, ref);
+        StripAudioFileExtension(track);
         SanitizeDialogField(track);
         if (queued != -1)
         {
@@ -3096,36 +3116,29 @@ Offline Timeout (Custom seconds)",
                 case 0, 1:
                 {
                     gSelChanAutoListen[playerid] = (listitem == 0);
+                    gSelChanPosMode[playerid] = 0;
                     ShowPlayerDialog(playerid, DLG_SA_CH_POS_SET, DIALOG_STYLE_INPUT,
                         "{FF88FF}Set Channel Spatial Radius",
                         "{FFFFFF}Enter the audible 3D radius at your position (default 50.0):",
                         "Apply", "Back");
                     return 1;
                 }
-                case 2:
+                case 2, 3:
                 {
-                    new vid = GetPlayerVehicleID(playerid);
-                    if (vid > 0 && SA_AttachAudioStreamChannelToVehicle(cid, vid))
-                    {
-                        SendClientMessage(playerid, 0x00FF88FF,
-                            "[Channel] Channel attached to your current vehicle (2D full volume inside range; the client cannot move 3D audio).");
-                    }
-                    else
+                    if (listitem == 2 && GetPlayerVehicleID(playerid) <= 0)
                     {
                         SendClientMessage(playerid, 0xFF5555FF, "[Channel] Enter a valid vehicle first.");
+                        ShowChannelManageMenu(playerid, cid);
+                        return 1;
                     }
-                }
-                case 3:
-                {
-                    if (SA_AttachAudioStreamChannelToPlayer(cid, playerid))
-                    {
-                        SendClientMessage(playerid, 0x00FF88FF,
-                            "[Channel] Channel attached to your player position (2D full volume inside range; the client cannot move 3D audio).");
-                    }
-                    else
-                    {
-                        SendClientMessage(playerid, 0xFF5555FF, "[Channel] Failed to attach channel to player.");
-                    }
+                    // 2.3.1: the radius goes in the attach call itself, so listeners get a single update
+                    // (SA_SetAudioStreamChannelPos followed by an attach would send two in a row).
+                    gSelChanPosMode[playerid] = (listitem == 2) ? 1 : 2;
+                    ShowPlayerDialog(playerid, DLG_SA_CH_POS_SET, DIALOG_STYLE_INPUT,
+                        "{FF88FF}Set Attached Channel Radius",
+                        "{FFFFFF}Enter the audible radius around the attachment (0 keeps the current radius, 50.0 by default):",
+                        "Attach", "Back");
+                    return 1;
                 }
                 case 4:
                 {
@@ -3149,6 +3162,34 @@ Offline Timeout (Custom seconds)",
                 return 1;
             }
             if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+            if (gSelChanPosMode[playerid] != 0)
+            {
+                new Float:attach_dist = (inputtext[0] == EOS) ? 0.0 : floatstr(inputtext);
+                if (gSelChanPosMode[playerid] == 1)
+                {
+                    new vid = GetPlayerVehicleID(playerid);
+                    if (vid > 0 && SA_AttachAudioStreamChannelToVehicle(cid, vid, attach_dist))
+                    {
+                        SendClientMessage(playerid, 0x00FF88FF,
+                            "[Channel] Channel attached to your current vehicle (2D full volume inside range; the client cannot move 3D audio).");
+                    }
+                    else
+                    {
+                        SendClientMessage(playerid, 0xFF5555FF, "[Channel] Enter a valid vehicle first.");
+                    }
+                }
+                else if (SA_AttachAudioStreamChannelToPlayer(cid, playerid, attach_dist))
+                {
+                    SendClientMessage(playerid, 0x00FF88FF,
+                        "[Channel] Channel attached to your player position (2D full volume inside range; the client cannot move 3D audio).");
+                }
+                else
+                {
+                    SendClientMessage(playerid, 0xFF5555FF, "[Channel] Failed to attach channel to player.");
+                }
+                ShowChannelManageMenu(playerid, cid);
+                return 1;
+            }
             new Float:dist = (inputtext[0] == EOS) ? 50.0 : floatstr(inputtext);
             new Float:x, Float:y, Float:z;
             GetPlayerPos(playerid, x, y, z);

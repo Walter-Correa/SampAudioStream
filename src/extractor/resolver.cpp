@@ -1629,7 +1629,7 @@ std::string StreamResolver::ExtractUrlFileNameTitle(const std::string& url) {
     if (raw_seg.empty()) {
         return {};
     }
-    return CleanIcyStationNameUtf8(UrlDecodeSimple(raw_seg));
+    return StripSupportedAudioExtension(CleanIcyStationNameUtf8(UrlDecodeSimple(raw_seg)));
 }
 
 bool StreamResolver::IsHlsPlaylistUrl(const std::string& url) {
@@ -1873,7 +1873,7 @@ ResolveResult StreamResolver::ResolveUncached(const std::string& url_or_query, c
         res.metadata.original_url = url_or_query;
         res.metadata.local_file_path = PathToUtf8(real_path);
         res.metadata.extractor_name = "library";
-        res.metadata.title = file_name;
+        res.metadata.title = StripSupportedAudioExtension(file_name);
         res.metadata.title_is_placeholder = false;
         res.metadata.is_live = false;
         res.metadata.duration_seconds = duration_seconds;
@@ -2308,7 +2308,7 @@ PlaylistExtractionResult StreamResolver::ExtractPlaylist(
             res.urls.push_back(folder_utf8.empty()
                 ? ("library:///" + t.utf8_name)
                 : ("library://" + folder_utf8 + "/" + t.utf8_name));
-            res.titles.push_back(std::move(t.utf8_name));
+            res.titles.push_back(StripSupportedAudioExtension(t.utf8_name));
         }
         res.success = true;
         return res;

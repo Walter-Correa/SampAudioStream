@@ -151,6 +151,11 @@ ctest --test-dir build -R core_tests --output-on-failure
 ### 2.3.1 — 22/11/2026
 - **Attach With Range in One Update**:
   - `SA_AttachAudioStreamChannelToPlayer` and `SA_AttachAudioStreamChannelToVehicle` take an optional `Float:distance`. A value above `0.0` sets the hearing range together with the attachment, so listeners get one re-dispatch instead of the two caused by `SA_SetAudioStreamChannelPos` followed by an attach (which could make the SA-MP client play two streams at once). `0.0` keeps the current range; non-finite values are rejected.
+- **Titles Without File Extensions**:
+  - Music library tracks, folder playlist imports and direct audio file links now use the file name without its audio extension as title and queue label (`Artist - Song.mp3` shows as `Artist - Song`), which also reaches `OnAudioStreamReady`, `OnAudioStreamChannelTrackStart` and the on-screen stream text. The `library://` references keep the full file name.
+- **Demo Filterscript Updated to 2.3.1 (`FS_SampAudioStream_Demo.pwn`)**:
+  - Attaching a channel to your vehicle or to yourself asks for the radius and passes it in the attach call (`SA_AttachAudioStreamChannelToVehicle` / `SA_AttachAudioStreamChannelToPlayer` with `distance`).
+  - Library track lists, the track menu and queue labels show names without the audio extension.
 - **No Restart When Joining or Leaving a Channel Inside Its Range**:
   - Joining (`SA_JoinAudioStreamChannel`) or leaving (`SA_LeaveAudioStreamChannel`) a positioned channel while standing inside its range no longer restarts the audio: the client already plays the same stream, so the plugin only moves the player between the channel and range tiers and fires `OnPlayerAudioStreamSourceChange`. Typical case: getting in or out of a car whose speakers are on.
 
