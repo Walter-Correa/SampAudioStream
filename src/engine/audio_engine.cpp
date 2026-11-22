@@ -7038,6 +7038,70 @@ std::int32_t AudioEngine::GetChannelQueuePos(ChannelId channel_id) const {
         : -1;
 }
 
+bool AudioEngine::ReplaceChannelQueueItem(
+    ChannelId channel_id,
+    std::size_t index,
+    const std::string& url_or_query,
+    const std::string& original_input_pawn,
+    const std::string& utf8_label,
+    bool keep_description) {
+    if (url_or_query.empty()) return false;
+    const std::string clean_utf8_label = SanitizeQueueLabelUtf8(utf8_label);
+    const std::string clean_pawn_label = clean_utf8_label.empty()
+        ? std::string()
+        : ConvertTextForPawn(clean_utf8_label, config_.pawn_text_encoding);
+    std::shared_ptr<SyncChannel> ch_start;
+    std::shared_ptr<ChannelRunState> run_start;
+    std::shared_ptr<SyncChannel> ch_preresolve;
+    std::string preresolve_url;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        auto it = channels_.find(channel_id);
+        if (it == channels_.end() || !it->second || index >= it->second->queue.size()) return false;
+        auto& ch = *it->second;
+        const std::string prev_next = GetNextChannelTrackUrlLocked(ch);
+        ChannelQueueEntry entry{url_or_query, original_input_pawn, clean_utf8_label, clean_pawn_label};
+        if (keep_description) {
+            CopyQueueEntryDescription(entry, ch.queue[index]);
+        }
+        ch.queue[index] = entry;
+        const bool is_current = ch.playlist_mode && ch.current_from_queue &&
+                                ch.playlist_pos == static_cast<std::int32_t>(index);
+        if (is_current && ch.active_run) {
+            if (PlayChannelLocked(channel_id, url_or_query, original_input_pawn, ch_start, run_start, clean_utf8_label)) {
+                CopyQueueEntryDescription(ch_start->current_input, entry);
+                ch_start->playlist_pos = static_cast<std::int32_t>(index);
+                ch_start->playlist_resume_pos = -1;
+                ch_start->current_from_queue = true;
+                ch_start->consecutive_errors = 0;
+            } else {
+                ch_start.reset();
+                run_start.reset();
+            }
+        } else if (is_current && ch.restore_wanted) {
+            // Suspended or waiting for a restore: the saved track becomes the new one, from the start.
+            ch.current_input = entry;
+            ch.current_track = TrackMetadata{};
+            ch.live_title.clear();
+            ch.resume_offset_seconds = 0;
+        }
+        MarkChannelDirtyLocked(ch);
+        const std::string new_next = GetNextChannelTrackUrlLocked(ch);
+        if (!new_next.empty() && new_next != prev_next) {
+            ch_preresolve = it->second;
+            preresolve_url = new_next;
+        }
+    }
+    if (ch_start && run_start) {
+        HttpClient::PollCancellations();
+        StartChannelWorker(ch_start, run_start, url_or_query);
+    }
+    if (ch_preresolve && !preresolve_url.empty()) {
+        PreResolveNextChannelTrack(ch_preresolve, preresolve_url);
+    }
+    return true;
+}
+
 bool AudioEngine::PlayChannelQueueItem(ChannelId channel_id, std::int32_t index) {
     if (index < 0) return false;
     std::shared_ptr<SyncChannel> ch;

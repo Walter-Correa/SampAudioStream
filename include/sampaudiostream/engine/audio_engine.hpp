@@ -409,6 +409,15 @@ public:
         const std::string& original_input_pawn = "",
         const std::string& utf8_label = "");
     bool MoveChannelQueueItem(ChannelId channel_id, std::size_t from_index, std::size_t to_index);
+    // Replaces the entry at index in place (new URL and label; the description is cleared unless keep_description);
+    // the playing entry restarts with the new track.
+    bool ReplaceChannelQueueItem(
+        ChannelId channel_id,
+        std::size_t index,
+        const std::string& url_or_query,
+        const std::string& original_input_pawn,
+        const std::string& utf8_label,
+        bool keep_description = false);
     bool ShuffleChannelQueue(ChannelId channel_id);
     bool GetChannelLiveTitle(ChannelId channel_id, std::string& out_title) const;
     bool GetStreamLiveTitle(StreamId stream_id, std::string& out_title) const;

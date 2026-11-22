@@ -750,6 +750,27 @@ cell AMX_NATIVE_CALL n_SA_InsertAudioStreamChannelQueue(AMX* amx, cell* params) 
         utf8_label) ? 1 : 0;
 }
 
+// SA_ReplaceAudioStreamChannelQueue(channelid, index, const url[], const label[] = "", bool:keep_description = false)
+cell AMX_NATIVE_CALL n_SA_ReplaceAudioStreamChannelQueue(AMX* amx, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 3 || params[2] < 0) return 0;
+    std::string raw_url = ReadAmxString(amx, params[3]);
+    std::string url = ConvertTextFromPawn(raw_url, g_engine->GetPawnTextEncoding());
+    std::string utf8_label;
+    if (argc >= 4) {
+        utf8_label = ConvertTextFromPawn(ReadAmxString(amx, params[4]), g_engine->GetPawnTextEncoding());
+    }
+    const bool keep_description = (argc >= 5) && params[5] != 0;
+    return g_engine->ReplaceChannelQueueItem(
+        static_cast<ChannelId>(params[1]),
+        static_cast<std::size_t>(params[2]),
+        url,
+        raw_url,
+        utf8_label,
+        keep_description) ? 1 : 0;
+}
+
 // SA_MoveAudioStreamChannelQueue(channelid, from_index, to_index)
 cell AMX_NATIVE_CALL n_SA_MoveAudioStreamChannelQueue(AMX*, cell* params) {
     if (!g_engine) return 0;
@@ -1282,6 +1303,7 @@ const std::vector<AMX_NATIVE_INFO>& GetPluginNatives() {
         {"SA_SetAudioStreamChannelQueueDescription", n_SA_SetAudioStreamChannelQueueDescription},
         {"SA_GetAudioStreamChannelQueueDescription", n_SA_GetAudioStreamChannelQueueDescription},
         {"SA_GetAudioStreamChannelTrackDescription", n_SA_GetAudioStreamChannelTrackDescription},
+        {"SA_ReplaceAudioStreamChannelQueue", n_SA_ReplaceAudioStreamChannelQueue},
         {"SA_FindAudioStreamChannelQueue", n_SA_FindAudioStreamChannelQueue},
         {"SA_ClearAudioStreamChannelQueue", n_SA_ClearAudioStreamChannelQueue},
         {"SA_SetAudioStreamChannelPos", n_SA_SetAudioStreamChannelPos},

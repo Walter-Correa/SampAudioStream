@@ -9,7 +9,7 @@
  * Commands:
  *   /audiomenu  or  /sa   - Open the interactive SampAudioStream Control Center
  *
- * Demonstrates ALL 89 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
+ * Demonstrates ALL 90 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
  * and ALL 19 plugin callbacks cleanly from in-game menus (no shadow arrays).
  *
  * Server Folders (plugin config):
@@ -111,6 +111,7 @@ enum
     DLG_SA_CH_GROUP_SET,
     DLG_SA_CH_DESC,
     DLG_SA_CH_QUEUE_DESC,
+    DLG_SA_CH_QUEUE_REPLACE,
     DLG_SA_LAST
 }
 
@@ -998,7 +999,8 @@ static stock ShowChannelQueueItemDialog(playerid, channelid, idx)
     }
     ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_ITEM, DIALOG_STYLE_LIST, title,
         "Move to Top\nMove Up\nMove Down\n{FF8888}Remove\n{00FF88}Play This Item Now {AAAAAA}(SA_PlayAudioStreamChannelQueue)\n\
-Edit Description {AAAAAA}(SA_SetAudioStreamChannelQueueDescription)", "Apply", "Back");
+Edit Description {AAAAAA}(SA_SetAudioStreamChannelQueueDescription)\n\
+Replace With URL / Query {AAAAAA}(SA_ReplaceAudioStreamChannelQueue)", "Apply", "Back");
 }
 
 static stock ShowChannelDescriptionDialog(playerid, channelid)
@@ -2939,6 +2941,43 @@ Offline Timeout (Custom seconds)",
             return 1;
         }
 
+        case DLG_SA_CH_QUEUE_REPLACE:
+        {
+            new cid = gSelChannelId[playerid];
+            if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+            new idx = gQueueSelIdx[playerid];
+            new cur_item[132];
+            if (idx < 0 || !GetChannelQueueDisplayText(cid, idx, cur_item, sizeof(cur_item)) ||
+                HashStringDjb2(cur_item) != gQueueSelHash[playerid])
+            {
+                SendClientMessage(playerid, 0xFFAA00FF,
+                    "[Channel] Queue changed before replacing; refreshing list.");
+                ShowChannelQueueDialog(playerid, cid);
+                return 1;
+            }
+            if (!response || inputtext[0] == EOS)
+            {
+                ShowChannelQueueItemDialog(playerid, cid, idx);
+                return 1;
+            }
+            if (SA_ReplaceAudioStreamChannelQueue(cid, idx, inputtext, "", true))
+            {
+                new msg[80];
+                format(msg, sizeof(msg), "[Channel] Replaced queue item #%d.", idx);
+                SendClientMessage(playerid, 0x00FF88FF, msg);
+                if (GetChannelQueueDisplayText(cid, idx, cur_item, sizeof(cur_item)))
+                {
+                    gQueueSelHash[playerid] = HashStringDjb2(cur_item);
+                }
+            }
+            else
+            {
+                SendClientMessage(playerid, 0xFF5555FF, "[Channel] Failed to replace the item.");
+            }
+            ShowChannelQueueItemDialog(playerid, cid, idx);
+            return 1;
+        }
+
         case DLG_SA_CH_QUEUE_DESC:
         {
             new cid = gSelChannelId[playerid];
@@ -3192,6 +3231,15 @@ Offline Timeout (Custom seconds)",
                 case 5:
                 {
                     ShowChannelQueueDescDialog(playerid, cid, idx);
+                    return 1;
+                }
+                case 6:
+                {
+                    new rtitle[64];
+                    format(rtitle, sizeof(rtitle), "{00CCFF}Replace Item #%d", idx);
+                    ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_REPLACE, DIALOG_STYLE_INPUT, rtitle,
+                        "{FFFFFF}Enter the URL or search query that replaces this item.\n{AAAAAA}The item keeps its position and its description (keep_description = true).\n{AAAAAA}If it is playing, the new track starts right away.",
+                        "Replace", "Back");
                     return 1;
                 }
             }

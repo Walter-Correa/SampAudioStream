@@ -1,18 +1,11 @@
 /*
  * SampAudioStream - Universal Audio Streaming Plugin/Component for SA-MP & open.mp
  * Version: 2.3.2
+ * Repository: https://github.com/Walter-Correa/SampAudioStream
+ * Documentation: docs/api-reference.md
  *
- * Features:
- *  - YouTube, SoundCloud, Twitch, Vimeo, TikTok, Direct MP3/OGG/WAV/FLAC & HLS streams
- *  - Zero external server setup (self-managed extractor & in-memory MP3 transcoder)
- *  - Transparent hooking of PlayAudioStreamForPlayer & StopAudioStreamForPlayer
- *  - Extended parameters: worldid, interiorid, volume, 3D spatial tracking
- *  - Asynchronous music search with structured callbacks for interactive dialogs
- *  - Synchronized multi-player radio channels with queue support
- *
- * Include Order:
- *  Include <a_samp> or <open.mp> BEFORE <SampAudioStream> so native hooking
- *  cleanly overrides PlayAudioStreamForPlayer and StopAudioStreamForPlayer.
+ * Include <a_samp> or <open.mp> BEFORE <SampAudioStream> so native hooking
+ * cleanly overrides PlayAudioStreamForPlayer and StopAudioStreamForPlayer.
  */
 
 #if defined _SampAudioStream_included
@@ -68,13 +61,13 @@ enum E_SA_STREAM_STATE {
     SA_STATE_STOPPED = 5,
     SA_STATE_FINISHED = 6,
     SA_STATE_ERROR = 7,
-    SA_STATE_SUSPENDED = 8 // Channel stopped by idle suspension, waiting for a listener
+    SA_STATE_SUSPENDED = 8
 };
 
 enum E_SA_CHANNEL_DESTROY_MODE {
-    SA_CHANNEL_DESTROY_MANUAL = 0,        // Remains active until SA_DestroyAudioStreamChannel is called
-    SA_CHANNEL_DESTROY_ON_DISCONNECT = 1, // Automatically destroyed when creator disconnects (requires creator)
-    SA_CHANNEL_DESTROY_ON_TIMEOUT = 2     // Countdown runs only while creator is offline; resets if creator returns (matched by name on connect/SetPlayerName; requires creator)
+    SA_CHANNEL_DESTROY_MANUAL = 0,
+    SA_CHANNEL_DESTROY_ON_DISCONNECT = 1,
+    SA_CHANNEL_DESTROY_ON_TIMEOUT = 2
 };
 
 enum E_SA_CHANNEL_DESTROY_REASON {
@@ -91,11 +84,11 @@ enum E_SA_CHANNEL_LOOP_MODE {
 
 enum E_SA_AUDIO_STREAM_SOURCE {
     SA_SOURCE_NONE = 0,
-    SA_SOURCE_PERSONAL = 1,      // source_id = streamid
-    SA_SOURCE_CHANNEL = 2,       // source_id = channelid (joined listener)
-    SA_SOURCE_GLOBAL = 3,        // source_id = streamid (global stream)
-    SA_SOURCE_CHANNEL_RANGE = 4, // source_id = channelid (heard by range / auto_listen)
-    SA_SOURCE_SOUND = 5          // source_id = -1 (short sound from audio.sound_dir, see SA_PlayAudioStreamSoundForPlayer)
+    SA_SOURCE_PERSONAL = 1,
+    SA_SOURCE_CHANNEL = 2,
+    SA_SOURCE_GLOBAL = 3,
+    SA_SOURCE_CHANNEL_RANGE = 4,
+    SA_SOURCE_SOUND = 5
 };
 
 // -----------------------------------------------------------------------------
@@ -105,8 +98,6 @@ enum E_SA_AUDIO_STREAM_SOURCE {
 native SA_PlayAudioStreamForPlayer(playerid, const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false, bool:stream_text = true);
 native SA_PlayAudioStream(const url[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false, worldid = -1, interiorid = -1, Float:volume = 100.0, bool:notify_processing = true, bool:process_direct_audio_files = false, bool:stream_text = true);
 
-// Plays a short sound file from audio.sound_dir ("file.mp3" or "Folder/file.mp3"; .mp3, .ogg or .wav up to 5 MB)
-// as-is, without transcoding, above every other source; the previous source resumes when the sound ends.
 native bool:SA_PlayAudioStreamSoundForPlayer(playerid, const sound[], Float:posX = 0.0, Float:posY = 0.0, Float:posZ = 0.0, Float:distance = 50.0, bool:usepos = false);
 
 native SA_StopAudioStreamForPlayer(playerid);
@@ -117,7 +108,6 @@ native SA_PauseAudioStream(streamid, bool:pause);
 native SA_SeekAudioStream(streamid, seconds);
 native SA_SetPlayerAudioStreamMuted(playerid, bool:mute, bool:include_personal = false);
 native bool:SA_IsPlayerAudioStreamMuted(playerid);
-// Range groups (1..31): stop hearing positioned channels of a group through their range (joined channels keep playing).
 native SA_SetPlayerAudioStreamGroupMuted(playerid, group, bool:mute);
 native bool:SA_IsPlayerAudioStreamGroupMuted(playerid, group);
 native SA_GetPlayerAudioStreamSource(playerid, &E_SA_AUDIO_STREAM_SOURCE:source_type, &source_id);
@@ -148,25 +138,17 @@ native SA_PlayChannelAudioStream(channelid, const url[]);
 native SA_QueueChannelAudioStream(channelid, const url[], const label[] = "");
 native SA_SkipChannelAudioStream(channelid);
 native SA_StopChannelAudioStream(channelid);
-// Pausing a channel while a track is completing or transitioning preserves the
-// paused state into the next queued track until resumed with pause=false.
 native SA_PauseChannelAudioStream(channelid, bool:pause);
 native SA_SetChannelAudioStreamVolume(channelid, Float:volume);
-// ignore_password = true joins a password-protected channel without the password (for creators/admins decided by the script).
 native SA_JoinAudioStreamChannel(playerid, channelid, const password[] = "", bool:ignore_password = false);
 native SA_LeaveAudioStreamChannel(playerid);
 native bool:SA_IsPlayerInAudioStreamChannel(playerid, channelid);
 native SA_GetPlayerAudioStreamChannel(playerid);
 native SA_SetAudioStreamChannelPass(channelid, const password[]);
 native bool:SA_CheckAudioStreamChannelPass(channelid, const password[]);
-// Assigning a connected playerid reclaims creator ownership and resets any Timeout countdown.
-// Passing INVALID_PLAYER_ID removes creator ownership (reverts auto-destroy modes to Manual).
 native SA_SetAudioStreamChannelCreator(channelid, playerid);
-// Note: ON_DISCONNECT and ON_TIMEOUT require a creator (returns 0 if channel has none).
 native SA_SetAudioStreamChannelDestroy(channelid, E_SA_CHANNEL_DESTROY_MODE:destroy_mode, destroy_timeout_sec = 0);
 native SA_GetAudioStreamChannelDestroy(channelid, &E_SA_CHANNEL_DESTROY_MODE:destroy_mode, &destroy_timeout_sec, &destroy_remaining_sec, &bool:creator_online);
-// Idle suspension: after grace_seconds (0-3600) with no joined listener, playback stops and frees its slot;
-// the next joined listener resumes it at the same track and second. Positioned channels are never suspended.
 native SA_SetAudioStreamChannelIdleSuspend(channelid, bool:enable, grace_seconds = 30);
 native SA_GetAudioStreamChannelIdleSuspend(channelid, &bool:enable, &grace_seconds, &bool:suspended);
 native SA_GetAudioStreamChannelCount();
@@ -175,27 +157,22 @@ native SA_GetAudioStreamChannelInfo(channelid, name[], name_len = sizeof(name), 
 native SA_GetAudioStreamChannelTrack(channelid, title[], title_len = sizeof(title), artist[], artist_len = sizeof(artist), &duration);
 native SA_GetAudioStreamChannelQueue(channelid, index, item[], item_len = sizeof(item));
 native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len = sizeof(label));
-// Free-text descriptions (up to 256 UTF-8 bytes), saved with persistent channels. A queue entry's
-// description follows it when moved, shuffled or looped and while it plays (TrackDescription).
 native SA_SetAudioStreamChannelDescription(channelid, const description[]);
 native SA_GetAudioStreamChannelDescription(channelid, description[], description_len = sizeof(description));
 native SA_SetAudioStreamChannelQueueDescription(channelid, index, const description[]);
 native SA_GetAudioStreamChannelQueueDescription(channelid, index, description[], description_len = sizeof(description));
 native SA_GetAudioStreamChannelTrackDescription(channelid, description[], description_len = sizeof(description));
-// Returns the 0-based index of the first queue entry at or after start_index whose URL equals item, or -1.
 native SA_FindAudioStreamChannelQueue(channelid, const item[], start_index = 0);
 native SA_ClearAudioStreamChannelQueue(channelid);
-// Positional / spatial channel configuration. For password-restricted areas, pass auto_listen = false.
 native SA_SetAudioStreamChannelPos(channelid, Float:x, Float:y, Float:z, Float:distance = 50.0, worldid = -1, interiorid = -1, bool:auto_listen = true);
 native SA_ClearAudioStreamChannelPos(channelid);
-// 0 = no group (default); 1..31 lets players mute this channel's range listening with SA_SetPlayerAudioStreamGroupMuted.
 native SA_SetAudioStreamChannelGroup(channelid, group);
 native SA_GetAudioStreamChannelGroup(channelid);
-// distance > 0 sets the hearing range in the same update as the attachment; 0 keeps the current range.
 native SA_AttachAudioStreamChannelToPlayer(channelid, target_playerid, Float:distance = 0.0);
 native SA_AttachAudioStreamChannelToVehicle(channelid, vehicleid, Float:distance = 0.0);
 native SA_RemoveAudioStreamChannelQueue(channelid, index);
 native SA_InsertAudioStreamChannelQueue(channelid, index, const url[], const label[] = "");
+native SA_ReplaceAudioStreamChannelQueue(channelid, index, const url[], const label[] = "", bool:keep_description = false);
 native SA_MoveAudioStreamChannelQueue(channelid, from_index, to_index);
 native SA_ShuffleAudioStreamChannelQueue(channelid);
 native SA_QueueChannelAudioStreamPlaylist(channelid, const url[], max_items = 25);
@@ -203,8 +180,6 @@ native SA_SeekChannelAudioStream(channelid, seconds);
 native SA_SetAudioStreamChannelLoop(channelid, E_SA_CHANNEL_LOOP_MODE:mode);
 native E_SA_CHANNEL_LOOP_MODE:SA_GetAudioStreamChannelLoop(channelid);
 native SA_GetAudioStreamChannelElapsed(channelid);
-// Returns explicitly subscribed (SA_JoinAudioStreamChannel) listener at 0-based index (ascending playerid),
-// or INVALID_PLAYER_ID. Range-only auto_listen listeners are not included.
 native SA_GetAudioStreamChannelListener(channelid, index);
 native SA_SetAudioStreamChannelName(channelid, const name[]);
 native SA_GetAudioStreamChannelLiveTitle(channelid, title[], title_len = sizeof(title));
@@ -244,17 +219,6 @@ native SA_GetAudioStreamHttpPort();
 // Callbacks
 // -----------------------------------------------------------------------------
 
-// Notes:
-//  - OnAudioStreamReady receives the resolved stream URL for personal streams,
-//    or the full public stream URL (empty if the public IP is not known yet)
-//    for global streams.
-//  - OnAudioStreamFinished only fires for server-transcoded streams. Direct HTTP/HTTPS
-//    passthrough streams (direct native audio or live radio at 100.0% volume,
-//    when process_direct_audio_files is false) are played directly by the client
-//    without server-side completion tracking.
-//  - On synchronized radio channels (SA_QueueChannelAudioStream / SA_SkipChannelAudioStream), listeners
-//    cleanly reconnect on track changes, causing a brief audible transition gap.
-//  - Synchronized channel errors are reported through OnAudioStreamChannelError (not OnAudioStreamError).
 forward OnAudioStreamProcessing(playerid, streamid, const url[], bool:from_cache);
 forward OnAudioStreamWaiting(playerid, streamid, wait_ms);
 forward OnAudioStreamReady(playerid, streamid, const title[], const artist[], duration, const url[]);

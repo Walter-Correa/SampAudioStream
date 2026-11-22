@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.2`), covering all **89 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.2`), covering all **90 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -246,7 +246,7 @@ Clears the queue and stops current playback on `channelid` (listeners remain sub
 ```pawn
 native SA_PauseChannelAudioStream(channelid, bool:pause);
 ```
-Pauses (`true`) or resumes (`false`) playback on `channelid`.
+Pauses (`true`) or resumes (`false`) playback on `channelid`. Pausing while a track is finishing or switching to the next one keeps the pause on the next queued track until it is resumed with `pause = false`.
 
 ### `SA_SetChannelAudioStreamVolume`
 ```pawn
@@ -482,6 +482,17 @@ Removes the `0`-based `index` entry from `channelid`'s queue. Returns `0` if the
 native SA_InsertAudioStreamChannelQueue(channelid, index, const url[], const label[] = "");
 ```
 Inserts `url` (with optional friendly display `label`) at `0`-based `index` (`0` = play next, `queue_count` = append at end; values above `queue_count` return `0`). Respects `channels.max_queue_per_channel`, starts immediately if the channel is stopped, and pre-resolves into cache if inserted at index `0` while active.
+
+### `SA_ReplaceAudioStreamChannelQueue`
+```pawn
+native SA_ReplaceAudioStreamChannelQueue(channelid, index, const url[], const label[] = "", bool:keep_description = false);
+```
+Replaces the `0`-based `index` queue entry of `channelid` in place with `url` and `label` (`2.3.2`), keeping the rest of the queue and the playlist position untouched. By default the old entry's description is cleared, since it described the replaced track; pass `keep_description = true` to keep it on the new track (for notes such as who requested the slot). If the entry is the one playing in playlist mode, the new track starts right away in its place (the channel does not skip to the next entry); if the channel is suspended (`SA_STATE_SUSPENDED`) the saved track becomes the new one, from the start. Persistent channels save the change once.
+* **Returns:** `1` on success, `0` if `channelid` does not exist, `index` is out of range or `url` is empty.
+* **Example:**
+```pawn
+SA_ReplaceAudioStreamChannelQueue(ch, 3, "library://Rock/new_song.mp3", "Artist - New Song", true); // keep the description
+```
 
 ### `SA_MoveAudioStreamChannelQueue`
 ```pawn
@@ -796,7 +807,7 @@ public OnAudioStreamWaiting(playerid, streamid, wait_ms)
 ```pawn
 forward OnAudioStreamReady(playerid, streamid, const title[], const artist[], duration, const url[]);
 ```
-Fired as soon as stream metadata is resolved and playback is ready to begin (`playerid == INVALID_PLAYER_ID` for global streams; `url` is the resolved direct or local proxy endpoint). For direct live radios, `title` starts as a generic placeholder (`"Direct Audio Stream"` / `"Radio Stream"`) unless the station name was found while probing the link; after the first ICY poll it is replaced by the station's `icy-name` header when available (no callback is re-fired; read it from `OnAudioStreamChannelLiveTitleChange` / `OnAudioStreamLiveTitleChange`).
+Fired as soon as stream metadata is resolved and playback is ready to begin (`playerid == INVALID_PLAYER_ID` for global streams; `url` is the resolved direct or local proxy endpoint for personal streams and the full public stream URL for global streams, empty while the server's public IP is not known yet). For direct live radios, `title` starts as a generic placeholder (`"Direct Audio Stream"` / `"Radio Stream"`) unless the station name was found while probing the link; after the first ICY poll it is replaced by the station's `icy-name` header when available (no callback is re-fired; read it from `OnAudioStreamChannelLiveTitleChange` / `OnAudioStreamLiveTitleChange`).
 
 ### `OnAudioStreamStart`
 ```pawn
