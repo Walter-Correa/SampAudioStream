@@ -46,7 +46,8 @@ enum class StreamState : std::int32_t {
     Paused = 4,
     Stopped = 5,
     Finished = 6,
-    Error = 7
+    Error = 7,
+    Suspended = 8 // Reported to scripts only: idle channel waiting for a listener
 };
 
 enum class ChannelDestroyMode : std::int32_t {

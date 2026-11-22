@@ -9,7 +9,7 @@
  * Commands:
  *   /audiomenu  or  /sa   - Open the interactive SampAudioStream Control Center
  *
- * Demonstrates ALL 87 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
+ * Demonstrates ALL 89 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
  * and ALL 19 plugin callbacks cleanly from in-game menus (no shadow arrays).
  *
  * Server Folders (plugin config):
@@ -241,6 +241,7 @@ static stock GetStateLabel(E_SA_STREAM_STATE:st, out[], len = sizeof(out))
         case SA_STATE_STOPPED:   format(out, len, "Stopped");
         case SA_STATE_FINISHED:  format(out, len, "Finished");
         case SA_STATE_ERROR:     format(out, len, "Error");
+        case SA_STATE_SUSPENDED: format(out, len, "Suspended");
         default:                 format(out, len, "Unknown");
     }
 }
@@ -753,6 +754,10 @@ static stock ShowChannelManageMenu(playerid, channelid)
     SanitizeDialogField(cdesc);
     if (cdesc[0] == EOS) format(cdesc, sizeof(cdesc), "none");
 
+    // 2.3.2: idle suspension frees the channel's slot while nobody is joined
+    new bool:idle_on, idle_grace, bool:idle_now;
+    SA_GetAudioStreamChannelIdleSuspend(channelid, idle_on, idle_grace, idle_now);
+
     new title[96];
     static body[2048];
     format(title, sizeof(title), "{FF88FF}Channel #%d: %s", channelid, cname);
@@ -779,6 +784,7 @@ Vote to Skip Track {AAAAAA}(listeners vote)\n\
 Previous Track {AAAAAA}(history: %d)\n\
 Toggle Playlist Mode {AAAAAA}(SA_SetAudioStreamChannelPlaylist: %s | Now: #%d)\n\
 Channel Description {AAAAAA}(SA_SetAudioStreamChannelDescription: %s)\n\
+Toggle Idle Suspension {AAAAAA}(SA_SetAudioStreamChannelIdleSuspend: %s%s)\n\
 {CCCCCC}--- %s (%ds) | Listeners: %d | Track: %s%s%s ---",
         joined ? "Leave" : "Join",
         joined ? "SA_LeaveAudioStreamChannel" : "SA_JoinAudioStreamChannel",
@@ -797,6 +803,8 @@ Channel Description {AAAAAA}(SA_SetAudioStreamChannelDescription: %s)\n\
         playlist_on ? "ON" : "OFF",
         SA_GetAudioStreamChannelQueuePos(channelid),
         cdesc,
+        idle_on ? "ON" : "OFF",
+        idle_now ? " | Suspended" : "",
         st_lbl,
         (elapsed < 0) ? 0 : elapsed,
         listeners,
@@ -806,6 +814,17 @@ Channel Description {AAAAAA}(SA_SetAudioStreamChannelDescription: %s)\n\
     );
 
     ShowPlayerDialog(playerid, DLG_SA_CH_MENU, DIALOG_STYLE_LIST, title, body, "Select", "Back");
+}
+
+static stock bool:IsPlayerChannelCreator(playerid, const creator_name[])
+{
+    if (creator_name[0] == EOS || !strcmp(creator_name, "Server", true))
+    {
+        return false;
+    }
+    new pname[MAX_PLAYER_NAME + 1];
+    GetPlayerName(playerid, pname, sizeof(pname));
+    return (pname[0] != EOS && !strcmp(pname, creator_name, true));
 }
 
 static stock bool:CanPlayerManageChannel(playerid, const creator_name[])
@@ -2674,6 +2693,15 @@ Offline Timeout (Custom seconds)",
                         SendClientMessage(playerid, 0x00FF88FF, "[Channel] Left channel.");
                         ShowChannelManageMenu(playerid, cid);
                     }
+                    else if (locked && (IsPlayerAdmin(playerid) || IsPlayerChannelCreator(playerid, ccreator)))
+                    {
+                        // 2.3.2: the script decides who skips the password (here: the creator and RCON admins)
+                        if (SA_JoinAudioStreamChannel(playerid, cid, "", true))
+                        {
+                            SendClientMessage(playerid, 0x00FF88FF, "[Channel] Joined without the password (creator / RCON admin).");
+                        }
+                        ShowChannelManageMenu(playerid, cid);
+                    }
                     else if (locked)
                     {
                         ShowPlayerDialog(playerid, DLG_SA_CH_JOIN_PASS, DIALOG_STYLE_PASSWORD,
@@ -2869,6 +2897,19 @@ Offline Timeout (Custom seconds)",
                 {
                     if (!EnsureChannelManagePermission(playerid, cid)) return 1;
                     ShowChannelDescriptionDialog(playerid, cid);
+                }
+                case 22:
+                {
+                    if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+                    new bool:idle_on, idle_grace, bool:idle_now;
+                    SA_GetAudioStreamChannelIdleSuspend(cid, idle_on, idle_grace, idle_now);
+                    if (SA_SetAudioStreamChannelIdleSuspend(cid, !idle_on, 30))
+                    {
+                        SendClientMessage(playerid, 0x00FF88FF, !idle_on ?
+                            "[Channel] Idle suspension ON: after 30 s without joined listeners the channel stops and resumes at the same point." :
+                            "[Channel] Idle suspension OFF: the channel keeps playing without listeners.");
+                    }
+                    ShowChannelManageMenu(playerid, cid);
                 }
                 default: ShowChannelManageMenu(playerid, cid);
             }

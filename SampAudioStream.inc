@@ -67,7 +67,8 @@ enum E_SA_STREAM_STATE {
     SA_STATE_PAUSED = 4,
     SA_STATE_STOPPED = 5,
     SA_STATE_FINISHED = 6,
-    SA_STATE_ERROR = 7
+    SA_STATE_ERROR = 7,
+    SA_STATE_SUSPENDED = 8 // Channel stopped by idle suspension, waiting for a listener
 };
 
 enum E_SA_CHANNEL_DESTROY_MODE {
@@ -151,7 +152,8 @@ native SA_StopChannelAudioStream(channelid);
 // paused state into the next queued track until resumed with pause=false.
 native SA_PauseChannelAudioStream(channelid, bool:pause);
 native SA_SetChannelAudioStreamVolume(channelid, Float:volume);
-native SA_JoinAudioStreamChannel(playerid, channelid, const password[] = "");
+// ignore_password = true joins a password-protected channel without the password (for creators/admins decided by the script).
+native SA_JoinAudioStreamChannel(playerid, channelid, const password[] = "", bool:ignore_password = false);
 native SA_LeaveAudioStreamChannel(playerid);
 native bool:SA_IsPlayerInAudioStreamChannel(playerid, channelid);
 native SA_GetPlayerAudioStreamChannel(playerid);
@@ -163,6 +165,10 @@ native SA_SetAudioStreamChannelCreator(channelid, playerid);
 // Note: ON_DISCONNECT and ON_TIMEOUT require a creator (returns 0 if channel has none).
 native SA_SetAudioStreamChannelDestroy(channelid, E_SA_CHANNEL_DESTROY_MODE:destroy_mode, destroy_timeout_sec = 0);
 native SA_GetAudioStreamChannelDestroy(channelid, &E_SA_CHANNEL_DESTROY_MODE:destroy_mode, &destroy_timeout_sec, &destroy_remaining_sec, &bool:creator_online);
+// Idle suspension: after grace_seconds (0-3600) with no joined listener, playback stops and frees its slot;
+// the next joined listener resumes it at the same track and second. Positioned channels are never suspended.
+native SA_SetAudioStreamChannelIdleSuspend(channelid, bool:enable, grace_seconds = 30);
+native SA_GetAudioStreamChannelIdleSuspend(channelid, &bool:enable, &grace_seconds, &bool:suspended);
 native SA_GetAudioStreamChannelCount();
 native SA_GetAudioStreamChannelID(index);
 native SA_GetAudioStreamChannelInfo(channelid, name[], name_len = sizeof(name), creator_name[], creator_len = sizeof(creator_name), &listener_count, &E_SA_STREAM_STATE:channel_state, &bool:has_password, &queue_count);

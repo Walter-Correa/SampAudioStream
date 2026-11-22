@@ -311,6 +311,40 @@ void CopyQueueEntryDescription(ChannelQueueEntry& dst, const ChannelQueueEntry& 
     dst.pawn_description = src.pawn_description;
 }
 
+// Elapsed seconds of the channel's current track, or -1 when nothing is positioned. Caller holds state_mutex_.
+std::int32_t ComputeChannelElapsedSecondsLocked(const SyncChannel& ch) {
+    StreamState st = ch.state.load();
+    const bool seek_repositioning =
+        ((st == StreamState::Resolving || st == StreamState::Buffering) &&
+         ch.track_started_at != std::chrono::steady_clock::time_point{});
+    if ((st != StreamState::Playing && st != StreamState::Paused && !seek_repositioning) ||
+        ch.track_started_at == std::chrono::steady_clock::time_point{}) {
+        return -1;
+    }
+    auto end_tp = ((st == StreamState::Paused || ch.pause_flag.load()) &&
+                   ch.paused_since != std::chrono::steady_clock::time_point{})
+        ? ch.paused_since
+        : std::chrono::steady_clock::now();
+    auto elapsed = ch.seek_base_offset + (end_tp - ch.track_started_at - ch.paused_accumulated);
+    auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+    return static_cast<std::int32_t>(secs < 0 ? 0 : secs);
+}
+
+void ClearChannelSuspensionLocked(SyncChannel& ch, bool drop_track) {
+    ch.idle_suspended = false;
+    ch.restore_wanted = false;
+    ch.resume_offset_seconds = 0;
+    ch.idle_since = std::chrono::steady_clock::time_point{};
+    if (drop_track) {
+        ch.current_track = TrackMetadata{};
+        ch.current_input = ChannelQueueEntry{};
+        ch.live_title.clear();
+        ch.playlist_pos = -1;
+        ch.current_from_queue = false;
+        ch.state.store(StreamState::Stopped);
+    }
+}
+
 // Removes control characters (< 0x20), trims outer spaces, and truncates to <= 256 UTF-8 bytes.
 std::string CleanLiveTitleUtf8(const std::string& utf8) {
     return SanitizeControlAndTrimUtf8(utf8, 256);
@@ -1119,6 +1153,7 @@ void AudioEngine::Tick() {
     resolver_.PollCancellations();
     HttpClient::PollCancellations();
 
+    SuspendIdleChannelsInTick();
     ResumeRestoredChannelsInTick();
 
     auto now = std::chrono::steady_clock::now();
@@ -5190,6 +5225,9 @@ bool AudioEngine::PlayChannelLocked(
     ch->live_poll = LiveTitlePollState{};
     ch->restore_wanted = false;
     ch->restore_retry_blocked = false;
+    ch->idle_suspended = false;
+    ch->resume_offset_seconds = 0;
+    ch->idle_since = std::chrono::steady_clock::time_point{};
     ch->track_started_at = std::chrono::steady_clock::time_point{};
     ch->paused_since = std::chrono::steady_clock::time_point{};
     ch->paused_accumulated = std::chrono::steady_clock::duration::zero();
@@ -5772,6 +5810,49 @@ bool AudioEngine::SkipChannel(ChannelId channel_id) {
             stopped_only = true;
         };
 
+        if (target->idle_suspended && !target->active_run) {
+            // Suspended without listeners: move the saved position instead of starting playback.
+            if (target->playlist_mode) {
+                std::int32_t next_idx = -1;
+                const std::int32_t q_size = static_cast<std::int32_t>(target->queue.size());
+                if (!target->current_from_queue) {
+                    next_idx = NextPlaylistIndexAfterOutOfListLocked(*target);
+                } else if (q_size > 0) {
+                    const std::int32_t cand = (target->playlist_pos >= -1 && target->playlist_pos < q_size)
+                        ? (target->playlist_pos + 1)
+                        : 0;
+                    if (cand < q_size) {
+                        next_idx = cand;
+                    } else if (target->loop_mode == ChannelLoopMode::Queue) {
+                        next_idx = 0;
+                    }
+                }
+                if (next_idx >= 0 && next_idx < q_size) {
+                    target->current_input = target->queue[static_cast<std::size_t>(next_idx)];
+                    target->playlist_pos = next_idx;
+                    target->playlist_resume_pos = -1;
+                    target->current_from_queue = true;
+                    target->current_track = TrackMetadata{};
+                    target->live_title.clear();
+                    target->resume_offset_seconds = 0;
+                } else {
+                    ClearChannelSuspensionLocked(*target, true);
+                }
+            } else if (!target->queue.empty()) {
+                target->current_input = target->queue.front();
+                target->queue.pop_front();
+                target->playlist_pos = -1;
+                target->current_from_queue = true;
+                target->current_track = TrackMetadata{};
+                target->live_title.clear();
+                target->resume_offset_seconds = 0;
+            } else {
+                ClearChannelSuspensionLocked(*target, true);
+            }
+            MarkChannelDirtyLocked(*target);
+            return true;
+        }
+
         if (target->playlist_mode) {
             if (!target->active_run) {
                 return false;
@@ -5869,6 +5950,9 @@ bool AudioEngine::StopChannel(ChannelId channel_id) {
         ch->consecutive_errors = 0;
         ch->restore_wanted = false;
         ch->restore_retry_blocked = false;
+        ch->idle_suspended = false;
+        ch->resume_offset_seconds = 0;
+        ch->idle_since = std::chrono::steady_clock::time_point{};
         ch->pause_flag.store(false);
         ch->state.store(StreamState::Stopped);
         DetachChannelRangeListenersLocked(ch, cmds);
@@ -5973,7 +6057,7 @@ bool AudioEngine::SetChannelVolume(ChannelId channel_id, float volume) {
     return true;
 }
 
-bool AudioEngine::JoinChannel(PlayerId player_id, ChannelId channel_id, const std::string& password) {
+bool AudioEngine::JoinChannel(PlayerId player_id, ChannelId channel_id, const std::string& password, bool ignore_password) {
     if (!host_.IsPlayerConnected(player_id)) return false;
 
     std::vector<PlayerAudioCommand> cmds;
@@ -5981,7 +6065,7 @@ bool AudioEngine::JoinChannel(PlayerId player_id, ChannelId channel_id, const st
         std::lock_guard<std::mutex> lock(state_mutex_);
         auto it = channels_.find(channel_id);
         if (it == channels_.end()) return false;
-        if (!it->second->password_hash.empty() &&
+        if (!ignore_password && !it->second->password_hash.empty() &&
             ComputeStringSha256Hex(it->second->password_salt + password) != it->second->password_hash) {
             return false;
         }
@@ -6995,21 +7079,8 @@ std::int32_t AudioEngine::GetChannelElapsedSeconds(ChannelId channel_id) const {
     auto it = channels_.find(channel_id);
     if (it == channels_.end() || !it->second) return -1;
     const auto& ch = *it->second;
-    StreamState st = ch.state.load();
-    const bool seek_repositioning =
-        ((st == StreamState::Resolving || st == StreamState::Buffering) &&
-         ch.track_started_at != std::chrono::steady_clock::time_point{});
-    if ((st != StreamState::Playing && st != StreamState::Paused && !seek_repositioning) ||
-        ch.track_started_at == std::chrono::steady_clock::time_point{}) {
-        return -1;
-    }
-    auto end_tp = ((st == StreamState::Paused || ch.pause_flag.load()) &&
-                   ch.paused_since != std::chrono::steady_clock::time_point{})
-        ? ch.paused_since
-        : std::chrono::steady_clock::now();
-    auto elapsed = ch.seek_base_offset + (end_tp - ch.track_started_at - ch.paused_accumulated);
-    auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-    return static_cast<std::int32_t>(secs < 0 ? 0 : secs);
+    if (ch.idle_suspended && !ch.active_run) return ch.resume_offset_seconds;
+    return ComputeChannelElapsedSecondsLocked(ch);
 }
 
 PlayerId AudioEngine::GetChannelListenerAt(ChannelId channel_id, std::size_t index) const {
@@ -7573,6 +7644,15 @@ bool AudioEngine::SeekChannelAudioStream(ChannelId channel_id, std::int32_t seco
         auto it = channels_.find(channel_id);
         if (it == channels_.end() || !it->second) return false;
         ch = it->second;
+        if (ch->idle_suspended && !ch->active_run) {
+            if (ch->current_track.is_live || ch->current_track.duration_seconds <= 0 ||
+                seconds >= ch->current_track.duration_seconds) {
+                return false;
+            }
+            ch->resume_offset_seconds = seconds;
+            MarkChannelDirtyLocked(*ch);
+            return true;
+        }
         StreamState cur = ch->state.load();
         if (!ch->active_run || (cur != StreamState::Playing && cur != StreamState::Paused)) {
             return false;
@@ -7629,7 +7709,7 @@ bool AudioEngine::GetChannelInfo(ChannelId channel_id, ChannelInfo& out_info) co
     out_info.has_password = !ch.password_hash.empty();
     out_info.listener_count = ch.listeners.size();
     out_info.queue_count = ch.queue.size();
-    out_info.state = ch.state.load();
+    out_info.state = (ch.idle_suspended && !ch.active_run) ? StreamState::Suspended : ch.state.load();
     out_info.destroy_mode = ch.destroy_mode;
     out_info.destroy_timeout_seconds = ch.destroy_timeout_seconds;
     out_info.destroy_remaining_seconds = ComputeChannelRemainingTimeoutSecondsLocked(ch, std::chrono::steady_clock::now());
@@ -7767,7 +7847,9 @@ bool AudioEngine::GetStreamInfo(StreamId stream_id, TrackMetadata& out_meta, Str
 StreamState AudioEngine::GetChannelState(ChannelId channel_id) const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     auto it = channels_.find(channel_id);
-    return (it != channels_.end()) ? it->second->state.load() : StreamState::Idle;
+    if (it == channels_.end()) return StreamState::Idle;
+    if (it->second->idle_suspended && !it->second->active_run) return StreamState::Suspended;
+    return it->second->state.load();
 }
 
 StreamId AudioEngine::GetPlayerStreamId(PlayerId player_id) const {
@@ -7827,6 +7909,9 @@ AudioEngine::ChannelPersistSnapshot AudioEngine::CaptureChannelPersistSnapshotLo
     snap.spatial.attach_vehicle_id = 0;
     snap.auto_listen = ch.auto_listen;
     snap.range_group = ch.range_group;
+    snap.idle_suspend = ch.idle_suspend;
+    snap.idle_suspend_seconds = ch.idle_suspend_seconds;
+    snap.resume_offset_seconds = ch.idle_suspended ? ch.resume_offset_seconds : 0;
     snap.persistent = ch.persistent;
     snap.revision = ch.persist_revision;
     snap.cancelled = ch.persist_cancelled;
@@ -7897,6 +7982,9 @@ bool AudioEngine::WriteChannelPersistFile(const ChannelPersistSnapshot& snap, st
             {"pawn_description_hex", BytesToHex(snap.current_input.pawn_description)}
         }},
         {"was_playing", snap.was_playing},
+        {"idle_suspend", snap.idle_suspend},
+        {"idle_suspend_seconds", snap.idle_suspend_seconds},
+        {"resume_offset_seconds", snap.resume_offset_seconds},
         {"queue", std::move(q_arr)},
         {"spatial", {
             {"use_position", snap.spatial.use_position},
@@ -8157,6 +8245,15 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
         if (!snap.has_creator && snap.creator_name.empty()) {
             snap.creator_name = "Server";
         }
+        if (j.contains("idle_suspend") && j["idle_suspend"].is_boolean()) {
+            snap.idle_suspend = j["idle_suspend"].get<bool>();
+        }
+        if (j.contains("idle_suspend_seconds") && j["idle_suspend_seconds"].is_number_integer()) {
+            snap.idle_suspend_seconds = std::clamp<std::int32_t>(j["idle_suspend_seconds"].get<std::int32_t>(), 0, 3600);
+        }
+        if (j.contains("resume_offset_seconds") && j["resume_offset_seconds"].is_number_integer()) {
+            snap.resume_offset_seconds = std::max<std::int32_t>(0, j["resume_offset_seconds"].get<std::int32_t>());
+        }
         if (j.contains("description_hex") && j["description_hex"].is_string()) {
             snap.utf8_description = SanitizeDescriptionUtf8(HexToBytes(j["description_hex"].get<std::string>()));
         }
@@ -8377,6 +8474,9 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
             ch->spatial = s.spatial;
             ch->auto_listen = s.auto_listen;
             ch->range_group = s.range_group;
+            ch->idle_suspend = s.idle_suspend;
+            ch->idle_suspend_seconds = s.idle_suspend_seconds;
+            ch->resume_offset_seconds = s.resume_offset_seconds;
             ch->state.store(StreamState::Idle);
             if (s.was_playing && !s.current_input.utf8_url.empty()) {
                 ch->restore_wanted = true;
@@ -8387,6 +8487,99 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
             pending_restored_channel_ids_.push_back(ch->id);
         }
         pending_restore_notifications_ = !pending_restored_channel_ids_.empty();
+    }
+}
+
+bool AudioEngine::SetChannelIdleSuspend(ChannelId channel_id, bool enable, std::int32_t grace_seconds) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = channels_.find(channel_id);
+    if (it == channels_.end() || !it->second) return false;
+    auto& ch = *it->second;
+    ch.idle_suspend = enable;
+    ch.idle_suspend_seconds = std::clamp<std::int32_t>(grace_seconds, 0, 3600);
+    ch.idle_since = std::chrono::steady_clock::time_point{};
+    if (!enable) {
+        // A suspended channel keeps restore_wanted, so the next tick resumes it at the saved point.
+        ch.idle_suspended = false;
+    }
+    MarkChannelDirtyLocked(ch);
+    return true;
+}
+
+bool AudioEngine::GetChannelIdleSuspend(
+    ChannelId channel_id,
+    bool& out_enable,
+    std::int32_t& out_grace_seconds,
+    bool& out_suspended) const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = channels_.find(channel_id);
+    if (it == channels_.end() || !it->second) return false;
+    const auto& ch = *it->second;
+    out_enable = ch.idle_suspend;
+    out_grace_seconds = ch.idle_suspend_seconds;
+    out_suspended = ch.idle_suspended && !ch.active_run;
+    return true;
+}
+
+void AudioEngine::SuspendIdleChannelsInTick() {
+    if (!initialized_.load() || shutting_down_.load()) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (last_idle_suspend_check_ != std::chrono::steady_clock::time_point{} &&
+        now - last_idle_suspend_check_ < std::chrono::milliseconds(500)) {
+        return;
+    }
+    last_idle_suspend_check_ = now;
+
+    std::vector<std::shared_ptr<ChannelRunState>> stopped_runs;
+    std::vector<std::pair<ChannelId, std::int32_t>> suspended;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        for (ChannelId cid : sorted_channel_ids_) {
+            auto it = channels_.find(cid);
+            if (it == channels_.end() || !it->second) continue;
+            auto& ch = *it->second;
+            // Positioned channels are heard by anyone in range, so only joined-only channels are suspended.
+            if (!ch.idle_suspend || ch.spatial.use_position || !ch.active_run || !ch.listeners.empty()) {
+                ch.idle_since = std::chrono::steady_clock::time_point{};
+                continue;
+            }
+            if (ch.idle_since == std::chrono::steady_clock::time_point{}) {
+                ch.idle_since = now;
+            }
+            if (now - ch.idle_since < std::chrono::seconds(ch.idle_suspend_seconds)) continue;
+
+            std::int32_t offset = 0;
+            if (!ch.current_track.is_live && ch.current_track.duration_seconds > 0) {
+                offset = std::max<std::int32_t>(0, ComputeChannelElapsedSecondsLocked(ch));
+                if (offset >= ch.current_track.duration_seconds) offset = 0;
+            }
+            CancelPendingChannelCompletionLocked(cid);
+            stopped_runs.push_back(ch.active_run);
+            ch.active_run.reset();
+            ch.track_started_at = std::chrono::steady_clock::time_point{};
+            ch.paused_since = std::chrono::steady_clock::time_point{};
+            ch.paused_accumulated = std::chrono::steady_clock::duration::zero();
+            ch.seek_base_offset = std::chrono::seconds::zero();
+            ch.live_poll = LiveTitlePollState{};
+            ch.state.store(StreamState::Stopped);
+            ch.restore_wanted = true;
+            ch.restore_retry_blocked = false;
+            ch.idle_suspended = true;
+            ch.resume_offset_seconds = offset;
+            ch.idle_since = std::chrono::steady_clock::time_point{};
+            MarkChannelDirtyLocked(ch);
+            suspended.emplace_back(cid, offset);
+        }
+    }
+    if (stopped_runs.empty()) return;
+    for (const auto& run : stopped_runs) {
+        if (run) run->cancel_flag.store(true);
+    }
+    HttpClient::PollCancellations();
+    for (const auto& [cid, offset] : suspended) {
+        Logger::Instance().Debug(
+            "Channel " + std::to_string(cid) + " suspended without listeners (resume at " +
+            std::to_string(offset) + " s)");
     }
 }
 
@@ -8413,6 +8606,11 @@ void AudioEngine::ResumeRestoredChannelsInTick() {
             auto& ch = it->second;
             if (ch->active_run || ch->current_input.utf8_url.empty()) {
                 ch->restore_wanted = false;
+                ch->idle_suspended = false;
+                continue;
+            }
+            if (ch->idle_suspend && !ch->spatial.use_position && ch->listeners.empty()) {
+                ch->idle_suspended = true;
                 continue;
             }
             const bool is_local_lib = StreamResolver::IsLibraryUrl(ch->current_input.utf8_url);
@@ -8436,10 +8634,18 @@ void AudioEngine::ResumeRestoredChannelsInTick() {
             std::string pawn_url = ch->current_input.pawn_url;
             std::string utf8_label = ch->current_input.utf8_label;
             const ChannelQueueEntry saved_input = ch->current_input;
+            const std::int32_t resume_offset = std::max<std::int32_t>(0, ch->resume_offset_seconds);
+            const bool was_suspended = ch->idle_suspended;
             std::shared_ptr<SyncChannel> out_ch;
             std::shared_ptr<ChannelRunState> out_run;
             if (PlayChannelLocked(cid, url, pawn_url, out_ch, out_run, utf8_label)) {
                 CopyQueueEntryDescription(out_ch->current_input, saved_input);
+                out_run->start_offset_seconds = resume_offset;
+                if (was_suspended) {
+                    Logger::Instance().Debug(
+                        "Channel " + std::to_string(cid) + " resumed for a listener at " +
+                        std::to_string(resume_offset) + " s");
+                }
                 out_ch->pause_flag.store(was_paused);
                 out_ch->playlist_pos = out_ch->playlist_mode ? saved_pos : -1;
                 out_ch->current_from_queue = saved_from_queue;

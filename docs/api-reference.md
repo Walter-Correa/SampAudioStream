@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.1`), covering all **87 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.2`), covering all **89 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -256,9 +256,9 @@ Sets volume (`0.0` to `200.0`, clamped) on `channelid`.
 
 ### `SA_JoinAudioStreamChannel`
 ```pawn
-native SA_JoinAudioStreamChannel(playerid, channelid, const password[] = "");
+native SA_JoinAudioStreamChannel(playerid, channelid, const password[] = "", bool:ignore_password = false);
 ```
-Subscribes `playerid` to `channelid` (automatically stops any personal stream or previous channel). Returns `0` if the channel is password-protected and `password` does not match. If `channelid` is currently playing, the player immediately starts listening at the live position. If the player was already hearing this same channel through its range (positioned channel with `auto_listen`), the stream keeps playing without a restart and only `OnPlayerAudioStreamSourceChange` fires.
+Subscribes `playerid` to `channelid` (automatically stops any personal stream or previous channel). Returns `0` if the channel is password-protected and `password` does not match. Passing `ignore_password = true` (`2.3.2`) joins without checking the password, so the script can let the creator or its admins in without typing it; the plugin does not decide who may skip it. If `channelid` is currently playing, the player immediately starts listening at the live position. If the player was already hearing this same channel through its range (positioned channel with `auto_listen`), the stream keeps playing without a restart and only `OnPlayerAudioStreamSourceChange` fires.
 
 ### `SA_LeaveAudioStreamChannel`
 ```pawn
@@ -307,6 +307,27 @@ Updates the automatic destruction policy of `channelid` (`Manual`, `OnDisconnect
 native SA_GetAudioStreamChannelDestroy(channelid, &E_SA_CHANNEL_DESTROY_MODE:destroy_mode, &destroy_timeout_sec, &destroy_remaining_sec, &bool:creator_online);
 ```
 Reads `channelid`'s destroy policy, configured timeout, remaining countdown seconds (always equal to full `destroy_timeout_sec` while `creator_online == true`, never counting down while online), and whether the creator is currently online.
+
+### `SA_SetAudioStreamChannelIdleSuspend`
+```pawn
+native SA_SetAudioStreamChannelIdleSuspend(channelid, bool:enable, grace_seconds = 30);
+```
+Enables or disables idle suspension for `channelid`. When enabled and the channel has had no joined listener (`SA_JoinAudioStreamChannel`) for `grace_seconds` (`0..3600`), the plugin stops the playback and frees its transcoder slot, remembering the track (`current_input`, playlist position) and the second it reached. The next joined listener resumes it on the following tick at that same track and second (live radios simply reconnect); a manual pause is kept. While suspended:
+* `SA_GetAudioStreamChannelInfo` reports `SA_STATE_SUSPENDED`, and the track title, artist and duration stay readable through `SA_GetAudioStreamChannelTrack`.
+* `SA_GetAudioStreamChannelElapsed` returns the saved second.
+* `SA_SkipChannelAudioStream` moves the saved position to the next item without starting playback (at the end of the list without `SA_CHANNEL_LOOP_QUEUE` the channel stops), and `SA_SeekChannelAudioStream` moves the saved second.
+* Queued tracks do not auto-start; `SA_PlayChannelAudioStream` / `SA_PlayAudioStreamChannelQueue` start playback right away and the channel is suspended again after the grace time if nobody joins.
+* `SA_StopChannelAudioStream` clears the suspension.
+
+Positioned channels (`SA_SetAudioStreamChannelPos` / attachments) are never suspended because anyone in range hears them. Persistent channels save the setting (`idle_suspend`, `idle_suspend_seconds`) and the saved second (`resume_offset_seconds`); after a restart, a channel that was playing comes back suspended and only starts for its first listener. Disabling the option on a suspended channel resumes it immediately.
+* **Returns:** `1` on success, `0` if `channelid` does not exist.
+
+### `SA_GetAudioStreamChannelIdleSuspend`
+```pawn
+native SA_GetAudioStreamChannelIdleSuspend(channelid, &bool:enable, &grace_seconds, &bool:suspended);
+```
+Reads whether idle suspension is enabled, its grace time and whether the channel is suspended right now.
+* **Returns:** `1` if the channel exists, `0` otherwise.
 
 ### `SA_GetAudioStreamChannelCount`
 ```pawn
@@ -969,6 +990,7 @@ public OnAudioStreamChannelLiveTitleChange(channelid, const title[])
 | `SA_STATE_STOPPED` (`5`) | Manually stopped |
 | `SA_STATE_FINISHED` (`6`) | Completed naturally |
 | `SA_STATE_ERROR` (`7`) | Terminated with an error |
+| `SA_STATE_SUSPENDED` (`8`) | Channel stopped by idle suspension, waiting for its next listener (`SA_SetAudioStreamChannelIdleSuspend`) |
 
 ### `E_SA_CHANNEL_DESTROY_MODE`
 | Value | Meaning |

@@ -400,13 +400,15 @@ cell AMX_NATIVE_CALL n_SA_SetChannelAudioStreamVolume(AMX*, cell* params) {
     return g_engine->SetChannelVolume(static_cast<ChannelId>(params[1]), amx_ctof(params[2])) ? 1 : 0;
 }
 
-// SA_JoinAudioStreamChannel(playerid, channelid, const password[] = "")
+// SA_JoinAudioStreamChannel(playerid, channelid, const password[] = "", bool:ignore_password = false)
 cell AMX_NATIVE_CALL n_SA_JoinAudioStreamChannel(AMX* amx, cell* params) {
     if (!g_engine) return 0;
     std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
     if (argc < 2) return 0;
     std::string password = (argc >= 3) ? ReadAmxString(amx, params[3]) : std::string();
-    return g_engine->JoinChannel(static_cast<PlayerId>(params[1]), static_cast<ChannelId>(params[2]), password) ? 1 : 0;
+    const bool ignore_password = (argc >= 4) && params[4] != 0;
+    return g_engine->JoinChannel(
+        static_cast<PlayerId>(params[1]), static_cast<ChannelId>(params[2]), password, ignore_password) ? 1 : 0;
 }
 
 // SA_LeaveAudioStreamChannel(playerid)
@@ -483,6 +485,30 @@ cell AMX_NATIVE_CALL n_SA_GetAudioStreamChannelDestroy(AMX* amx, cell* params) {
     if (argc >= 3) WriteAmxCell(amx, params[3], static_cast<cell>(info.destroy_timeout_seconds));
     if (argc >= 4) WriteAmxCell(amx, params[4], static_cast<cell>(info.destroy_remaining_seconds));
     if (argc >= 5) WriteAmxCell(amx, params[5], info.creator_online ? 1 : 0);
+    return 1;
+}
+
+// SA_SetAudioStreamChannelIdleSuspend(channelid, bool:enable, grace_seconds = 30)
+cell AMX_NATIVE_CALL n_SA_SetAudioStreamChannelIdleSuspend(AMX*, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
+    const std::int32_t grace = (argc >= 3) ? static_cast<std::int32_t>(params[3]) : 30;
+    return g_engine->SetChannelIdleSuspend(static_cast<ChannelId>(params[1]), params[2] != 0, grace) ? 1 : 0;
+}
+
+// SA_GetAudioStreamChannelIdleSuspend(channelid, &bool:enable, &grace_seconds, &bool:suspended)
+cell AMX_NATIVE_CALL n_SA_GetAudioStreamChannelIdleSuspend(AMX* amx, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 1) return 0;
+    bool enable = false;
+    bool suspended = false;
+    std::int32_t grace = 0;
+    if (!g_engine->GetChannelIdleSuspend(static_cast<ChannelId>(params[1]), enable, grace, suspended)) return 0;
+    if (argc >= 2) WriteAmxCell(amx, params[2], enable ? 1 : 0);
+    if (argc >= 3) WriteAmxCell(amx, params[3], static_cast<cell>(grace));
+    if (argc >= 4) WriteAmxCell(amx, params[4], suspended ? 1 : 0);
     return 1;
 }
 
@@ -1243,6 +1269,8 @@ const std::vector<AMX_NATIVE_INFO>& GetPluginNatives() {
         {"SA_SetAudioStreamChannelCreator", n_SA_SetAudioStreamChannelCreator},
         {"SA_SetAudioStreamChannelDestroy", n_SA_SetAudioStreamChannelDestroy},
         {"SA_GetAudioStreamChannelDestroy", n_SA_GetAudioStreamChannelDestroy},
+        {"SA_SetAudioStreamChannelIdleSuspend", n_SA_SetAudioStreamChannelIdleSuspend},
+        {"SA_GetAudioStreamChannelIdleSuspend", n_SA_GetAudioStreamChannelIdleSuspend},
         {"SA_GetAudioStreamChannelCount", n_SA_GetAudioStreamChannelCount},
         {"SA_GetAudioStreamChannelID", n_SA_GetAudioStreamChannelID},
         {"SA_GetAudioStreamChannelInfo", n_SA_GetAudioStreamChannelInfo},

@@ -209,6 +209,12 @@ struct SyncChannel {
     LiveTitlePollState live_poll{};
     std::int32_t consecutive_errors{0};
     bool playlist_import_in_flight{false};
+    // Idle suspension: stop playback while nobody is joined and resume at the same point for the next listener.
+    bool idle_suspend{false};
+    std::int32_t idle_suspend_seconds{30};
+    bool idle_suspended{false};
+    std::int32_t resume_offset_seconds{0};
+    std::chrono::steady_clock::time_point idle_since{};
     std::shared_ptr<std::atomic<bool>> playlist_cancel{std::make_shared<std::atomic<bool>>(false)};
 
     // Persistence & boot restore tracking
@@ -370,7 +376,7 @@ public:
     bool StopChannel(ChannelId channel_id);
     bool PauseChannel(ChannelId channel_id, bool pause);
     bool SetChannelVolume(ChannelId channel_id, float volume);
-    bool JoinChannel(PlayerId player_id, ChannelId channel_id, const std::string& password = "");
+    bool JoinChannel(PlayerId player_id, ChannelId channel_id, const std::string& password = "", bool ignore_password = false);
     bool LeaveChannel(PlayerId player_id);
     bool IsPlayerInChannel(PlayerId player_id, ChannelId channel_id) const;
     ChannelId GetPlayerChannelId(PlayerId player_id) const;
@@ -378,6 +384,8 @@ public:
     bool VerifyChannelPassword(ChannelId channel_id, const std::string& password) const;
     bool SetChannelCreator(ChannelId channel_id, PlayerId creator_player_id);
     bool SetChannelDestroyPolicy(ChannelId channel_id, ChannelDestroyMode destroy_mode, std::int32_t timeout_seconds = 0);
+    bool SetChannelIdleSuspend(ChannelId channel_id, bool enable, std::int32_t grace_seconds);
+    bool GetChannelIdleSuspend(ChannelId channel_id, bool& out_enable, std::int32_t& out_grace_seconds, bool& out_suspended) const;
     bool ClearChannelQueue(ChannelId channel_id);
     bool SetChannelPos(
         ChannelId channel_id,
@@ -620,6 +628,9 @@ private:
         StreamOptions spatial{};
         bool auto_listen{true};
         std::int32_t range_group{0};
+        bool idle_suspend{false};
+        std::int32_t idle_suspend_seconds{30};
+        std::int32_t resume_offset_seconds{0};
         bool persistent{true};
         std::uint64_t revision{0};
         std::shared_ptr<std::atomic<bool>> cancelled;
@@ -633,6 +644,7 @@ private:
     void DeleteChannelPersistFile(ChannelId id);
     void LoadPersistedChannelsOnInit();
     void ResumeRestoredChannelsInTick();
+    void SuspendIdleChannelsInTick();
     void DispatchPendingRestoredCallbacks();
 
     IPlatformHost& host_;
@@ -699,6 +711,7 @@ private:
 
     std::chrono::steady_clock::time_point last_spatial_update_;
     std::chrono::steady_clock::time_point last_disconnect_poll_;
+    std::chrono::steady_clock::time_point last_idle_suspend_check_{};
     std::array<AudioSourcePriority, 3> priority_order_{
         AudioSourcePriority::Personal,
         AudioSourcePriority::Channel,
