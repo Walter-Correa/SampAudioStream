@@ -109,6 +109,8 @@ enum
     DLG_SA_SOUND_MODE,
     DLG_SA_GROUP_MUTE,
     DLG_SA_CH_GROUP_SET,
+    DLG_SA_CH_DESC,
+    DLG_SA_CH_QUEUE_DESC,
     DLG_SA_LAST
 }
 
@@ -745,6 +747,12 @@ static stock ShowChannelManageMenu(playerid, channelid)
     new hist_cnt = (hslot != -1) ? gHistCount[hslot] : 0;
     new bool:playlist_on = SA_IsAudioStreamChannelPlaylist(channelid);
 
+    // 2.3.2: free-text channel description, saved with persistent channels
+    new cdesc[40];
+    SA_GetAudioStreamChannelDescription(channelid, cdesc, sizeof(cdesc));
+    SanitizeDialogField(cdesc);
+    if (cdesc[0] == EOS) format(cdesc, sizeof(cdesc), "none");
+
     new title[96];
     static body[2048];
     format(title, sizeof(title), "{FF88FF}Channel #%d: %s", channelid, cname);
@@ -770,6 +778,7 @@ Set Radio Text {AAAAAA}(SA_SetAudioStreamChannelLiveTitle)\n\
 Vote to Skip Track {AAAAAA}(listeners vote)\n\
 Previous Track {AAAAAA}(history: %d)\n\
 Toggle Playlist Mode {AAAAAA}(SA_SetAudioStreamChannelPlaylist: %s | Now: #%d)\n\
+Channel Description {AAAAAA}(SA_SetAudioStreamChannelDescription: %s)\n\
 {CCCCCC}--- %s (%ds) | Listeners: %d | Track: %s%s%s ---",
         joined ? "Leave" : "Join",
         joined ? "SA_LeaveAudioStreamChannel" : "SA_JoinAudioStreamChannel",
@@ -787,6 +796,7 @@ Toggle Playlist Mode {AAAAAA}(SA_SetAudioStreamChannelPlaylist: %s | Now: #%d)\n
         hist_cnt,
         playlist_on ? "ON" : "OFF",
         SA_GetAudioStreamChannelQueuePos(channelid),
+        cdesc,
         st_lbl,
         (elapsed < 0) ? 0 : elapsed,
         listeners,
@@ -899,7 +909,7 @@ static stock ShowChannelQueueDialog(playerid, channelid)
     new bool:playlist_on = SA_IsAudioStreamChannelPlaylist(channelid);
     new playlist_pos = playlist_on ? SA_GetAudioStreamChannelQueuePos(channelid) : -1;
     static body[3072];
-    new item[132], line[160];
+    new item[132], line[200], idesc[40];
     format(body, sizeof(body),
         "{00FF88}+ Insert URL at Index 0 (Play Next) {AAAAAA}(SA_InsertAudioStreamChannelQueue)\n\
 {FF8888}- Remove Queue Item by Index {AAAAAA}(SA_RemoveAudioStreamChannelQueue)\n\
@@ -921,12 +931,20 @@ static stock ShowChannelQueueDialog(playerid, channelid)
         if (!GetChannelQueueDisplayText(channelid, i, item, sizeof(item))) break;
         if (i == playlist_pos)
         {
-            format(line, sizeof(line), "{EEDD82}> #%d: %s\n", i, item);
+            format(line, sizeof(line), "{EEDD82}> #%d: %s", i, item);
         }
         else
         {
-            format(line, sizeof(line), "{FFCC00}#%d: {FFFFFF}%s\n", i, item);
+            format(line, sizeof(line), "{FFCC00}#%d: {FFFFFF}%s", i, item);
         }
+        idesc[0] = EOS;
+        SA_GetAudioStreamChannelQueueDescription(channelid, i, idesc, sizeof(idesc));
+        if (idesc[0] != EOS)
+        {
+            SanitizeDialogField(idesc);
+            format(line, sizeof(line), "%s {AAAAAA}- %s", line, idesc);
+        }
+        strcat(line, "\n");
         if (strlen(body) + strlen(line) >= sizeof(body)) break;
         strcat(body, line);
         gQueueViewHash[playerid][gQueueViewCount[playerid]] = HashStringDjb2(item);
@@ -960,7 +978,37 @@ static stock ShowChannelQueueItemDialog(playerid, channelid, idx)
         format(title, sizeof(title), "{00CCFF}Queue Item #%d Actions", idx);
     }
     ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_ITEM, DIALOG_STYLE_LIST, title,
-        "Move to Top\nMove Up\nMove Down\n{FF8888}Remove\n{00FF88}Play This Item Now {AAAAAA}(SA_PlayAudioStreamChannelQueue)", "Apply", "Back");
+        "Move to Top\nMove Up\nMove Down\n{FF8888}Remove\n{00FF88}Play This Item Now {AAAAAA}(SA_PlayAudioStreamChannelQueue)\n\
+Edit Description {AAAAAA}(SA_SetAudioStreamChannelQueueDescription)", "Apply", "Back");
+}
+
+static stock ShowChannelDescriptionDialog(playerid, channelid)
+{
+    new desc[260], body[512];
+    SA_GetAudioStreamChannelDescription(channelid, desc, sizeof(desc));
+    SanitizeDialogField(desc);
+    if (desc[0] == EOS) format(desc, sizeof(desc), "(none)");
+    format(body, sizeof(body),
+        "{FFFFFF}Enter the channel description (up to 256 bytes, leave blank to clear).\n\
+{AAAAAA}Persistent channels save it and restore it after restarts.\n\n\
+{FFFFFF}Current: {AAAAAA}%s", desc);
+    ShowPlayerDialog(playerid, DLG_SA_CH_DESC, DIALOG_STYLE_INPUT,
+        "{FF88FF}Channel Description (SA_SetAudioStreamChannelDescription)", body, "Save", "Back");
+}
+
+static stock ShowChannelQueueDescDialog(playerid, channelid, idx)
+{
+    new desc[260], body[640], title[96];
+    SA_GetAudioStreamChannelQueueDescription(channelid, idx, desc, sizeof(desc));
+    SanitizeDialogField(desc);
+    if (desc[0] == EOS) format(desc, sizeof(desc), "(none)");
+    format(body, sizeof(body),
+        "{FFFFFF}Enter a description for queue item #%d (up to 256 bytes, leave blank to clear).\n\
+{AAAAAA}It follows the item when moved, shuffled or looped (SA_GetAudioStreamChannelQueueDescription),\n\
+{AAAAAA}and SA_GetAudioStreamChannelTrackDescription returns it while the item plays.\n\n\
+{FFFFFF}Current: {AAAAAA}%s", idx, desc);
+    format(title, sizeof(title), "{00CCFF}Item #%d Description", idx);
+    ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_DESC, DIALOG_STYLE_INPUT, title, body, "Save", "Back");
 }
 
 static stock HandleChannelVoteSkip(playerid, cid)
@@ -2817,8 +2865,66 @@ Offline Timeout (Custom seconds)",
                     }
                     ShowChannelManageMenu(playerid, cid);
                 }
+                case 21:
+                {
+                    if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+                    ShowChannelDescriptionDialog(playerid, cid);
+                }
                 default: ShowChannelManageMenu(playerid, cid);
             }
+            return 1;
+        }
+
+        case DLG_SA_CH_DESC:
+        {
+            new cid = gSelChannelId[playerid];
+            if (!response)
+            {
+                if (!EnsureSelectedChannelExists(playerid, cid)) return 1;
+                ShowChannelManageMenu(playerid, cid);
+                return 1;
+            }
+            if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+            if (SA_SetAudioStreamChannelDescription(cid, inputtext))
+            {
+                if (inputtext[0] != EOS) SendClientMessage(playerid, 0x00FF88FF, "[Channel] Channel description saved.");
+                else SendClientMessage(playerid, 0x00FF88FF, "[Channel] Channel description cleared.");
+            }
+            else
+            {
+                SendClientMessage(playerid, 0xFF5555FF, "[Channel] Failed to set the channel description.");
+            }
+            ShowChannelManageMenu(playerid, cid);
+            return 1;
+        }
+
+        case DLG_SA_CH_QUEUE_DESC:
+        {
+            new cid = gSelChannelId[playerid];
+            if (!EnsureChannelManagePermission(playerid, cid)) return 1;
+            new idx = gQueueSelIdx[playerid];
+            new cur_item[132];
+            if (idx < 0 || !GetChannelQueueDisplayText(cid, idx, cur_item, sizeof(cur_item)) ||
+                HashStringDjb2(cur_item) != gQueueSelHash[playerid])
+            {
+                SendClientMessage(playerid, 0xFFAA00FF,
+                    "[Channel] Queue changed before saving; refreshing list.");
+                ShowChannelQueueDialog(playerid, cid);
+                return 1;
+            }
+            if (response)
+            {
+                if (SA_SetAudioStreamChannelQueueDescription(cid, idx, inputtext))
+                {
+                    if (inputtext[0] != EOS) SendClientMessage(playerid, 0x00FF88FF, "[Channel] Item description saved (it follows the item when moved or shuffled).");
+                    else SendClientMessage(playerid, 0x00FF88FF, "[Channel] Item description cleared.");
+                }
+                else
+                {
+                    SendClientMessage(playerid, 0xFF5555FF, "[Channel] Failed to set the item description.");
+                }
+            }
+            ShowChannelQueueItemDialog(playerid, cid, idx);
             return 1;
         }
 
@@ -3041,6 +3147,11 @@ Offline Timeout (Custom seconds)",
                     {
                         SendClientMessage(playerid, 0xFF5555FF, "[Channel] Could not start that item (stream limit reached?).");
                     }
+                }
+                case 5:
+                {
+                    ShowChannelQueueDescDialog(playerid, cid, idx);
+                    return 1;
                 }
             }
             ShowChannelQueueDialog(playerid, cid);
@@ -4035,6 +4146,22 @@ public OnAudioStreamChannelTrackStart(channelid, const title[], const artist[], 
 {
     printf("[SampAudioStream] Channel #%d track started: %s - %s (%ds) [%s]",
         channelid, artist, title, duration, url);
+
+    // 2.3.2: the description follows the queue entry into the playing track
+    new tdesc[260];
+    if (SA_GetAudioStreamChannelTrackDescription(channelid, tdesc, sizeof(tdesc)) && tdesc[0] != EOS)
+    {
+        new tname[2], tcreator[2], tlisteners, E_SA_STREAM_STATE:tst, bool:tlocked, tqcount, tmsg[144];
+        format(tmsg, sizeof(tmsg), "[Channel] Track note: %.110s", tdesc);
+        if (SA_GetAudioStreamChannelInfo(channelid, tname, sizeof(tname), tcreator, sizeof(tcreator), tlisteners, tst, tlocked, tqcount))
+        {
+            for (new i = 0; i < tlisteners; i++)
+            {
+                new pid = SA_GetAudioStreamChannelListener(channelid, i);
+                if (pid != INVALID_PLAYER_ID) SendClientMessage(pid, 0xAAAAAAFF, tmsg);
+            }
+        }
+    }
 
     new slot = FindOrAllocHistSlot(channelid);
     if (slot == -1) return 1;

@@ -347,6 +347,46 @@ native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len =
 Reads the friendly display label for the `0`-based `index` queue entry on `channelid` (for example, `Artist - Title` from scripts or the entry title populated by `SA_QueueChannelAudioStreamPlaylist`). `label` may be empty (`""`) if no label was supplied or if the channel was restored from an older JSON without `label_hex`.
 * **Returns:** `1` if the channel and index are valid (even when `label` is empty), `0` if `channelid` does not exist or `index` is out of range.
 
+### `SA_SetAudioStreamChannelDescription`
+```pawn
+native SA_SetAudioStreamChannelDescription(channelid, const description[]);
+```
+Sets a free-text description for `channelid` (for example, what the channel plays or its rules). Control characters are removed, outer spaces are trimmed and the text is cut to `256` UTF-8 bytes without splitting a character. Pass `""` to clear it. Persistent channels save it (`description_hex` / `pawn_description_hex`) and restore it after restarts and GMX.
+* **Returns:** `1` on success, `0` if `channelid` does not exist.
+
+### `SA_GetAudioStreamChannelDescription`
+```pawn
+native SA_GetAudioStreamChannelDescription(channelid, description[], description_len = sizeof(description));
+```
+Reads the description set with `SA_SetAudioStreamChannelDescription`. `description` is empty (`""`) when none was set or the channel was restored from a file saved before 2.3.2.
+* **Returns:** `1` if the channel exists (even when the description is empty), `0` otherwise.
+
+### `SA_SetAudioStreamChannelQueueDescription`
+```pawn
+native SA_SetAudioStreamChannelQueueDescription(channelid, index, const description[]);
+```
+Sets a free-text description for the `0`-based `index` queue entry (same cleanup and `256`-byte limit as the channel description; `""` clears it). The description belongs to the entry: it follows it through `SA_MoveAudioStreamChannelQueue`, `SA_ShuffleAudioStreamChannelQueue`, removals of other entries, `SA_CHANNEL_LOOP_QUEUE` and playlist mode, and is saved with persistent channels. Entries added by `SA_QueueChannelAudioStream`, `SA_InsertAudioStreamChannelQueue` or `SA_QueueChannelAudioStreamPlaylist` start without a description. Changing the entry that is playing also updates `SA_GetAudioStreamChannelTrackDescription`.
+* **Returns:** `1` on success, `0` if `channelid` does not exist or `index` is out of range.
+* **Example:**
+```pawn
+new idx = SA_FindAudioStreamChannelQueue(ch, "library://Rock/song.mp3");
+if (idx != -1) SA_SetAudioStreamChannelQueueDescription(ch, idx, "Requested by the event winner");
+```
+
+### `SA_GetAudioStreamChannelQueueDescription`
+```pawn
+native SA_GetAudioStreamChannelQueueDescription(channelid, index, description[], description_len = sizeof(description));
+```
+Reads the description of the `0`-based `index` queue entry. `description` may be empty (`""`).
+* **Returns:** `1` if the channel and index are valid (even when the description is empty), `0` if `channelid` does not exist or `index` is out of range.
+
+### `SA_GetAudioStreamChannelTrackDescription`
+```pawn
+native SA_GetAudioStreamChannelTrackDescription(channelid, description[], description_len = sizeof(description));
+```
+Reads the description of the track `channelid` is playing: the description of the queue entry it was started from (also when the entry already left the queue outside playlist mode). It is empty when nothing is playing, the track was started directly with `SA_PlayChannelAudioStream`, or the entry has no description. Useful inside `OnAudioStreamChannelTrackStart`.
+* **Returns:** `1` if the channel exists (even when the description is empty), `0` otherwise.
+
 ### `SA_FindAudioStreamChannelQueue`
 ```pawn
 native SA_FindAudioStreamChannelQueue(channelid, const item[], start_index = 0);

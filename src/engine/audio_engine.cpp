@@ -294,6 +294,23 @@ std::string SanitizeQueueLabelUtf8(const std::string& raw) {
     return TruncateUtf8Bytes(cleaned, 128);
 }
 
+// Removes control characters, trims outer spaces and truncates to at most 256 UTF-8 bytes.
+std::string SanitizeDescriptionUtf8(const std::string& raw) {
+    return raw.empty() ? std::string() : SanitizeControlAndTrimUtf8(raw, 256);
+}
+
+std::string DescriptionForPawn(const std::string& utf8, const std::string& pawn, const std::string& encoding) {
+    if (!pawn.empty() || utf8.empty()) {
+        return pawn;
+    }
+    return ConvertTextForPawn(utf8, encoding);
+}
+
+void CopyQueueEntryDescription(ChannelQueueEntry& dst, const ChannelQueueEntry& src) {
+    dst.utf8_description = src.utf8_description;
+    dst.pawn_description = src.pawn_description;
+}
+
 // Removes control characters (< 0x20), trims outer spaces, and truncates to <= 256 UTF-8 bytes.
 std::string CleanLiveTitleUtf8(const std::string& utf8) {
     return SanitizeControlAndTrimUtf8(utf8, 256);
@@ -5783,6 +5800,7 @@ bool AudioEngine::SkipChannel(ChannelId channel_id) {
                 if (!PlayChannelLocked(channel_id, next_track, next_pawn, ch, run, next_utf8_label)) {
                     return false;
                 }
+                CopyQueueEntryDescription(ch->current_input, entry);
                 ch->playlist_pos = next_idx;
                 ch->playlist_resume_pos = -1;
                 ch->current_from_queue = true;
@@ -5801,6 +5819,7 @@ bool AudioEngine::SkipChannel(ChannelId channel_id) {
             if (!PlayChannelLocked(channel_id, next_track, next_pawn, ch, run, next_utf8_label)) {
                 return false;
             }
+            CopyQueueEntryDescription(ch->current_input, ch->queue.front());
             ch->playlist_pos = -1;
             ch->current_from_queue = true;
             ch->consecutive_errors = 0;
@@ -6485,6 +6504,7 @@ bool AudioEngine::RemoveChannelQueueItem(ChannelId channel_id, std::size_t index
                                 ReconcilePlayerLocked(pid, nullptr, cmds);
                             }
                         } else {
+                            CopyQueueEntryDescription(ch_start->current_input, next_entry);
                             ch_start->playlist_pos = idx_i32;
                             ch_start->current_from_queue = true;
                             ch_start->consecutive_errors = 0;
@@ -6952,6 +6972,7 @@ bool AudioEngine::PlayChannelQueueItem(ChannelId channel_id, std::int32_t index)
         if (!PlayChannelLocked(channel_id, entry.utf8_url, entry.pawn_url, ch, run, entry.utf8_label)) {
             return false;
         }
+        CopyQueueEntryDescription(ch->current_input, entry);
         ch->consecutive_errors = 0;
         ch->current_from_queue = true;
         ch->playlist_resume_pos = -1;
@@ -7644,6 +7665,74 @@ bool AudioEngine::GetChannelQueueItemLabel(ChannelId channel_id, std::size_t ind
     return true;
 }
 
+bool AudioEngine::SetChannelDescription(ChannelId channel_id, const std::string& utf8_description) {
+    const std::string clean = SanitizeDescriptionUtf8(utf8_description);
+    const std::string pawn = clean.empty() ? std::string() : ConvertTextForPawn(clean, config_.pawn_text_encoding);
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = channels_.find(channel_id);
+    if (it == channels_.end() || !it->second) return false;
+    auto& ch = *it->second;
+    if (ch.utf8_description == clean && ch.pawn_description == pawn) return true;
+    ch.utf8_description = clean;
+    ch.pawn_description = pawn;
+    MarkChannelDirtyLocked(ch);
+    return true;
+}
+
+bool AudioEngine::GetChannelDescription(ChannelId channel_id, std::string& out_description) const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = channels_.find(channel_id);
+    if (it == channels_.end() || !it->second) return false;
+    out_description = DescriptionForPawn(
+        it->second->utf8_description, it->second->pawn_description, config_.pawn_text_encoding);
+    return true;
+}
+
+bool AudioEngine::SetChannelQueueItemDescription(
+    ChannelId channel_id,
+    std::size_t index,
+    const std::string& utf8_description) {
+    const std::string clean = SanitizeDescriptionUtf8(utf8_description);
+    const std::string pawn = clean.empty() ? std::string() : ConvertTextForPawn(clean, config_.pawn_text_encoding);
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = channels_.find(channel_id);
+    if (it == channels_.end() || !it->second || index >= it->second->queue.size()) return false;
+    auto& ch = *it->second;
+    auto& entry = ch.queue[index];
+    if (entry.utf8_description == clean && entry.pawn_description == pawn) return true;
+    entry.utf8_description = clean;
+    entry.pawn_description = pawn;
+    if (ch.playlist_mode && ch.current_from_queue && ch.playlist_pos == static_cast<std::int32_t>(index)) {
+        CopyQueueEntryDescription(ch.current_input, entry);
+    }
+    MarkChannelDirtyLocked(ch);
+    return true;
+}
+
+bool AudioEngine::GetChannelQueueItemDescription(
+    ChannelId channel_id,
+    std::size_t index,
+    std::string& out_description) const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = channels_.find(channel_id);
+    if (it == channels_.end() || !it->second || index >= it->second->queue.size()) return false;
+    const auto& entry = it->second->queue[index];
+    out_description = DescriptionForPawn(entry.utf8_description, entry.pawn_description, config_.pawn_text_encoding);
+    return true;
+}
+
+bool AudioEngine::GetChannelTrackDescription(ChannelId channel_id, std::string& out_description) const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = channels_.find(channel_id);
+    if (it == channels_.end() || !it->second) return false;
+    const auto& ch = *it->second;
+    out_description = ch.active_run
+        ? DescriptionForPawn(ch.current_input.utf8_description, ch.current_input.pawn_description,
+                             config_.pawn_text_encoding)
+        : std::string();
+    return true;
+}
+
 std::int32_t AudioEngine::FindChannelQueueItem(
     ChannelId channel_id,
     const std::string& pawn_item,
@@ -7712,6 +7801,8 @@ AudioEngine::ChannelPersistSnapshot AudioEngine::CaptureChannelPersistSnapshotLo
     ChannelPersistSnapshot snap;
     snap.id = ch.id;
     snap.name = ch.name;
+    snap.utf8_description = ch.utf8_description;
+    snap.pawn_description = ch.pawn_description;
     snap.password_salt = ch.password_salt;
     snap.password_hash = ch.password_hash;
     snap.has_creator = ch.has_creator;
@@ -7772,7 +7863,9 @@ bool AudioEngine::WriteChannelPersistFile(const ChannelPersistSnapshot& snap, st
             {"utf8_url", entry.utf8_url},
             {"pawn_url_hex", BytesToHex(entry.pawn_url)},
             {"label_hex", BytesToHex(entry.utf8_label)},
-            {"pawn_label_hex", BytesToHex(entry.pawn_label)}
+            {"pawn_label_hex", BytesToHex(entry.pawn_label)},
+            {"description_hex", BytesToHex(entry.utf8_description)},
+            {"pawn_description_hex", BytesToHex(entry.pawn_description)}
         });
     }
 
@@ -7781,6 +7874,8 @@ bool AudioEngine::WriteChannelPersistFile(const ChannelPersistSnapshot& snap, st
         {"persistent", snap.persistent},
         {"id", snap.id},
         {"name", snap.name},
+        {"description_hex", BytesToHex(snap.utf8_description)},
+        {"pawn_description_hex", BytesToHex(snap.pawn_description)},
         {"password_salt", snap.password_salt},
         {"password_hash", snap.password_hash},
         {"has_creator", snap.has_creator},
@@ -7797,7 +7892,9 @@ bool AudioEngine::WriteChannelPersistFile(const ChannelPersistSnapshot& snap, st
             {"utf8_url", snap.current_input.utf8_url},
             {"pawn_url_hex", BytesToHex(snap.current_input.pawn_url)},
             {"label_hex", BytesToHex(snap.current_input.utf8_label)},
-            {"pawn_label_hex", BytesToHex(snap.current_input.pawn_label)}
+            {"pawn_label_hex", BytesToHex(snap.current_input.pawn_label)},
+            {"description_hex", BytesToHex(snap.current_input.utf8_description)},
+            {"pawn_description_hex", BytesToHex(snap.current_input.pawn_description)}
         }},
         {"was_playing", snap.was_playing},
         {"queue", std::move(q_arr)},
@@ -8060,6 +8157,12 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
         if (!snap.has_creator && snap.creator_name.empty()) {
             snap.creator_name = "Server";
         }
+        if (j.contains("description_hex") && j["description_hex"].is_string()) {
+            snap.utf8_description = SanitizeDescriptionUtf8(HexToBytes(j["description_hex"].get<std::string>()));
+        }
+        if (j.contains("pawn_description_hex") && j["pawn_description_hex"].is_string()) {
+            snap.pawn_description = HexToBytes(j["pawn_description_hex"].get<std::string>());
+        }
         if (j.contains("destroy_mode") && j["destroy_mode"].is_number_integer()) {
             int dm = j["destroy_mode"].get<int>();
             if (dm >= 0 && dm <= 2) snap.destroy_mode = static_cast<ChannelDestroyMode>(dm);
@@ -8103,6 +8206,13 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
             if (ci.contains("pawn_label_hex") && ci["pawn_label_hex"].is_string()) {
                 snap.current_input.pawn_label = HexToBytes(ci["pawn_label_hex"].get<std::string>());
             }
+            if (ci.contains("description_hex") && ci["description_hex"].is_string()) {
+                snap.current_input.utf8_description =
+                    SanitizeDescriptionUtf8(HexToBytes(ci["description_hex"].get<std::string>()));
+            }
+            if (ci.contains("pawn_description_hex") && ci["pawn_description_hex"].is_string()) {
+                snap.current_input.pawn_description = HexToBytes(ci["pawn_description_hex"].get<std::string>());
+            }
         }
         if (j.contains("was_playing") && j["was_playing"].is_boolean()) {
             snap.was_playing = j["was_playing"].get<bool>();
@@ -8121,6 +8231,12 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
                 }
                 if (qi.contains("pawn_label_hex") && qi["pawn_label_hex"].is_string()) {
                     qentry.pawn_label = HexToBytes(qi["pawn_label_hex"].get<std::string>());
+                }
+                if (qi.contains("description_hex") && qi["description_hex"].is_string()) {
+                    qentry.utf8_description = SanitizeDescriptionUtf8(HexToBytes(qi["description_hex"].get<std::string>()));
+                }
+                if (qi.contains("pawn_description_hex") && qi["pawn_description_hex"].is_string()) {
+                    qentry.pawn_description = HexToBytes(qi["pawn_description_hex"].get<std::string>());
                 }
                 snap.queue.push_back(std::move(qentry));
             }
@@ -8226,6 +8342,8 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
             auto ch = std::make_shared<SyncChannel>();
             ch->id = s.id;
             ch->name = s.name;
+            ch->utf8_description = s.utf8_description;
+            ch->pawn_description = s.pawn_description;
             ch->persistent = true;
             ch->token = GenerateUniqueEndpointCodeLocked();
             ch->password_salt = s.password_salt;
@@ -8317,9 +8435,11 @@ void AudioEngine::ResumeRestoredChannelsInTick() {
             std::string url = ch->current_input.utf8_url;
             std::string pawn_url = ch->current_input.pawn_url;
             std::string utf8_label = ch->current_input.utf8_label;
+            const ChannelQueueEntry saved_input = ch->current_input;
             std::shared_ptr<SyncChannel> out_ch;
             std::shared_ptr<ChannelRunState> out_run;
             if (PlayChannelLocked(cid, url, pawn_url, out_ch, out_run, utf8_label)) {
+                CopyQueueEntryDescription(out_ch->current_input, saved_input);
                 out_ch->pause_flag.store(was_paused);
                 out_ch->playlist_pos = out_ch->playlist_mode ? saved_pos : -1;
                 out_ch->current_from_queue = saved_from_queue;

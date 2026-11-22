@@ -1,6 +1,6 @@
 /*
  * SampAudioStream - Universal Audio Streaming Plugin/Component for SA-MP & open.mp
- * Version: 2.3.1
+ * Version: 2.3.2
  *
  * Features:
  *  - YouTube, SoundCloud, Twitch, Vimeo, TikTok, Direct MP3/OGG/WAV/FLAC & HLS streams
@@ -26,8 +26,8 @@
 
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
 #define SAMPAUDIOSTREAM_VERSION_MINOR  (3)
-#define SAMPAUDIOSTREAM_VERSION_PATCH  (1)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.3.1"
+#define SAMPAUDIOSTREAM_VERSION_PATCH  (2)
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.3.2"
 
 // -----------------------------------------------------------------------------
 // Constants & Enums
@@ -169,6 +169,13 @@ native SA_GetAudioStreamChannelInfo(channelid, name[], name_len = sizeof(name), 
 native SA_GetAudioStreamChannelTrack(channelid, title[], title_len = sizeof(title), artist[], artist_len = sizeof(artist), &duration);
 native SA_GetAudioStreamChannelQueue(channelid, index, item[], item_len = sizeof(item));
 native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len = sizeof(label));
+// Free-text descriptions (up to 256 UTF-8 bytes), saved with persistent channels. A queue entry's
+// description follows it when moved, shuffled or looped and while it plays (TrackDescription).
+native SA_SetAudioStreamChannelDescription(channelid, const description[]);
+native SA_GetAudioStreamChannelDescription(channelid, description[], description_len = sizeof(description));
+native SA_SetAudioStreamChannelQueueDescription(channelid, index, const description[]);
+native SA_GetAudioStreamChannelQueueDescription(channelid, index, description[], description_len = sizeof(description));
+native SA_GetAudioStreamChannelTrackDescription(channelid, description[], description_len = sizeof(description));
 // Returns the 0-based index of the first queue entry at or after start_index whose URL equals item, or -1.
 native SA_FindAudioStreamChannelQueue(channelid, const item[], start_index = 0);
 native SA_ClearAudioStreamChannelQueue(channelid);

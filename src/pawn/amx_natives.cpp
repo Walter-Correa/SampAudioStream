@@ -554,6 +554,61 @@ cell AMX_NATIVE_CALL n_SA_GetAudioStreamChannelQueueLabel(AMX* amx, cell* params
     return 1;
 }
 
+// SA_SetAudioStreamChannelDescription(channelid, const description[])
+cell AMX_NATIVE_CALL n_SA_SetAudioStreamChannelDescription(AMX* amx, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 2) return 0;
+    std::string utf8 = ConvertTextFromPawn(ReadAmxString(amx, params[2]), g_engine->GetPawnTextEncoding());
+    return g_engine->SetChannelDescription(static_cast<ChannelId>(params[1]), utf8) ? 1 : 0;
+}
+
+// SA_GetAudioStreamChannelDescription(channelid, description[], description_len)
+cell AMX_NATIVE_CALL n_SA_GetAudioStreamChannelDescription(AMX* amx, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 3) return 0;
+    std::string description;
+    if (!g_engine->GetChannelDescription(static_cast<ChannelId>(params[1]), description)) return 0;
+    WriteAmxString(amx, params[2], description, static_cast<int>(params[3]));
+    return 1;
+}
+
+// SA_SetAudioStreamChannelQueueDescription(channelid, index, const description[])
+cell AMX_NATIVE_CALL n_SA_SetAudioStreamChannelQueueDescription(AMX* amx, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 3 || params[2] < 0) return 0;
+    std::string utf8 = ConvertTextFromPawn(ReadAmxString(amx, params[3]), g_engine->GetPawnTextEncoding());
+    return g_engine->SetChannelQueueItemDescription(
+        static_cast<ChannelId>(params[1]), static_cast<std::size_t>(params[2]), utf8) ? 1 : 0;
+}
+
+// SA_GetAudioStreamChannelQueueDescription(channelid, index, description[], description_len)
+cell AMX_NATIVE_CALL n_SA_GetAudioStreamChannelQueueDescription(AMX* amx, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 4 || params[2] < 0) return 0;
+    std::string description;
+    if (!g_engine->GetChannelQueueItemDescription(
+            static_cast<ChannelId>(params[1]), static_cast<std::size_t>(params[2]), description)) {
+        return 0;
+    }
+    WriteAmxString(amx, params[3], description, static_cast<int>(params[4]));
+    return 1;
+}
+
+// SA_GetAudioStreamChannelTrackDescription(channelid, description[], description_len)
+cell AMX_NATIVE_CALL n_SA_GetAudioStreamChannelTrackDescription(AMX* amx, cell* params) {
+    if (!g_engine) return 0;
+    std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
+    if (argc < 3) return 0;
+    std::string description;
+    if (!g_engine->GetChannelTrackDescription(static_cast<ChannelId>(params[1]), description)) return 0;
+    WriteAmxString(amx, params[2], description, static_cast<int>(params[3]));
+    return 1;
+}
+
 // SA_FindAudioStreamChannelQueue(channelid, const item[], start_index = 0)
 cell AMX_NATIVE_CALL n_SA_FindAudioStreamChannelQueue(AMX* amx, cell* params) {
     if (!g_engine) return -1;
@@ -1194,6 +1249,11 @@ const std::vector<AMX_NATIVE_INFO>& GetPluginNatives() {
         {"SA_GetAudioStreamChannelTrack", n_SA_GetAudioStreamChannelTrack},
         {"SA_GetAudioStreamChannelQueue", n_SA_GetAudioStreamChannelQueue},
         {"SA_GetAudioStreamChannelQueueLabel", n_SA_GetAudioStreamChannelQueueLabel},
+        {"SA_SetAudioStreamChannelDescription", n_SA_SetAudioStreamChannelDescription},
+        {"SA_GetAudioStreamChannelDescription", n_SA_GetAudioStreamChannelDescription},
+        {"SA_SetAudioStreamChannelQueueDescription", n_SA_SetAudioStreamChannelQueueDescription},
+        {"SA_GetAudioStreamChannelQueueDescription", n_SA_GetAudioStreamChannelQueueDescription},
+        {"SA_GetAudioStreamChannelTrackDescription", n_SA_GetAudioStreamChannelTrackDescription},
         {"SA_FindAudioStreamChannelQueue", n_SA_FindAudioStreamChannelQueue},
         {"SA_ClearAudioStreamChannelQueue", n_SA_ClearAudioStreamChannelQueue},
         {"SA_SetAudioStreamChannelPos", n_SA_SetAudioStreamChannelPos},

@@ -160,11 +160,15 @@ struct ChannelQueueEntry {
     std::string pawn_url;
     std::string utf8_label;
     std::string pawn_label;
+    std::string utf8_description;
+    std::string pawn_description;
 };
 
 struct SyncChannel {
     ChannelId id{INVALID_CHANNEL_ID};
     std::string name;
+    std::string utf8_description;
+    std::string pawn_description;
     std::string token;
     PlayerId creator_player_id{INVALID_PLAYER_ID};
     std::string creator_name;
@@ -420,6 +424,12 @@ public:
     bool GetChannelInfo(ChannelId channel_id, ChannelInfo& out_info) const;
     bool GetChannelQueueItem(ChannelId channel_id, std::size_t index, std::string& out_item) const;
     bool GetChannelQueueItemLabel(ChannelId channel_id, std::size_t index, std::string& out_label) const;
+    bool SetChannelDescription(ChannelId channel_id, const std::string& utf8_description);
+    bool GetChannelDescription(ChannelId channel_id, std::string& out_description) const;
+    bool SetChannelQueueItemDescription(ChannelId channel_id, std::size_t index, const std::string& utf8_description);
+    bool GetChannelQueueItemDescription(ChannelId channel_id, std::size_t index, std::string& out_description) const;
+    // Description of the track the channel is playing (it follows the queue entry it came from).
+    bool GetChannelTrackDescription(ChannelId channel_id, std::string& out_description) const;
     // Index of the first queue entry at or after start_index whose Pawn-encoded URL equals pawn_item, or -1.
     std::int32_t FindChannelQueueItem(ChannelId channel_id, const std::string& pawn_item, std::int32_t start_index) const;
 
@@ -590,6 +600,8 @@ private:
     struct ChannelPersistSnapshot {
         ChannelId id{INVALID_CHANNEL_ID};
         std::string name;
+        std::string utf8_description;
+        std::string pawn_description;
         std::string password_salt;
         std::string password_hash;
         bool has_creator{false};
