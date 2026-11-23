@@ -5633,6 +5633,8 @@ void AudioEngine::CompleteResolvedChannelTrackStart(
     std::string icy_title;
     std::string icy_artist;
     std::int32_t cb_duration = 0;
+    std::int32_t auto_label_index = -1;
+    std::string auto_label_pawn;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (channel->active_run != run || channels_.find(channel->id) == channels_.end()) return;
@@ -5653,6 +5655,8 @@ void AudioEngine::CompleteResolvedChannelTrackStart(
                         entry.utf8_url == channel->current_input.utf8_url) {
                         entry.utf8_label = auto_label;
                         entry.pawn_label = auto_pawn;
+                        auto_label_index = channel->playlist_pos;
+                        auto_label_pawn = auto_pawn;
                     }
                 }
                 MarkChannelDirtyLocked(*channel);
@@ -5704,6 +5708,9 @@ void AudioEngine::CompleteResolvedChannelTrackStart(
         cb_duration,
         cb_url
     });
+    if (auto_label_index >= 0) {
+        host_.DispatchPawnCallback("OnAudioStreamChannelLabelChange", {channel->id, auto_label_index, auto_label_pawn});
+    }
     PollLiveTitles(std::chrono::steady_clock::now());
 
     if (run->cancel_flag.load() || shutting_down_.load() || !alive->load()) return;
@@ -5855,6 +5862,9 @@ bool AudioEngine::QueueChannel(
         StartChannelWorker(ch_start, run_start, url_or_query);
     } else if (ch_preresolve && !preresolve_url.empty()) {
         PreResolveNextChannelTrack(ch_preresolve, preresolve_url);
+    }
+    if (clean_utf8_label.empty()) {
+        FillQueueLabelsFromMetadata(channel_id, url_or_query);
     }
     return true;
 }
@@ -6836,6 +6846,9 @@ bool AudioEngine::InsertChannelQueueItem(
     } else if (ch_preresolve && !preresolve_url.empty()) {
         PreResolveNextChannelTrack(ch_preresolve, preresolve_url);
     }
+    if (clean_utf8_label.empty()) {
+        FillQueueLabelsFromMetadata(channel_id, url_or_query);
+    }
     return true;
 }
 
@@ -7143,7 +7156,8 @@ bool AudioEngine::ReplaceChannelQueueItem(
     const std::string& url_or_query,
     const std::string& original_input_pawn,
     const std::string& utf8_label,
-    bool keep_description) {
+    bool keep_description,
+    bool keep_label) {
     if (url_or_query.empty()) return false;
     const std::string clean_utf8_label = SanitizeQueueLabelUtf8(utf8_label);
     const std::string clean_pawn_label = clean_utf8_label.empty()
@@ -7163,11 +7177,19 @@ bool AudioEngine::ReplaceChannelQueueItem(
         if (keep_description) {
             CopyQueueEntryDescription(entry, ch.queue[index]);
         }
+        if (keep_label && !ch.queue[index].utf8_label.empty()) {
+            // The shown name stays as a custom name; the new track's own name becomes the original.
+            entry.utf8_original_label = entry.utf8_label;
+            entry.pawn_original_label = entry.pawn_label;
+            entry.utf8_label = ch.queue[index].utf8_label;
+            entry.pawn_label = ch.queue[index].pawn_label;
+            entry.custom_label = true;
+        }
         ch.queue[index] = entry;
         const bool is_current = ch.playlist_mode && ch.current_from_queue &&
                                 ch.playlist_pos == static_cast<std::int32_t>(index);
         if (is_current && ch.active_run) {
-            if (PlayChannelLocked(channel_id, url_or_query, original_input_pawn, ch_start, run_start, clean_utf8_label)) {
+            if (PlayChannelLocked(channel_id, url_or_query, original_input_pawn, ch_start, run_start, entry.utf8_label)) {
                 CopyQueueEntryDescription(ch_start->current_input, entry);
                 ch_start->playlist_pos = static_cast<std::int32_t>(index);
                 ch_start->playlist_resume_pos = -1;
@@ -7198,7 +7220,59 @@ bool AudioEngine::ReplaceChannelQueueItem(
     if (ch_preresolve && !preresolve_url.empty()) {
         PreResolveNextChannelTrack(ch_preresolve, preresolve_url);
     }
+    if (clean_utf8_label.empty()) {
+        FillQueueLabelsFromMetadata(channel_id, url_or_query);
+    }
     return true;
+}
+
+void AudioEngine::FillQueueLabelsFromMetadata(ChannelId channel_id, const std::string& url_or_query) {
+    if (url_or_query.empty() || shutting_down_.load() || StreamResolver::IsLibraryUrl(url_or_query)) return;
+    auto alive = alive_token_;
+    extraction_pool_.Post([this, channel_id, url_or_query, alive]() {
+        if (shutting_down_.load() || !alive->load()) return;
+        ResolveResult resolved = resolver_.Resolve(url_or_query, nullptr);
+        if (shutting_down_.load() || !alive->load()) return;
+        if (!resolved.success || resolved.metadata.is_live || IsGenericRadioTrackTitle(resolved.metadata)) return;
+        const std::string label = SanitizeQueueLabelUtf8(resolved.metadata.title);
+        if (label.empty()) return;
+        const std::string pawn = ConvertTextForPawn(label, config_.pawn_text_encoding);
+        std::vector<std::int32_t> renamed;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            auto it = channels_.find(channel_id);
+            if (it == channels_.end() || !it->second) return;
+            auto& ch = *it->second;
+            bool changed = false;
+            for (std::size_t i = 0; i < ch.queue.size(); ++i) {
+                auto& entry = ch.queue[i];
+                if (entry.utf8_url != url_or_query) continue;
+                if (entry.utf8_label.empty() && !entry.custom_label) {
+                    entry.utf8_label = label;
+                    entry.pawn_label = pawn;
+                    renamed.push_back(static_cast<std::int32_t>(i));
+                    changed = true;
+                } else if (entry.custom_label && entry.utf8_original_label.empty()) {
+                    entry.utf8_original_label = label;
+                    entry.pawn_original_label = pawn;
+                    changed = true;
+                }
+            }
+            if (ch.current_input.utf8_url == url_or_query && ch.current_input.utf8_label.empty()) {
+                ch.current_input.utf8_label = label;
+                ch.current_input.pawn_label = pawn;
+                changed = true;
+            }
+            if (changed) MarkChannelDirtyLocked(ch);
+        }
+        if (renamed.empty()) return;
+        MainThreadDispatcher::Instance().Post([this, channel_id, renamed, pawn, alive]() {
+            if (!alive->load() || shutting_down_.load()) return;
+            for (std::int32_t idx : renamed) {
+                host_.DispatchPawnCallback("OnAudioStreamChannelLabelChange", {channel_id, idx, pawn});
+            }
+        });
+    });
 }
 
 bool AudioEngine::PlayChannelQueueItem(ChannelId channel_id, std::int32_t index) {

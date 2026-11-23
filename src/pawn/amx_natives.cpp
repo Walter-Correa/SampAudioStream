@@ -761,7 +761,7 @@ cell AMX_NATIVE_CALL n_SA_InsertAudioStreamChannelQueue(AMX* amx, cell* params) 
         utf8_label) ? 1 : 0;
 }
 
-// SA_ReplaceAudioStreamChannelQueue(channelid, index, const url[], const label[] = "", bool:keep_description = false)
+// SA_ReplaceAudioStreamChannelQueue(channelid, index, const url[], const label[] = "", bool:keep_description = false, bool:keep_label = false)
 cell AMX_NATIVE_CALL n_SA_ReplaceAudioStreamChannelQueue(AMX* amx, cell* params) {
     if (!g_engine) return 0;
     std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
@@ -773,13 +773,15 @@ cell AMX_NATIVE_CALL n_SA_ReplaceAudioStreamChannelQueue(AMX* amx, cell* params)
         utf8_label = ConvertTextFromPawn(ReadAmxString(amx, params[4]), g_engine->GetPawnTextEncoding());
     }
     const bool keep_description = (argc >= 5) && params[5] != 0;
+    const bool keep_label = (argc >= 6) && params[6] != 0;
     return g_engine->ReplaceChannelQueueItem(
         static_cast<ChannelId>(params[1]),
         static_cast<std::size_t>(params[2]),
         url,
         raw_url,
         utf8_label,
-        keep_description) ? 1 : 0;
+        keep_description,
+        keep_label) ? 1 : 0;
 }
 
 // SA_MoveAudioStreamChannelQueue(channelid, from_index, to_index)

@@ -173,7 +173,7 @@ native SA_AttachAudioStreamChannelToPlayer(channelid, target_playerid, Float:dis
 native SA_AttachAudioStreamChannelToVehicle(channelid, vehicleid, Float:distance = 0.0);
 native SA_RemoveAudioStreamChannelQueue(channelid, index);
 native SA_InsertAudioStreamChannelQueue(channelid, index, const url[], const label[] = "");
-native SA_ReplaceAudioStreamChannelQueue(channelid, index, const url[], const label[] = "", bool:keep_description = false);
+native SA_ReplaceAudioStreamChannelQueue(channelid, index, const url[], const label[] = "", bool:keep_description = false, bool:keep_label = false);
 native SA_MoveAudioStreamChannelQueue(channelid, from_index, to_index);
 native SA_ShuffleAudioStreamChannelQueue(channelid);
 native SA_QueueChannelAudioStreamPlaylist(channelid, const url[], max_items = 25);
@@ -240,6 +240,7 @@ forward OnAudioStreamChannelError(channelid, E_SA_ERROR_CODE:error_code, const e
 forward OnAudioStreamChannelRestored(channelid, const name[], const creator_name[]);
 forward OnAudioStreamChannelPlaylistQueued(channelid, added, E_SA_ERROR_CODE:error_code, const error_message[]);
 forward OnAudioStreamChannelLiveTitleChange(channelid, const title[]);
+forward OnAudioStreamChannelLabelChange(channelid, index, const label[]);
 
 // -----------------------------------------------------------------------------
 // Internal Runtime Bridge (do not call directly)

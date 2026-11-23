@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.4.0`), covering all **91 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.4.0`), covering all **91 `SA_*` natives**, **2 hooked standard natives**, **20 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -366,7 +366,7 @@ Reads the `0`-based `index` entry from `channelid`'s queued URL/query list.
 ```pawn
 native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len = sizeof(label), bool:original = false);
 ```
-Reads the friendly display label for the `0`-based `index` queue entry on `channelid` (for example, `Artist - Title` from scripts or the entry title populated by `SA_QueueChannelAudioStreamPlaylist`). Entries queued without a label (such as pasted links) take the real track title the first time they start playing (`2.4.0`, live radios excluded). With `original = true` (`2.4.0`) it returns the label the entry had before it was renamed with `SA_SetAudioStreamChannelQueueLabel` (the current label when it was never renamed). `label` may be empty (`""`) if no label was supplied yet or if the channel was restored from an older JSON without `label_hex`.
+Reads the friendly display label for the `0`-based `index` queue entry on `channelid` (for example, `Artist - Title` from scripts or the entry title populated by `SA_QueueChannelAudioStreamPlaylist`). Entries added without a label (such as pasted links) with `SA_QueueChannelAudioStream`, `SA_InsertAudioStreamChannelQueue` or `SA_ReplaceAudioStreamChannelQueue` take the real track title in the background as soon as it is resolved, usually within a few seconds (`2.4.0`, live radios excluded); otherwise they take it the first time they start playing. With `original = true` (`2.4.0`) it returns the label the entry had before it was renamed with `SA_SetAudioStreamChannelQueueLabel` (the current label when it was never renamed). `label` may be empty (`""`) if no label was supplied yet or if the channel was restored from an older JSON without `label_hex`.
 * **Returns:** `1` if the channel and index are valid (even when `label` is empty), `0` if `channelid` does not exist or `index` is out of range.
 
 ### `SA_SetAudioStreamChannelQueueLabel`
@@ -493,9 +493,9 @@ Inserts `url` (with optional friendly display `label`) at `0`-based `index` (`0`
 
 ### `SA_ReplaceAudioStreamChannelQueue`
 ```pawn
-native SA_ReplaceAudioStreamChannelQueue(channelid, index, const url[], const label[] = "", bool:keep_description = false);
+native SA_ReplaceAudioStreamChannelQueue(channelid, index, const url[], const label[] = "", bool:keep_description = false, bool:keep_label = false);
 ```
-Replaces the `0`-based `index` queue entry of `channelid` in place with `url` and `label` (`2.4.0`), keeping the rest of the queue and the playlist position untouched. By default the old entry's description is cleared, since it described the replaced track; pass `keep_description = true` to keep it on the new track (for notes such as who requested the slot). If the entry is the one playing in playlist mode, the new track starts right away in its place (the channel does not skip to the next entry); if the channel is suspended (`SA_STATE_SUSPENDED`) the saved track becomes the new one, from the start. Persistent channels save the change once.
+Replaces the `0`-based `index` queue entry of `channelid` in place with `url` and `label` (`2.4.0`), keeping the rest of the queue and the playlist position untouched. By default the old entry's description is cleared, since it described the replaced track; pass `keep_description = true` to keep it on the new track (for notes such as who requested the slot). `keep_label = true` keeps the name the entry was showing (custom or original) as a custom name, and the new track's own name becomes its original name (restored by `SA_SetAudioStreamChannelQueueLabel(..., "")`; for pasted links it is filled once the title is resolved). If the entry is the one playing in playlist mode, the new track starts right away in its place (the channel does not skip to the next entry); if the channel is suspended (`SA_STATE_SUSPENDED`) the saved track becomes the new one, from the start. Persistent channels save the change once.
 * **Returns:** `1` on success, `0` if `channelid` does not exist, `index` is out of range or `url` is empty.
 * **Example:**
 ```pawn
@@ -938,6 +938,12 @@ Fired on the main thread when a `SA_QueueChannelAudioStreamPlaylist` operation f
 forward OnAudioStreamLiveTitleChange(playerid, streamid, const title[]);
 ```
 Fired when a live internet radio (Shoutcast/Icecast) played via `streamid` reports a new ICY `StreamTitle` (`playerid` is the owner for personal streams, or `INVALID_PLAYER_ID` / `65535` for global streams).
+
+### `OnAudioStreamChannelLabelChange`
+```pawn
+forward OnAudioStreamChannelLabelChange(channelid, index, const label[]);
+```
+Fired on the main thread when the plugin fills the name of the `0`-based `index` queue entry by itself (`2.4.0`): an entry added without a label (such as a pasted link) gets the real track title once it is resolved, a few seconds after being queued, or when it starts playing. Renames made by scripts with `SA_SetAudioStreamChannelQueueLabel` do not fire it. Use it to refresh playlist menus that players have open.
 
 ### `OnAudioStreamChannelLiveTitleChange`
 ```pawn

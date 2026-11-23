@@ -10,7 +10,7 @@
  *   /audiomenu  or  /sa   - Open the interactive SampAudioStream Control Center
  *
  * Demonstrates ALL 91 SA_* natives, hooked PlayAudioStreamForPlayer / Stop,
- * and ALL 19 plugin callbacks cleanly from in-game menus (no shadow arrays).
+ * and ALL 20 plugin callbacks cleanly from in-game menus (no shadow arrays).
  *
  * Server Folders (plugin config):
  *  - audio.music_dir (scriptfiles/SampAudioStream/music): local music library browsed in
@@ -146,6 +146,7 @@ static gQueueViewPage[MAX_PLAYERS];
 static gQueueViewStart[MAX_PLAYERS];
 static gQueueSelIdx[MAX_PLAYERS];
 static gQueueSelHash[MAX_PLAYERS];
+static bool:gQueueReplaceKeepName[MAX_PLAYERS];
 static gVoteCid[MAX_PLAYERS];
 static gVoteSerial[MAX_PLAYERS];
 
@@ -1002,7 +1003,8 @@ static stock ShowChannelQueueItemDialog(playerid, channelid, idx)
         "Move to Top\nMove Up\nMove Down\n{FF8888}Remove\n{00FF88}Play This Item Now {AAAAAA}(SA_PlayAudioStreamChannelQueue)\n\
 Edit Description {AAAAAA}(SA_SetAudioStreamChannelQueueDescription)\n\
 Replace With URL / Query {AAAAAA}(SA_ReplaceAudioStreamChannelQueue)\n\
-Rename Item {AAAAAA}(SA_SetAudioStreamChannelQueueLabel)", "Apply", "Back");
+Rename Item {AAAAAA}(SA_SetAudioStreamChannelQueueLabel)\n\
+Replace Keeping the Name {AAAAAA}(SA_ReplaceAudioStreamChannelQueue keep_label)", "Apply", "Back");
 }
 
 static stock ShowChannelDescriptionDialog(playerid, channelid)
@@ -2998,7 +3000,7 @@ Offline Timeout (Custom seconds)",
                 ShowChannelQueueItemDialog(playerid, cid, idx);
                 return 1;
             }
-            if (SA_ReplaceAudioStreamChannelQueue(cid, idx, inputtext, "", true))
+            if (SA_ReplaceAudioStreamChannelQueue(cid, idx, inputtext, "", true, gQueueReplaceKeepName[playerid]))
             {
                 new msg[80];
                 format(msg, sizeof(msg), "[Channel] Replaced queue item #%d.", idx);
@@ -3273,15 +3275,23 @@ Offline Timeout (Custom seconds)",
                 }
                 case 7:
                 {
-                    new ntitle[64];
+                    // 2.4.0: the original name is remembered; a blank name restores it
+                    new ntitle[64], cur_name[132], orig_name[132], nbody[512];
                     format(ntitle, sizeof(ntitle), "{00CCFF}Rename Item #%d", idx);
-                    ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_RENAME, DIALOG_STYLE_INPUT, ntitle,
-                        "{FFFFFF}Enter the new name (label) for this item, or leave it blank to restore the original name.\n{AAAAAA}The URL, position and description stay the same; the label is saved with persistent channels.",
-                        "Rename", "Back");
+                    SA_GetAudioStreamChannelQueueLabel(cid, idx, cur_name, sizeof(cur_name));
+                    SA_GetAudioStreamChannelQueueLabel(cid, idx, orig_name, sizeof(orig_name), true);
+                    SanitizeDialogField(cur_name);
+                    SanitizeDialogField(orig_name);
+                    format(nbody, sizeof(nbody),
+                        "{FFFFFF}Enter the new name (label) for this item, or leave it blank to restore the original name.\n\
+{AAAAAA}The URL, position and description stay the same; the label is saved with persistent channels.\n\n\
+{FFFFFF}Current: {AAAAAA}%s\n{FFFFFF}Original: {AAAAAA}%s", cur_name, orig_name);
+                    ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_RENAME, DIALOG_STYLE_INPUT, ntitle, nbody, "Rename", "Back");
                     return 1;
                 }
-                case 6:
+                case 6, 8:
                 {
+                    gQueueReplaceKeepName[playerid] = (listitem == 8);
                     new rtitle[64];
                     format(rtitle, sizeof(rtitle), "{00CCFF}Replace Item #%d", idx);
                     ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_REPLACE, DIALOG_STYLE_INPUT, rtitle,
@@ -4426,6 +4436,13 @@ public OnAudioStreamLiveTitleChange(playerid, streamid, const title[])
     {
         printf("[SampAudioStream] Global stream #%d radio text: %s", streamid, title);
     }
+    return 1;
+}
+
+public OnAudioStreamChannelLabelChange(channelid, index, const label[])
+{
+    // 2.4.0: a queue entry added without a label got its real title (refresh open queue views here)
+    printf("[SampAudioStream] Channel #%d queue item #%d named: %s", channelid, index, label);
     return 1;
 }
 

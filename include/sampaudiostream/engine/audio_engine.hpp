@@ -423,7 +423,8 @@ public:
         const std::string& url_or_query,
         const std::string& original_input_pawn,
         const std::string& utf8_label,
-        bool keep_description = false);
+        bool keep_description = false,
+        bool keep_label = false);
     bool ShuffleChannelQueue(ChannelId channel_id);
     bool GetChannelLiveTitle(ChannelId channel_id, std::string& out_title) const;
     bool GetStreamLiveTitle(StreamId stream_id, std::string& out_title) const;
@@ -535,6 +536,8 @@ private:
     void StartChannelWorker(std::shared_ptr<SyncChannel> channel, std::shared_ptr<ChannelRunState> run, const std::string& url_or_query);
     void PreResolveNextChannelTrack(const std::shared_ptr<SyncChannel>& channel, const std::string& url_or_query);
     void DispatchPreResolveNextChannelTrack(const std::shared_ptr<SyncChannel>& channel, const std::string& url_or_query);
+    // Entries added without a label (pasted links) get the real track title as soon as it is resolved.
+    void FillQueueLabelsFromMetadata(ChannelId channel_id, const std::string& url_or_query);
     void ProcessPendingPreResolves(std::chrono::steady_clock::time_point now);
     void PollLiveTitles(std::chrono::steady_clock::time_point now);
     void LaunchSessionLiveTitlePoll(

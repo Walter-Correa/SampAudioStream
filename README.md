@@ -38,7 +38,7 @@ Modular guides and exhaustive API documentation are available in the [`docs/`](d
 | **[🔊 Playback, Hooking & Spatial Audio](docs/playback-and-spatial.md)** | `SA_PlayAudioStreamForPlayer` vs. `SA_PlayAudioStream`, radius time sync, live streams, volume, pause, and 3D entity attachment. |
 | **[🔎 Music Search & Synced Channels](docs/search-and-channels.md)** | Asynchronous `SA_SearchAudioStream` dialog workflows and synchronized multi-player radio stations with passwords, creator lifecycle, and queues. |
 | **[⚙️ Architecture, Transcoding & Caching](docs/architecture-and-caching.md)** | Internal C++20 worker pool, embedded codecs, HLS/MPEG-TS live decoding, LRU RAM cache, and ~30s ring buffers. |
-| **[📚 Complete API Reference](docs/api-reference.md)** | Exhaustive reference for all 91 `SA_*` natives, hooked vanilla natives, 19 callbacks, enums, constants, and helpers (plus optional `audio.normalize_volume` equalization for transcoded/proxy streams and live broadcasts, excluding direct passthrough). |
+| **[📚 Complete API Reference](docs/api-reference.md)** | Exhaustive reference for all 91 `SA_*` natives, hooked vanilla natives, 20 callbacks, enums, constants, and helpers (plus optional `audio.normalize_volume` equalization for transcoded/proxy streams and live broadcasts, excluding direct passthrough). |
 | **[⚠️ Important Notes](#important-notes)** | Extractor (`yt-dlp`) dependency notice, server owner content responsibility, and non-affiliation disclaimer. |
 
 ---
@@ -103,7 +103,7 @@ See [`FS_SampAudioStream_Demo.pwn`](FS_SampAudioStream_Demo.pwn) for a complete 
 
 ## Complete API Reference
 
-All 91 `SA_*` natives, hooked vanilla functions, 19 callbacks, constants, and enums are documented with signatures and examples in **[`docs/api-reference.md`](docs/api-reference.md)**:
+All 91 `SA_*` natives, hooked vanilla functions, 20 callbacks, constants, and enums are documented with signatures and examples in **[`docs/api-reference.md`](docs/api-reference.md)**:
 
 * **[Playback & Control](docs/api-reference.md#1-playback--control-natives):** `SA_PlayAudioStreamForPlayer`, `SA_PlayAudioStream`, `SA_StopAudioStreamForPlayer`, `SA_StopAudioStream`, `SA_PauseAudioStreamForPlayer`, `SA_PauseAudioStream`, `SA_SeekAudioStream`, `SA_SetPlayerAudioStreamMuted`, `SA_IsPlayerAudioStreamMuted`, `SA_SetPlayerAudioStreamGroupMuted`, `SA_IsPlayerAudioStreamGroupMuted`, `SA_GetPlayerAudioStreamSource`, `SA_SetPlayerAudioStreamVolume`, `SA_SetAudioStreamVolume`, `SA_SetPlayerAudioStreamDistance`, `SA_SetAudioStreamDistance`, `SA_SetPlayerAudioStreamPos`, `SA_SetAudioStreamPos`
 * **[Spatial & Entity Attachment](docs/api-reference.md#2-spatial--attachment-natives):** `SA_AttachAudioStreamToPlayer`, `SA_AttachAudioStreamToVehicle`
@@ -161,7 +161,8 @@ ctest --test-dir build -R core_tests --output-on-failure
   - Channels now prepare the next track about 60 seconds before the current one ends instead of as soon as it starts, and a cached media link older than 3 minutes is resolved again, so the next track rarely starts with an expired link (a rejected link used to cost about 10 seconds of silence while it was resolved again).
 - **Rename a Queue Entry (`SA_SetAudioStreamChannelQueueLabel`)**:
   - Changes an entry's label (the name scripts show in lists) without touching its URL, position or description; persistent channels save it. The original label is remembered and comes back when the label is set to `""` (read it with `SA_GetAudioStreamChannelQueueLabel(..., original = true)`).
-  - Entries queued without a label, such as pasted links, take the real track title the first time they play (live radios excluded), so lists stop showing raw links.
+  - Entries added without a label, such as pasted links, take the real track title in the background a few seconds after being added (live radios excluded), so lists stop showing raw links; the new `OnAudioStreamChannelLabelChange` callback tells scripts when that happens so open menus can refresh.
+  - `SA_ReplaceAudioStreamChannelQueue` takes an optional `keep_label` to keep the name the entry was showing (custom or original).
   - The listeners' on-screen stream text shows the entry label for finite tracks, and renaming the playing entry updates it right away.
 - **Replace a Queue Entry (`SA_ReplaceAudioStreamChannelQueue`)**:
   - Replaces an entry in place with a new URL and label without removing and re-adding it; its description is cleared unless `keep_description = true`. Replacing the entry that is playing starts the new track at once in its place, and on a suspended channel the saved track becomes the new one.
@@ -171,7 +172,8 @@ ctest --test-dir build -R core_tests --output-on-failure
   - Channel menu > Channel Description and queue item > Edit Description set and show both descriptions, queue lists show each item's description, and listeners get the track description when a track starts (`SA_GetAudioStreamChannelTrackDescription`).
   - Channel menu > Toggle Idle Suspension turns idle suspension on or off and shows whether the channel is suspended.
   - The channel creator and RCON admins join password-protected channels without typing the password (`SA_JoinAudioStreamChannel` with `ignore_password = true`).
-  - Queue item > Replace With URL / Query replaces the item in place (`SA_ReplaceAudioStreamChannelQueue`), and Rename Item sets its label (`SA_SetAudioStreamChannelQueueLabel`).
+  - Queue item > Replace With URL / Query replaces the item in place (`SA_ReplaceAudioStreamChannelQueue`), Replace Keeping the Name keeps its name (`keep_label`), and Rename Item sets its label (`SA_SetAudioStreamChannelQueueLabel`) showing the current and original names (blank restores the original).
+  - `OnAudioStreamChannelLabelChange` logs when an item added without a name gets its real title.
 
 ### 2.3.1 — 22/11/2026
 - **Attach With Range in One Update**:
