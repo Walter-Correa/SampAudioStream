@@ -1,6 +1,6 @@
 # Complete API Reference
 
-Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.3.2`), covering all **91 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
+Exhaustive technical reference for **`SampAudioStream.inc`** (`v2.4.0`), covering all **91 `SA_*` natives**, **2 hooked standard natives**, **19 callbacks**, **6 enums**, and constants.
 
 ---
 
@@ -258,7 +258,7 @@ Sets volume (`0.0` to `200.0`, clamped) on `channelid`.
 ```pawn
 native SA_JoinAudioStreamChannel(playerid, channelid, const password[] = "", bool:ignore_password = false);
 ```
-Subscribes `playerid` to `channelid` (automatically stops any personal stream or previous channel). Returns `0` if the channel is password-protected and `password` does not match. Passing `ignore_password = true` (`2.3.2`) joins without checking the password, so the script can let the creator or its admins in without typing it; the plugin does not decide who may skip it. If `channelid` is currently playing, the player immediately starts listening at the live position. If the player was already hearing this same channel through its range (positioned channel with `auto_listen`), the stream keeps playing without a restart and only `OnPlayerAudioStreamSourceChange` fires.
+Subscribes `playerid` to `channelid` (automatically stops any personal stream or previous channel). Returns `0` if the channel is password-protected and `password` does not match. Passing `ignore_password = true` (`2.4.0`) joins without checking the password, so the script can let the creator or its admins in without typing it; the plugin does not decide who may skip it. If `channelid` is currently playing, the player immediately starts listening at the live position. If the player was already hearing this same channel through its range (positioned channel with `auto_listen`), the stream keeps playing without a restart and only `OnPlayerAudioStreamSourceChange` fires.
 
 ### `SA_LeaveAudioStreamChannel`
 ```pawn
@@ -316,6 +316,7 @@ Enables or disables idle suspension for `channelid`. When enabled and the channe
 * `SA_GetAudioStreamChannelInfo` reports `SA_STATE_SUSPENDED`, and the track title, artist and duration stay readable through `SA_GetAudioStreamChannelTrack`.
 * `SA_GetAudioStreamChannelElapsed` returns the saved second.
 * `SA_SkipChannelAudioStream` moves the saved position to the next item without starting playback (at the end of the list without `SA_CHANNEL_LOOP_QUEUE` the channel stops), and `SA_SeekChannelAudioStream` moves the saved second.
+* Removing the saved entry with `SA_RemoveAudioStreamChannelQueue` moves the saved position to the entry that takes its place (the first one with `SA_CHANNEL_LOOP_QUEUE` when it was the last; otherwise the channel stops).
 * Queued tracks do not auto-start; `SA_PlayChannelAudioStream` / `SA_PlayAudioStreamChannelQueue` start playback right away and the channel is suspended again after the grace time if nobody joins.
 * `SA_StopChannelAudioStream` clears the suspension.
 
@@ -363,16 +364,16 @@ Reads the `0`-based `index` entry from `channelid`'s queued URL/query list.
 
 ### `SA_GetAudioStreamChannelQueueLabel`
 ```pawn
-native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len = sizeof(label));
+native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len = sizeof(label), bool:original = false);
 ```
-Reads the friendly display label for the `0`-based `index` queue entry on `channelid` (for example, `Artist - Title` from scripts or the entry title populated by `SA_QueueChannelAudioStreamPlaylist`). `label` may be empty (`""`) if no label was supplied or if the channel was restored from an older JSON without `label_hex`.
+Reads the friendly display label for the `0`-based `index` queue entry on `channelid` (for example, `Artist - Title` from scripts or the entry title populated by `SA_QueueChannelAudioStreamPlaylist`). Entries queued without a label (such as pasted links) take the real track title the first time they start playing (`2.4.0`, live radios excluded). With `original = true` (`2.4.0`) it returns the label the entry had before it was renamed with `SA_SetAudioStreamChannelQueueLabel` (the current label when it was never renamed). `label` may be empty (`""`) if no label was supplied yet or if the channel was restored from an older JSON without `label_hex`.
 * **Returns:** `1` if the channel and index are valid (even when `label` is empty), `0` if `channelid` does not exist or `index` is out of range.
 
 ### `SA_SetAudioStreamChannelQueueLabel`
 ```pawn
 native SA_SetAudioStreamChannelQueueLabel(channelid, index, const label[]);
 ```
-Renames the `0`-based `index` queue entry of `channelid` (`2.3.2`): sets the friendly label read by `SA_GetAudioStreamChannelQueueLabel` without touching its URL, position or description. Tabs and line breaks become spaces and the label is cut to `128` UTF-8 bytes; `""` clears it (scripts then usually fall back to the URL). Renaming the entry that is playing also updates the playing track's label. Persistent channels save the new label. The track title reported by `OnAudioStreamChannelTrackStart` and `SA_GetAudioStreamChannelTrack` still comes from the media metadata; read the label of `SA_GetAudioStreamChannelQueuePos` when you want to show the custom name.
+Renames the `0`-based `index` queue entry of `channelid` (`2.4.0`): sets the friendly label read by `SA_GetAudioStreamChannelQueueLabel` without touching its URL, position or description. Tabs and line breaks become spaces and the label is cut to `128` UTF-8 bytes. The first rename remembers the entry's original label; passing `""` restores it (on an entry that was never renamed, `""` clears the label). For finite tracks the listeners' on-screen stream text shows the entry label, so renaming the entry that is playing updates that text within a few seconds; live radios keep showing their live title. Renaming the entry that is playing also updates the playing track's label. Persistent channels save the new label. The track title reported by `OnAudioStreamChannelTrackStart` and `SA_GetAudioStreamChannelTrack` still comes from the media metadata; read the label of `SA_GetAudioStreamChannelQueuePos` when you want to show the custom name.
 * **Returns:** `1` on success, `0` if `channelid` does not exist or `index` is out of range.
 
 ### `SA_SetAudioStreamChannelDescription`
@@ -386,7 +387,7 @@ Sets a free-text description for `channelid` (for example, what the channel play
 ```pawn
 native SA_GetAudioStreamChannelDescription(channelid, description[], description_len = sizeof(description));
 ```
-Reads the description set with `SA_SetAudioStreamChannelDescription`. `description` is empty (`""`) when none was set or the channel was restored from a file saved before 2.3.2.
+Reads the description set with `SA_SetAudioStreamChannelDescription`. `description` is empty (`""`) when none was set or the channel was restored from a file saved before 2.4.0.
 * **Returns:** `1` if the channel exists (even when the description is empty), `0` otherwise.
 
 ### `SA_SetAudioStreamChannelQueueDescription`
@@ -412,7 +413,7 @@ Reads the description of the `0`-based `index` queue entry. `description` may be
 ```pawn
 native SA_GetAudioStreamChannelTrackDescription(channelid, description[], description_len = sizeof(description));
 ```
-Reads the description of the track `channelid` is playing: the description of the queue entry it was started from (also when the entry already left the queue outside playlist mode). It is empty when nothing is playing, the track was started directly with `SA_PlayChannelAudioStream`, or the entry has no description. Useful inside `OnAudioStreamChannelTrackStart`.
+Reads the description of the track `channelid` is playing: the description of the queue entry it was started from (also when the entry already left the queue outside playlist mode). While the channel is suspended it returns the description of the saved track. It is empty when nothing is playing, the track was started directly with `SA_PlayChannelAudioStream`, or the entry has no description. Useful inside `OnAudioStreamChannelTrackStart`.
 * **Returns:** `1` if the channel exists (even when the description is empty), `0` otherwise.
 
 ### `SA_FindAudioStreamChannelQueue`
@@ -494,7 +495,7 @@ Inserts `url` (with optional friendly display `label`) at `0`-based `index` (`0`
 ```pawn
 native SA_ReplaceAudioStreamChannelQueue(channelid, index, const url[], const label[] = "", bool:keep_description = false);
 ```
-Replaces the `0`-based `index` queue entry of `channelid` in place with `url` and `label` (`2.3.2`), keeping the rest of the queue and the playlist position untouched. By default the old entry's description is cleared, since it described the replaced track; pass `keep_description = true` to keep it on the new track (for notes such as who requested the slot). If the entry is the one playing in playlist mode, the new track starts right away in its place (the channel does not skip to the next entry); if the channel is suspended (`SA_STATE_SUSPENDED`) the saved track becomes the new one, from the start. Persistent channels save the change once.
+Replaces the `0`-based `index` queue entry of `channelid` in place with `url` and `label` (`2.4.0`), keeping the rest of the queue and the playlist position untouched. By default the old entry's description is cleared, since it described the replaced track; pass `keep_description = true` to keep it on the new track (for notes such as who requested the slot). If the entry is the one playing in playlist mode, the new track starts right away in its place (the channel does not skip to the next entry); if the channel is suspended (`SA_STATE_SUSPENDED`) the saved track becomes the new one, from the start. Persistent channels save the change once.
 * **Returns:** `1` on success, `0` if `channelid` does not exist, `index` is out of range or `url` is empty.
 * **Example:**
 ```pawn
@@ -973,9 +974,9 @@ public OnAudioStreamChannelLiveTitleChange(channelid, const title[])
 ### Constants
 ```pawn
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
-#define SAMPAUDIOSTREAM_VERSION_MINOR  (3)
-#define SAMPAUDIOSTREAM_VERSION_PATCH  (1)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.3.1"
+#define SAMPAUDIOSTREAM_VERSION_MINOR  (4)
+#define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.4.0"
 
 #define INVALID_AUDIO_STREAM_ID  (-1)
 #define INVALID_AUDIO_CHANNEL_ID (-1)

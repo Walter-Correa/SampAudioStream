@@ -2115,6 +2115,15 @@ void StreamResolver::InvalidateCachedTrack(const std::string& url_or_query) {
     }
 }
 
+void StreamResolver::InvalidateCachedTrackIfOlderThan(const std::string& url_or_query, std::chrono::seconds max_age) {
+    if (url_or_query.empty()) return;
+    auto cached = cache_.GetTrack(url_or_query);
+    if (!cached || cached->resolved_at == std::chrono::steady_clock::time_point{}) return;
+    if (std::chrono::steady_clock::now() - cached->resolved_at > max_age) {
+        cache_.InvalidateTrack(url_or_query);
+    }
+}
+
 void StreamResolver::InvalidateCachedLibraryTracks() {
     cache_.InvalidateTrackPrefix("library://");
 }

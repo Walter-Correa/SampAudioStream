@@ -1,6 +1,6 @@
 /*
  * SampAudioStream - Universal Audio Streaming Plugin/Component for SA-MP & open.mp
- * Version: 2.3.2
+ * Version: 2.4.0
  * Repository: https://github.com/Walter-Correa/SampAudioStream
  * Documentation: docs/api-reference.md
  *
@@ -18,9 +18,9 @@
 #endif
 
 #define SAMPAUDIOSTREAM_VERSION_MAJOR  (2)
-#define SAMPAUDIOSTREAM_VERSION_MINOR  (3)
-#define SAMPAUDIOSTREAM_VERSION_PATCH  (2)
-#define SAMPAUDIOSTREAM_VERSION_STRING "2.3.2"
+#define SAMPAUDIOSTREAM_VERSION_MINOR  (4)
+#define SAMPAUDIOSTREAM_VERSION_PATCH  (0)
+#define SAMPAUDIOSTREAM_VERSION_STRING "2.4.0"
 
 // -----------------------------------------------------------------------------
 // Constants & Enums
@@ -156,7 +156,7 @@ native SA_GetAudioStreamChannelID(index);
 native SA_GetAudioStreamChannelInfo(channelid, name[], name_len = sizeof(name), creator_name[], creator_len = sizeof(creator_name), &listener_count, &E_SA_STREAM_STATE:channel_state, &bool:has_password, &queue_count);
 native SA_GetAudioStreamChannelTrack(channelid, title[], title_len = sizeof(title), artist[], artist_len = sizeof(artist), &duration);
 native SA_GetAudioStreamChannelQueue(channelid, index, item[], item_len = sizeof(item));
-native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len = sizeof(label));
+native SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len = sizeof(label), bool:original = false);
 native SA_SetAudioStreamChannelQueueLabel(channelid, index, const label[]);
 native SA_SetAudioStreamChannelDescription(channelid, const description[]);
 native SA_GetAudioStreamChannelDescription(channelid, description[], description_len = sizeof(description));

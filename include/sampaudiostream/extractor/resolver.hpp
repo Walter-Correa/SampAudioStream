@@ -121,6 +121,8 @@ public:
 
     ResolveResult Resolve(const std::string& url_or_query, const std::atomic<bool>* cancel_flag = nullptr);
     void InvalidateCachedTrack(const std::string& url_or_query);
+    // Drops a cached platform resolution older than max_age so the next Resolve fetches a fresh media URL.
+    void InvalidateCachedTrackIfOlderThan(const std::string& url_or_query, std::chrono::seconds max_age);
     void InvalidateCachedLibraryTracks();
     SearchExecutionResult Search(const std::string& query, std::uint32_t max_results, const std::atomic<bool>* cancel_flag = nullptr);
     PlaylistExtractionResult ExtractPlaylist(const std::string& url, std::uint32_t max_items, const std::atomic<bool>* cancel_flag = nullptr);

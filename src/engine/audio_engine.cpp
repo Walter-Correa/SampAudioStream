@@ -1158,6 +1158,7 @@ void AudioEngine::Tick() {
 
     auto now = std::chrono::steady_clock::now();
     ProcessDelayedStarts(now);
+    ProcessPendingPreResolves(now);
     ProcessPendingCompletions(now);
     UpdatePlayerSounds(now);
     auto poll_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_disconnect_poll_).count();
@@ -3355,7 +3356,53 @@ void AudioEngine::PollLiveTitles(std::chrono::steady_clock::time_point now) {
     }
 }
 
+namespace {
+// The next track is resolved this many seconds before the current one ends, so its media URL is fresh when used.
+constexpr std::int32_t kNextTrackPreResolveLeadSeconds = 60;
+// A cached media URL older than this is resolved again when the next track is prepared.
+constexpr std::chrono::seconds kNextTrackFreshUrlAge{180};
+}
+
 void AudioEngine::PreResolveNextChannelTrack(const std::shared_ptr<SyncChannel>& channel, const std::string& url_or_query) {
+    if (!channel || url_or_query.empty() || shutting_down_.load()) return;
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    channel->preresolve_pending_url = url_or_query;
+}
+
+void AudioEngine::ProcessPendingPreResolves(std::chrono::steady_clock::time_point now) {
+    if (last_preresolve_check_ != std::chrono::steady_clock::time_point{} &&
+        now - last_preresolve_check_ < std::chrono::milliseconds(250)) {
+        return;
+    }
+    last_preresolve_check_ = now;
+    std::vector<std::pair<std::shared_ptr<SyncChannel>, std::string>> due;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        for (auto& [cid, ch] : channels_) {
+            if (!ch || ch->preresolve_pending_url.empty()) continue;
+            if (!ch->active_run) {
+                ch->preresolve_pending_url.clear();
+                continue;
+            }
+            const StreamState st = ch->state.load();
+            if (st != StreamState::Playing && st != StreamState::Paused) continue; // wait for the current track to start
+            bool fire = ch->current_track.is_live || ch->current_track.duration_seconds <= 0;
+            if (!fire) {
+                const std::int32_t elapsed = ComputeChannelElapsedSecondsLocked(*ch);
+                fire = elapsed < 0 ||
+                       ch->current_track.duration_seconds - elapsed <= kNextTrackPreResolveLeadSeconds;
+            }
+            if (!fire) continue;
+            due.emplace_back(ch, ch->preresolve_pending_url);
+            ch->preresolve_pending_url.clear();
+        }
+    }
+    for (const auto& [ch, url] : due) {
+        DispatchPreResolveNextChannelTrack(ch, url);
+    }
+}
+
+void AudioEngine::DispatchPreResolveNextChannelTrack(const std::shared_ptr<SyncChannel>& channel, const std::string& url_or_query) {
     if (!channel || url_or_query.empty() || shutting_down_.load()) return;
     auto run_snapshot = channel->active_run;
     auto alive = alive_token_;
@@ -3363,6 +3410,7 @@ void AudioEngine::PreResolveNextChannelTrack(const std::shared_ptr<SyncChannel>&
         if (shutting_down_.load() || !alive->load()) return;
         if (run_snapshot && run_snapshot->cancel_flag.load()) return;
         Logger::Instance().Debug("Pre-resolving next queued track for channel " + std::to_string(channel->id));
+        resolver_.InvalidateCachedTrackIfOlderThan(url_or_query, kNextTrackFreshUrlAge);
         const std::atomic<bool>* cancel_ptr = run_snapshot ? &run_snapshot->cancel_flag : nullptr;
         resolver_.Resolve(url_or_query, cancel_ptr);
     });
@@ -5573,12 +5621,33 @@ void AudioEngine::CompleteResolvedChannelTrackStart(
     std::string cb_artist;
     std::string cb_url;
     std::string icy_title;
+    std::string icy_artist;
     std::int32_t cb_duration = 0;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         if (channel->active_run != run || channels_.find(channel->id) == channels_.end()) return;
         channel->current_track = local_track;
         channel->consecutive_errors = 0;
+        if (channel->current_input.utf8_label.empty() && !local_track.is_live &&
+            !IsGenericRadioTrackTitle(local_track)) {
+            // Entries queued without a label (pasted links) take the real track title once it is known.
+            const std::string auto_label = SanitizeQueueLabelUtf8(local_track.title);
+            if (!auto_label.empty()) {
+                const std::string auto_pawn = ConvertTextForPawn(auto_label, config_.pawn_text_encoding);
+                channel->current_input.utf8_label = auto_label;
+                channel->current_input.pawn_label = auto_pawn;
+                if (channel->playlist_mode && channel->current_from_queue && channel->playlist_pos >= 0 &&
+                    static_cast<std::size_t>(channel->playlist_pos) < channel->queue.size()) {
+                    auto& entry = channel->queue[static_cast<std::size_t>(channel->playlist_pos)];
+                    if (entry.utf8_label.empty() && !entry.custom_label &&
+                        entry.utf8_url == channel->current_input.utf8_url) {
+                        entry.utf8_label = auto_label;
+                        entry.pawn_label = auto_pawn;
+                    }
+                }
+                MarkChannelDirtyLocked(*channel);
+            }
+        }
         auto start_now = std::chrono::steady_clock::now();
         channel->seek_base_offset = std::chrono::seconds(std::max<std::int32_t>(0, run->start_offset_seconds));
         channel->track_started_at = start_now;
@@ -5598,9 +5667,15 @@ void AudioEngine::CompleteResolvedChannelTrackStart(
         cb_url = channel->current_input.pawn_url.empty()
             ? ConvertTextForPawn(channel->current_input.utf8_url, config_.pawn_text_encoding)
             : channel->current_input.pawn_url;
-        icy_title = local_track.title.empty() ? channel->name : local_track.title;
+        if (!local_track.is_live && !channel->current_input.utf8_label.empty()) {
+            // The client's on-screen text shows the entry name (custom or original) instead of the raw media title.
+            icy_title = channel->current_input.utf8_label;
+        } else {
+            icy_title = local_track.title.empty() ? channel->name : local_track.title;
+            icy_artist = local_track.artist;
+        }
     }
-    http_server_.UpdateEndpointMetadata(channel->token, icy_title, local_track.artist, channel->buffer);
+    http_server_.UpdateEndpointMetadata(channel->token, icy_title, icy_artist, channel->buffer);
     std::string preserved_live_title;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
@@ -6613,6 +6688,20 @@ bool AudioEngine::RemoveChannelQueueItem(ChannelId channel_id, std::size_t index
                         for (PlayerId pid : ch.listeners) {
                             ReconcilePlayerLocked(pid, nullptr, cmds);
                         }
+                    }
+                } else if (ch.idle_suspended && ch.current_from_queue) {
+                    // Suspended: the saved track moves to the entry that took the removed one's place.
+                    const std::size_t q_size = ch.queue.size();
+                    std::size_t next = index;
+                    if (next >= q_size && ch.loop_mode == ChannelLoopMode::Queue && q_size > 0) next = 0;
+                    if (next < q_size) {
+                        ch.current_input = ch.queue[next];
+                        ch.playlist_pos = static_cast<std::int32_t>(next);
+                        ch.current_track = TrackMetadata{};
+                        ch.live_title.clear();
+                        ch.resume_offset_seconds = 0;
+                    } else {
+                        ClearChannelSuspensionLocked(ch, true);
                     }
                 } else {
                     ch.playlist_pos = -1;
@@ -7794,11 +7883,17 @@ bool AudioEngine::GetChannelQueueItem(ChannelId channel_id, std::size_t index, s
     return true;
 }
 
-bool AudioEngine::GetChannelQueueItemLabel(ChannelId channel_id, std::size_t index, std::string& out_label) const {
+bool AudioEngine::GetChannelQueueItemLabel(ChannelId channel_id, std::size_t index, std::string& out_label, bool original) const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     auto it = channels_.find(channel_id);
     if (it == channels_.end() || !it->second || index >= it->second->queue.size()) return false;
     const auto& entry = it->second->queue[index];
+    if (original && entry.custom_label) {
+        out_label = entry.pawn_original_label.empty()
+            ? ConvertTextForPawn(entry.utf8_original_label, config_.pawn_text_encoding)
+            : entry.pawn_original_label;
+        return true;
+    }
     if (entry.utf8_label.empty() && entry.pawn_label.empty()) {
         out_label.clear();
         return true;
@@ -7812,19 +7907,51 @@ bool AudioEngine::GetChannelQueueItemLabel(ChannelId channel_id, std::size_t ind
 bool AudioEngine::SetChannelQueueItemLabel(ChannelId channel_id, std::size_t index, const std::string& utf8_label) {
     const std::string clean = SanitizeQueueLabelUtf8(utf8_label);
     const std::string pawn = clean.empty() ? std::string() : ConvertTextForPawn(clean, config_.pawn_text_encoding);
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    auto it = channels_.find(channel_id);
-    if (it == channels_.end() || !it->second || index >= it->second->queue.size()) return false;
-    auto& ch = *it->second;
-    auto& entry = ch.queue[index];
-    if (entry.utf8_label == clean && entry.pawn_label == pawn) return true;
-    entry.utf8_label = clean;
-    entry.pawn_label = pawn;
-    if (ch.playlist_mode && ch.current_from_queue && ch.playlist_pos == static_cast<std::int32_t>(index)) {
-        ch.current_input.utf8_label = clean;
-        ch.current_input.pawn_label = pawn;
+    std::string text_token;
+    std::string text_title;
+    std::string text_artist;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        auto it = channels_.find(channel_id);
+        if (it == channels_.end() || !it->second || index >= it->second->queue.size()) return false;
+        auto& ch = *it->second;
+        auto& entry = ch.queue[index];
+        if (clean.empty() && entry.custom_label) {
+            // Reset: back to the label the entry had before it was renamed.
+            entry.utf8_label = entry.utf8_original_label;
+            entry.pawn_label = entry.pawn_original_label;
+            entry.utf8_original_label.clear();
+            entry.pawn_original_label.clear();
+            entry.custom_label = false;
+        } else {
+            if (entry.utf8_label == clean && entry.pawn_label == pawn) return true;
+            if (!clean.empty() && !entry.custom_label) {
+                entry.utf8_original_label = entry.utf8_label;
+                entry.pawn_original_label = entry.pawn_label;
+                entry.custom_label = true;
+            }
+            entry.utf8_label = clean;
+            entry.pawn_label = pawn;
+        }
+        if (ch.playlist_mode && ch.current_from_queue && ch.playlist_pos == static_cast<std::int32_t>(index)) {
+            ch.current_input.utf8_label = entry.utf8_label;
+            ch.current_input.pawn_label = entry.pawn_label;
+            if (ch.active_run && !ch.current_track.is_live) {
+                // Refresh the listeners' on-screen text with the new name.
+                text_token = ch.token;
+                if (!entry.utf8_label.empty()) {
+                    text_title = entry.utf8_label;
+                } else {
+                    text_title = ch.current_track.title.empty() ? ch.name : ch.current_track.title;
+                    text_artist = ch.current_track.artist;
+                }
+            }
+        }
+        MarkChannelDirtyLocked(ch);
     }
-    MarkChannelDirtyLocked(ch);
+    if (!text_token.empty()) {
+        http_server_.UpdateEndpointMetadata(text_token, text_title, text_artist);
+    }
     return true;
 }
 
@@ -7889,7 +8016,7 @@ bool AudioEngine::GetChannelTrackDescription(ChannelId channel_id, std::string& 
     auto it = channels_.find(channel_id);
     if (it == channels_.end() || !it->second) return false;
     const auto& ch = *it->second;
-    out_description = ch.active_run
+    out_description = (ch.active_run || ch.idle_suspended)
         ? DescriptionForPawn(ch.current_input.utf8_description, ch.current_input.pawn_description,
                              config_.pawn_text_encoding)
         : std::string();
@@ -7994,7 +8121,7 @@ AudioEngine::ChannelPersistSnapshot AudioEngine::CaptureChannelPersistSnapshotLo
     snap.range_group = ch.range_group;
     snap.idle_suspend = ch.idle_suspend;
     snap.idle_suspend_seconds = ch.idle_suspend_seconds;
-    snap.resume_offset_seconds = ch.idle_suspended ? ch.resume_offset_seconds : 0;
+    snap.resume_offset_seconds = (ch.idle_suspended || ch.restore_wanted) ? ch.resume_offset_seconds : 0;
     snap.persistent = ch.persistent;
     snap.revision = ch.persist_revision;
     snap.cancelled = ch.persist_cancelled;
@@ -8033,7 +8160,10 @@ bool AudioEngine::WriteChannelPersistFile(const ChannelPersistSnapshot& snap, st
             {"label_hex", BytesToHex(entry.utf8_label)},
             {"pawn_label_hex", BytesToHex(entry.pawn_label)},
             {"description_hex", BytesToHex(entry.utf8_description)},
-            {"pawn_description_hex", BytesToHex(entry.pawn_description)}
+            {"pawn_description_hex", BytesToHex(entry.pawn_description)},
+            {"custom_label", entry.custom_label},
+            {"original_label_hex", BytesToHex(entry.utf8_original_label)},
+            {"pawn_original_label_hex", BytesToHex(entry.pawn_original_label)}
         });
     }
 
@@ -8417,6 +8547,15 @@ void AudioEngine::LoadPersistedChannelsOnInit() {
                 }
                 if (qi.contains("pawn_description_hex") && qi["pawn_description_hex"].is_string()) {
                     qentry.pawn_description = HexToBytes(qi["pawn_description_hex"].get<std::string>());
+                }
+                if (qi.contains("custom_label") && qi["custom_label"].is_boolean()) {
+                    qentry.custom_label = qi["custom_label"].get<bool>();
+                }
+                if (qi.contains("original_label_hex") && qi["original_label_hex"].is_string()) {
+                    qentry.utf8_original_label = HexToBytes(qi["original_label_hex"].get<std::string>());
+                }
+                if (qi.contains("pawn_original_label_hex") && qi["pawn_original_label_hex"].is_string()) {
+                    qentry.pawn_original_label = HexToBytes(qi["pawn_original_label_hex"].get<std::string>());
                 }
                 snap.queue.push_back(std::move(qentry));
             }

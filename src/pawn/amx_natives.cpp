@@ -567,13 +567,14 @@ cell AMX_NATIVE_CALL n_SA_GetAudioStreamChannelQueue(AMX* amx, cell* params) {
     return 1;
 }
 
-// SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len)
+// SA_GetAudioStreamChannelQueueLabel(channelid, index, label[], label_len, bool:original = false)
 cell AMX_NATIVE_CALL n_SA_GetAudioStreamChannelQueueLabel(AMX* amx, cell* params) {
     if (!g_engine) return 0;
     std::size_t argc = static_cast<std::size_t>(params[0]) / sizeof(cell);
     if (argc < 4 || params[2] < 0) return 0;
     std::string label;
-    if (!g_engine->GetChannelQueueItemLabel(static_cast<ChannelId>(params[1]), static_cast<std::size_t>(params[2]), label)) {
+    const bool original = (argc >= 5) && params[5] != 0;
+    if (!g_engine->GetChannelQueueItemLabel(static_cast<ChannelId>(params[1]), static_cast<std::size_t>(params[2]), label, original)) {
         return 0;
     }
     WriteAmxString(amx, params[3], label, static_cast<int>(params[4]));

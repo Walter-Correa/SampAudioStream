@@ -162,6 +162,10 @@ struct ChannelQueueEntry {
     std::string pawn_label;
     std::string utf8_description;
     std::string pawn_description;
+    // Label the entry had before the first rename; restored when the label is set to "".
+    bool custom_label{false};
+    std::string utf8_original_label;
+    std::string pawn_original_label;
 };
 
 struct SyncChannel {
@@ -209,6 +213,8 @@ struct SyncChannel {
     LiveTitlePollState live_poll{};
     std::int32_t consecutive_errors{0};
     bool playlist_import_in_flight{false};
+    // Next track waiting to be pre-resolved close to the end of the current one (main thread decides when).
+    std::string preresolve_pending_url;
     // Idle suspension: stop playback while nobody is joined and resume at the same point for the next listener.
     bool idle_suspend{false};
     std::int32_t idle_suspend_seconds{30};
@@ -440,7 +446,7 @@ public:
     ChannelId GetChannelIdAt(std::size_t index) const;
     bool GetChannelInfo(ChannelId channel_id, ChannelInfo& out_info) const;
     bool GetChannelQueueItem(ChannelId channel_id, std::size_t index, std::string& out_item) const;
-    bool GetChannelQueueItemLabel(ChannelId channel_id, std::size_t index, std::string& out_label) const;
+    bool GetChannelQueueItemLabel(ChannelId channel_id, std::size_t index, std::string& out_label, bool original = false) const;
     bool SetChannelQueueItemLabel(ChannelId channel_id, std::size_t index, const std::string& utf8_label);
     bool SetChannelDescription(ChannelId channel_id, const std::string& utf8_description);
     bool GetChannelDescription(ChannelId channel_id, std::string& out_description) const;
@@ -528,6 +534,8 @@ private:
         std::uint64_t start_offset_ms);
     void StartChannelWorker(std::shared_ptr<SyncChannel> channel, std::shared_ptr<ChannelRunState> run, const std::string& url_or_query);
     void PreResolveNextChannelTrack(const std::shared_ptr<SyncChannel>& channel, const std::string& url_or_query);
+    void DispatchPreResolveNextChannelTrack(const std::shared_ptr<SyncChannel>& channel, const std::string& url_or_query);
+    void ProcessPendingPreResolves(std::chrono::steady_clock::time_point now);
     void PollLiveTitles(std::chrono::steady_clock::time_point now);
     void LaunchSessionLiveTitlePoll(
         const std::shared_ptr<ActiveStreamSession>& session,
@@ -722,6 +730,7 @@ private:
     std::chrono::steady_clock::time_point last_spatial_update_;
     std::chrono::steady_clock::time_point last_disconnect_poll_;
     std::chrono::steady_clock::time_point last_idle_suspend_check_{};
+    std::chrono::steady_clock::time_point last_preresolve_check_{};
     std::array<AudioSourcePriority, 3> priority_order_{
         AudioSourcePriority::Personal,
         AudioSourcePriority::Channel,

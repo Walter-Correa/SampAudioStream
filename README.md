@@ -148,7 +148,7 @@ ctest --test-dir build -R core_tests --output-on-failure
 <details>
 <summary>Show the version history</summary>
 
-### 2.3.2 — 22/11/2026
+### 2.4.0 — 23/11/2026
 - **Channel and Track Descriptions**:
   - New `SA_SetAudioStreamChannelDescription` / `SA_GetAudioStreamChannelDescription` give a channel a free-text description, and `SA_SetAudioStreamChannelQueueDescription` / `SA_GetAudioStreamChannelQueueDescription` do the same for each queue entry. Text is cleaned of control characters and cut to 256 UTF-8 bytes.
   - An entry's description belongs to the entry: it follows moves, shuffles, removals of other entries, queue loops and playlist mode, and `SA_GetAudioStreamChannelTrackDescription` returns the description of the track that is playing.
@@ -157,13 +157,17 @@ ctest --test-dir build -R core_tests --output-on-failure
   - New `SA_SetAudioStreamChannelIdleSuspend` / `SA_GetAudioStreamChannelIdleSuspend`: after a grace time with no joined listener, a channel stops and frees its transcoder slot, and the next listener resumes it at the same track and second. Scripts see the new `SA_STATE_SUSPENDED` state.
   - While suspended, skipping moves the saved position and seeking moves the saved second without starting playback; positioned channels are never suspended.
   - Persistent channels save the option and the saved second; after a restart they come back suspended instead of playing to nobody.
+- **Fresher Next-Track Links**:
+  - Channels now prepare the next track about 60 seconds before the current one ends instead of as soon as it starts, and a cached media link older than 3 minutes is resolved again, so the next track rarely starts with an expired link (a rejected link used to cost about 10 seconds of silence while it was resolved again).
 - **Rename a Queue Entry (`SA_SetAudioStreamChannelQueueLabel`)**:
-  - Changes an entry's label (the name scripts show in lists) without touching its URL, position or description; persistent channels save it.
+  - Changes an entry's label (the name scripts show in lists) without touching its URL, position or description; persistent channels save it. The original label is remembered and comes back when the label is set to `""` (read it with `SA_GetAudioStreamChannelQueueLabel(..., original = true)`).
+  - Entries queued without a label, such as pasted links, take the real track title the first time they play (live radios excluded), so lists stop showing raw links.
+  - The listeners' on-screen stream text shows the entry label for finite tracks, and renaming the playing entry updates it right away.
 - **Replace a Queue Entry (`SA_ReplaceAudioStreamChannelQueue`)**:
   - Replaces an entry in place with a new URL and label without removing and re-adding it; its description is cleared unless `keep_description = true`. Replacing the entry that is playing starts the new track at once in its place, and on a suspended channel the saved track becomes the new one.
 - **Join Without the Password (`ignore_password`)**:
   - `SA_JoinAudioStreamChannel` takes an optional `bool:ignore_password` (default `false`), so scripts can let a channel's creator or admins join a password-protected channel without the password. Existing calls are unchanged.
-- **Demo Filterscript Updated to 2.3.2 (`FS_SampAudioStream_Demo.pwn`)**:
+- **Demo Filterscript Updated to 2.4.0 (`FS_SampAudioStream_Demo.pwn`)**:
   - Channel menu > Channel Description and queue item > Edit Description set and show both descriptions, queue lists show each item's description, and listeners get the track description when a track starts (`SA_GetAudioStreamChannelTrackDescription`).
   - Channel menu > Toggle Idle Suspension turns idle suspension on or off and shows whether the channel is suspended.
   - The channel creator and RCON admins join password-protected channels without typing the password (`SA_JoinAudioStreamChannel` with `ignore_password = true`).

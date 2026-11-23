@@ -750,13 +750,13 @@ static stock ShowChannelManageMenu(playerid, channelid)
     new hist_cnt = (hslot != -1) ? gHistCount[hslot] : 0;
     new bool:playlist_on = SA_IsAudioStreamChannelPlaylist(channelid);
 
-    // 2.3.2: free-text channel description, saved with persistent channels
+    // 2.4.0: free-text channel description, saved with persistent channels
     new cdesc[40];
     SA_GetAudioStreamChannelDescription(channelid, cdesc, sizeof(cdesc));
     SanitizeDialogField(cdesc);
     if (cdesc[0] == EOS) format(cdesc, sizeof(cdesc), "none");
 
-    // 2.3.2: idle suspension frees the channel's slot while nobody is joined
+    // 2.4.0: idle suspension frees the channel's slot while nobody is joined
     new bool:idle_on, idle_grace, bool:idle_now;
     SA_GetAudioStreamChannelIdleSuspend(channelid, idle_on, idle_grace, idle_now);
 
@@ -2699,7 +2699,7 @@ Offline Timeout (Custom seconds)",
                     }
                     else if (locked && (IsPlayerAdmin(playerid) || IsPlayerChannelCreator(playerid, ccreator)))
                     {
-                        // 2.3.2: the script decides who skips the password (here: the creator and RCON admins)
+                        // 2.4.0: the script decides who skips the password (here: the creator and RCON admins)
                         if (SA_JoinAudioStreamChannel(playerid, cid, "", true))
                         {
                             SendClientMessage(playerid, 0x00FF88FF, "[Channel] Joined without the password (creator / RCON admin).");
@@ -2957,14 +2957,15 @@ Offline Timeout (Custom seconds)",
                 ShowChannelQueueDialog(playerid, cid);
                 return 1;
             }
-            if (!response || inputtext[0] == EOS)
+            if (!response)
             {
                 ShowChannelQueueItemDialog(playerid, cid, idx);
                 return 1;
             }
             if (SA_SetAudioStreamChannelQueueLabel(cid, idx, inputtext))
             {
-                SendClientMessage(playerid, 0x00FF88FF, "[Channel] Item renamed.");
+                if (inputtext[0] != EOS) SendClientMessage(playerid, 0x00FF88FF, "[Channel] Item renamed.");
+                else SendClientMessage(playerid, 0x00FF88FF, "[Channel] Original item name restored.");
                 if (GetChannelQueueDisplayText(cid, idx, cur_item, sizeof(cur_item)))
                 {
                     gQueueSelHash[playerid] = HashStringDjb2(cur_item);
@@ -3275,7 +3276,7 @@ Offline Timeout (Custom seconds)",
                     new ntitle[64];
                     format(ntitle, sizeof(ntitle), "{00CCFF}Rename Item #%d", idx);
                     ShowPlayerDialog(playerid, DLG_SA_CH_QUEUE_RENAME, DIALOG_STYLE_INPUT, ntitle,
-                        "{FFFFFF}Enter the new name (label) for this item.\n{AAAAAA}The URL, position and description stay the same; the label is saved with persistent channels.",
+                        "{FFFFFF}Enter the new name (label) for this item, or leave it blank to restore the original name.\n{AAAAAA}The URL, position and description stay the same; the label is saved with persistent channels.",
                         "Rename", "Back");
                     return 1;
                 }
@@ -4282,7 +4283,7 @@ public OnAudioStreamChannelTrackStart(channelid, const title[], const artist[], 
     printf("[SampAudioStream] Channel #%d track started: %s - %s (%ds) [%s]",
         channelid, artist, title, duration, url);
 
-    // 2.3.2: the description follows the queue entry into the playing track
+    // 2.4.0: the description follows the queue entry into the playing track
     new tdesc[260];
     if (SA_GetAudioStreamChannelTrackDescription(channelid, tdesc, sizeof(tdesc)) && tdesc[0] != EOS)
     {
