@@ -330,6 +330,16 @@ std::int32_t ComputeChannelElapsedSecondsLocked(const SyncChannel& ch) {
     return static_cast<std::int32_t>(secs < 0 ? 0 : secs);
 }
 
+// Seeking decodes the track from its start, so online tracks only keep a short resume point; reaching a
+// later second would leave listeners in silence while the earlier part downloads. Library files seek fast.
+constexpr std::int32_t kMaxRemoteResumeOffsetSeconds = 10;
+
+std::int32_t EffectiveResumeOffsetSeconds(const ChannelQueueEntry& input, std::int32_t offset) {
+    if (offset <= 0) return 0;
+    if (offset <= kMaxRemoteResumeOffsetSeconds || StreamResolver::IsLibraryUrl(input.utf8_url)) return offset;
+    return 0;
+}
+
 void ClearChannelSuspensionLocked(SyncChannel& ch, bool drop_track) {
     ch.idle_suspended = false;
     ch.restore_wanted = false;
@@ -7799,7 +7809,8 @@ bool AudioEngine::SeekChannelAudioStream(ChannelId channel_id, std::int32_t seco
         ch = it->second;
         if (ch->idle_suspended && !ch->active_run) {
             if (ch->current_track.is_live || ch->current_track.duration_seconds <= 0 ||
-                seconds >= ch->current_track.duration_seconds) {
+                seconds >= ch->current_track.duration_seconds ||
+                EffectiveResumeOffsetSeconds(ch->current_input, seconds) != seconds) {
                 return false;
             }
             ch->resume_offset_seconds = seconds;
@@ -8774,6 +8785,7 @@ void AudioEngine::SuspendIdleChannelsInTick() {
             if (!ch.current_track.is_live && ch.current_track.duration_seconds > 0) {
                 offset = std::max<std::int32_t>(0, ComputeChannelElapsedSecondsLocked(ch));
                 if (offset >= ch.current_track.duration_seconds) offset = 0;
+                offset = EffectiveResumeOffsetSeconds(ch.current_input, offset);
             }
             CancelPendingChannelCompletionLocked(cid);
             stopped_runs.push_back(ch.active_run);
@@ -8856,7 +8868,7 @@ void AudioEngine::ResumeRestoredChannelsInTick() {
             std::string pawn_url = ch->current_input.pawn_url;
             std::string utf8_label = ch->current_input.utf8_label;
             const ChannelQueueEntry saved_input = ch->current_input;
-            const std::int32_t resume_offset = std::max<std::int32_t>(0, ch->resume_offset_seconds);
+            const std::int32_t resume_offset = EffectiveResumeOffsetSeconds(ch->current_input, ch->resume_offset_seconds);
             const bool was_suspended = ch->idle_suspended;
             std::shared_ptr<SyncChannel> out_ch;
             std::shared_ptr<ChannelRunState> out_run;

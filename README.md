@@ -154,8 +154,8 @@ ctest --test-dir build -R core_tests --output-on-failure
   - An entry's description belongs to the entry: it follows moves, shuffles, removals of other entries, queue loops and playlist mode, and `SA_GetAudioStreamChannelTrackDescription` returns the description of the track that is playing.
   - Persistent channels save both descriptions (`description_hex` / `pawn_description_hex`); files from older versions load with empty descriptions.
 - **Idle Channel Suspension**:
-  - New `SA_SetAudioStreamChannelIdleSuspend` / `SA_GetAudioStreamChannelIdleSuspend`: after a grace time with no joined listener, a channel stops and frees its transcoder slot, and the next listener resumes it at the same track and second. Scripts see the new `SA_STATE_SUSPENDED` state.
-  - While suspended, skipping moves the saved position and seeking moves the saved second without starting playback; positioned channels are never suspended.
+  - New `SA_SetAudioStreamChannelIdleSuspend` / `SA_GetAudioStreamChannelIdleSuspend`: after a grace time with no joined listener, a channel stops and frees its transcoder slot, and the next listener resumes it at the same track (library files at the same second; online tracks from the beginning, since seeking them means downloading everything before that point). Scripts see the new `SA_STATE_SUSPENDED` state.
+  - While suspended, skipping moves the saved position without starting playback; positioned channels are never suspended.
   - Persistent channels save the option and the saved second; after a restart they come back suspended instead of playing to nobody.
 - **Fresher Next-Track Links**:
   - Channels now prepare the next track about 60 seconds before the current one ends instead of as soon as it starts, and a cached media link older than 3 minutes is resolved again, so the next track rarely starts with an expired link (a rejected link used to cost about 10 seconds of silence while it was resolved again).
