@@ -6,7 +6,7 @@ set(FETCHCONTENT_QUIET OFF)
 FetchContent_Declare(
     nlohmann_json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3
+    GIT_TAG v3.12.0
     GIT_SHALLOW TRUE
 )
 
@@ -14,7 +14,7 @@ FetchContent_Declare(
 FetchContent_Declare(
     asio
     GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
-    GIT_TAG asio-1-30-2
+    GIT_TAG asio-1-39-0
     GIT_SHALLOW TRUE
 )
 
@@ -22,7 +22,7 @@ FetchContent_Declare(
 FetchContent_Declare(
     ogg
     GIT_REPOSITORY https://github.com/xiph/ogg.git
-    GIT_TAG v1.3.5
+    GIT_TAG v1.3.6
     GIT_SHALLOW TRUE
 )
 
@@ -36,7 +36,7 @@ set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
     opus
     GIT_REPOSITORY https://github.com/xiph/opus.git
-    GIT_TAG v1.5.2
+    GIT_TAG v1.6.1
     GIT_SHALLOW TRUE
 )
 
@@ -47,7 +47,7 @@ set(FDK_AAC_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
     fdk-aac
     GIT_REPOSITORY https://github.com/mstorsjo/fdk-aac.git
-    GIT_TAG v2.0.3
+    GIT_TAG v3.0.0
     GIT_SHALLOW TRUE
 )
 
@@ -62,20 +62,25 @@ FetchContent_Declare(
 # 7. dr_libs (header-only dr_mp3, dr_wav, dr_flac, pinned archive + SHA-256)
 FetchContent_Declare(
     dr_libs
-    URL https://github.com/mackron/dr_libs/archive/f12e197fd462e4c22873fbd70d11b1d2f2c1dc3c.tar.gz
-    URL_HASH SHA256=65d6c9c34d9b03fe0c47536e0e83c764402230994c9a6633e6e9d3aa92be90ac
+    URL https://github.com/mackron/dr_libs/archive/e381981afa52800b9a3864df548353ff67252fbc.tar.gz
+    URL_HASH SHA256=3d490df7846fac464fdc0621a2a5aeb92069616081fc0183a20c5153c0d27388
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
 # 8. stb (stb_vorbis, pinned archive + SHA-256)
 FetchContent_Declare(
     stb
-    URL https://github.com/nothings/stb/archive/9600522de53973336fa033a289858a4354cbb04c.tar.gz
-    URL_HASH SHA256=8546b1281cf61e4b5229e9eb05055d765f1b076f6ba03aab377df09a20fb613b
+    URL https://github.com/nothings/stb/archive/6b5799bae8a1fe3792691ef4b72ae26434c3e799.tar.gz
+    URL_HASH SHA256=87e9ecd2d2e0cb8fa35bf5a93ea6ca3999595ea4f0a4738ed1aac0a34cbd4da9
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
 FetchContent_MakeAvailable(nlohmann_json ogg opus fdk-aac dr_libs stb)
+
+# fdk-aac 3.x also defines the xHE-AAC encoder library, which the plugin does not use
+if(TARGET fdk-xhe-aac)
+    set_target_properties(fdk-xhe-aac PROPERTIES EXCLUDE_FROM_ALL TRUE)
+endif()
 
 # Fetch Asio (header-only)
 FetchContent_GetProperties(asio)

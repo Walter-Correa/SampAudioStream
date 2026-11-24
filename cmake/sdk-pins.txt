@@ -1,0 +1,6 @@
+# Platform SDK pins, read by .github/workflows/build.yml and release.yml (cloned into deps/).
+# Updated by .github/workflows/dependencies.yml; for local builds, clone the same commits into deps/.
+OMP_SDK_REPO=https://github.com/openmultiplayer/open.mp-sdk.git
+OMP_SDK_COMMIT=08cc69a32d96c0eb8fe063d26c78259e54ca853f
+SAMP_SDK_REPO=https://github.com/maddinat0r/samp-plugin-sdk.git
+SAMP_SDK_COMMIT=a5ce36a9b6ebbea6ad36705603f653bf3d4f41c5

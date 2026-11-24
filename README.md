@@ -126,6 +126,7 @@ All 91 `SA_*` natives, hooked vanilla functions, 20 callbacks, constants, and en
   git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/openmultiplayer/open.mp-sdk.git deps/open.mp-sdk
   git clone --depth 1 https://github.com/maddinat0r/samp-plugin-sdk.git deps/samp-plugin-sdk
   ```
+  The commits used by official builds are pinned in `cmake/sdk-pins.txt`.
 
 ### Compiling on Windows (1-Click Script)
 Run the automated MSVC build script:
@@ -147,6 +148,15 @@ ctest --test-dir build -R core_tests --output-on-failure
 
 <details>
 <summary>Show the version history</summary>
+
+### Unreleased
+- **Updated Libraries**:
+  - nlohmann/json 3.12.0, asio 1.39.0, libogg 1.3.6, libopus 1.6.1, fdk-aac 3.0.0, `stb_vorbis` 1.25 (stricter checks on malformed Ogg files) and the latest `dr_libs` (`dr_flac`, `dr_wav` and `dr_mp3` fixes for malformed files).
+- **Fixes**:
+  - open.mp reported the component as version 2.2.0; it now reports the real version.
+- **Maintenance Automation** (repository only):
+  - A weekly workflow opens pull requests for new Deno / QuickJS-ng releases (with recomputed download hashes) and new open.mp / SA-MP SDK commits, and keeps an issue listing newer library releases; each says whether a new release is needed. See [docs/maintenance.md](docs/maintenance.md).
+  - Changes waiting for a release are listed under "Unreleased" in this version history. The Release workflow asks for the version type (patch, minor or major), sets the version in every file, turns "Unreleased" into the new version and publishes it.
 
 ### 2.4.0 — 23/11/2026
 - **Channel and Track Descriptions**:

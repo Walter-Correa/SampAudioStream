@@ -30,7 +30,7 @@ public:
 
     // IComponent
     StringView componentName() const override { return "SampAudioStream"; }
-    SemanticVersion componentVersion() const override { return SemanticVersion(2, 2, 0, 0); }
+    SemanticVersion componentVersion() const override { return SemanticVersion(2, 4, 0, 0); }
     void onLoad(ICore* c) override;
     void onInit(IComponentList* components) override;
     void onReady() override;

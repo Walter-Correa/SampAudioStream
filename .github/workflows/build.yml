@@ -28,17 +28,21 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path deps | Out-Null
+          $pins = @{}
+          foreach ($line in Get-Content cmake/sdk-pins.txt) {
+            if ($line -match '^([A-Z_]+)=(\S+)$') { $pins[$Matches[1]] = $Matches[2] }
+          }
           if (-not (Test-Path "deps/open.mp-sdk/CMakeLists.txt")) {
             git init deps/open.mp-sdk
-            git -C deps/open.mp-sdk remote add origin https://github.com/openmultiplayer/open.mp-sdk.git
-            git -C deps/open.mp-sdk fetch --depth 1 origin 08cc69a32d96c0eb8fe063d26c78259e54ca853f
+            git -C deps/open.mp-sdk remote add origin $pins.OMP_SDK_REPO
+            git -C deps/open.mp-sdk fetch --depth 1 origin $pins.OMP_SDK_COMMIT
             git -C deps/open.mp-sdk checkout FETCH_HEAD
             git -C deps/open.mp-sdk submodule update --init --recursive --depth 1
           }
           if (-not (Test-Path "deps/samp-plugin-sdk/plugincommon.h")) {
             git init deps/samp-plugin-sdk
-            git -C deps/samp-plugin-sdk remote add origin https://github.com/maddinat0r/samp-plugin-sdk.git
-            git -C deps/samp-plugin-sdk fetch --depth 1 origin a5ce36a9b6ebbea6ad36705603f653bf3d4f41c5
+            git -C deps/samp-plugin-sdk remote add origin $pins.SAMP_SDK_REPO
+            git -C deps/samp-plugin-sdk fetch --depth 1 origin $pins.SAMP_SDK_COMMIT
             git -C deps/samp-plugin-sdk checkout FETCH_HEAD
           }
 
@@ -118,17 +122,18 @@ jobs:
       - name: Clone SDK dependencies
         run: |
           mkdir -p deps
+          set -a; . cmake/sdk-pins.txt; set +a
           if [ ! -f "deps/open.mp-sdk/CMakeLists.txt" ]; then
             git init deps/open.mp-sdk
-            git -C deps/open.mp-sdk remote add origin https://github.com/openmultiplayer/open.mp-sdk.git
-            git -C deps/open.mp-sdk fetch --depth 1 origin 08cc69a32d96c0eb8fe063d26c78259e54ca853f
+            git -C deps/open.mp-sdk remote add origin "$OMP_SDK_REPO"
+            git -C deps/open.mp-sdk fetch --depth 1 origin "$OMP_SDK_COMMIT"
             git -C deps/open.mp-sdk checkout FETCH_HEAD
             git -C deps/open.mp-sdk submodule update --init --recursive --depth 1
           fi
           if [ ! -f "deps/samp-plugin-sdk/plugincommon.h" ]; then
             git init deps/samp-plugin-sdk
-            git -C deps/samp-plugin-sdk remote add origin https://github.com/maddinat0r/samp-plugin-sdk.git
-            git -C deps/samp-plugin-sdk fetch --depth 1 origin a5ce36a9b6ebbea6ad36705603f653bf3d4f41c5
+            git -C deps/samp-plugin-sdk remote add origin "$SAMP_SDK_REPO"
+            git -C deps/samp-plugin-sdk fetch --depth 1 origin "$SAMP_SDK_COMMIT"
             git -C deps/samp-plugin-sdk checkout FETCH_HEAD
           fi
 

@@ -1,0 +1,69 @@
+name: Dependencies
+
+# Weekly check of pinned dependencies (see docs/maintenance.md).
+# - JS runtimes (Deno, QuickJS-ng) and platform SDKs (open.mp, SA-MP, cmake/sdk-pins.txt): opens one
+#   pull request with the new pins (runtime URLs and SHA-256 hashes recomputed). When the change must
+#   reach servers it is labelled "needs release" and carries the changelog line (and the version bump
+#   when the current version is already released). Then starts the Build workflow on that branch.
+# - Libraries in cmake/Dependencies.cmake: keeps one open issue listing newer upstream releases.
+# Requires: Settings > Actions > General > Workflow permissions >
+#           "Allow GitHub Actions to create and approve pull requests".
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: dependencies
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check pinned dependencies
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          python3 -I .github/scripts/check_dependencies.py
+          --pr-report "$RUNNER_TEMP/pr.md"
+          --commit-message "$RUNNER_TEMP/commit.txt"
+          --library-report "$RUNNER_TEMP/libraries.md"
+
+      - name: Open dependency update pull request
+        if: steps.check.outputs.pr_needed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.check.outputs.pr_branch }}
+          TITLE: ${{ steps.check.outputs.pr_title }}
+          RELEASE_LABEL: ${{ steps.check.outputs.needs_release == 'true' && 'needs release' || '' }}
+        run: >
+          bash .github/scripts/open_update_pr.sh deps/update- "$BRANCH" "$TITLE"
+          "$RUNNER_TEMP/pr.md" "$RUNNER_TEMP/commit.txt"
+
+      - name: Update library report issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_TITLE: "Pinned library updates available"
+          OUTDATED: ${{ steps.check.outputs.libraries_outdated }}
+        run: |
+          number=$(gh issue list --state open --search "in:title $ISSUE_TITLE" --json number,title \
+            --jq '.[] | select(.title == env.ISSUE_TITLE) | .number' | head -n1)
+          if [ "$OUTDATED" = "true" ]; then
+            if [ -n "$number" ]; then
+              gh issue edit "$number" --body-file "$RUNNER_TEMP/libraries.md"
+            else
+              gh issue create --title "$ISSUE_TITLE" --body-file "$RUNNER_TEMP/libraries.md"
+            fi
+          elif [ -n "$number" ]; then
+            gh issue close "$number" --comment "All pinned libraries match their latest upstream releases."
+          fi

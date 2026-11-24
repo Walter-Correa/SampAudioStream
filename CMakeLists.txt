@@ -70,7 +70,7 @@ target_include_directories(sampaudiostream BEFORE PRIVATE
 
 target_include_directories(sampaudiostream PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${asio_SOURCE_DIR}/asio/include"
+    "${asio_SOURCE_DIR}/include"
     "${dr_libs_SOURCE_DIR}"
     "${stb_SOURCE_DIR}"
 )
@@ -146,7 +146,7 @@ if(SAMPAUDIO_BUILD_TESTS)
     )
     target_include_directories(sampaudiostream_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
-        "${asio_SOURCE_DIR}/asio/include"
+        "${asio_SOURCE_DIR}/include"
         "${dr_libs_SOURCE_DIR}"
         "${stb_SOURCE_DIR}"
     )

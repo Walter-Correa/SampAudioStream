@@ -16,6 +16,7 @@ Welcome to the technical documentation for **SampAudioStream** (SA-MP & open.mp)
 | **[⚙️ Architecture, Transcoding & Caching](architecture-and-caching.md)** | Dual-runtime C++20 design, self-managed extractor provisioning (`yt-dlp` + `quickjs-ng`), static in-memory MP3 transcoding codecs, HLS/MPEG-TS live handling, LRU RAM metadata cache, and ~30s ring buffers (~480 KB at 128 kbps). |
 | **[📚 Complete API Reference](api-reference.md)** | Exhaustive technical dictionary covering all 91 `SA_*` natives, hooked standard natives, 20 callbacks, enumerations, and constants. |
 | **[🍪 YouTube Anti-Bot & Cookies Guide](youtube-cookies.md)** | Automatic `cookies.txt` / browser cookie fallback (`extractor.cookies_from_browser`), Firefox setup, headless VPS `cookies.txt` export, and troubleshooting `SA_ERR_AUTH_REQUIRED`. |
+| **[🛠️ Maintenance Guide](maintenance.md)** | What keeps the plugin working over time: server owner tasks (updates, cookies, libcurl), maintainer tasks (pinned JS runtimes, libraries, SDKs, CI), and what is or can be automated. |
 | **[⚠️ Important Notes](../README.md#important-notes)** | Extractor (`yt-dlp`) dependency disclaimer, server owner content responsibility, and non-affiliation notice. |
 
 ---

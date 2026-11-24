@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # GitHub Actions used by the workflows (checkout, upload/download-artifact, ...).
+  # Pinned JS runtimes and C/C++ libraries are handled by .github/workflows/dependencies.yml.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

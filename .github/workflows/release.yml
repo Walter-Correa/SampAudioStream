@@ -1,21 +1,78 @@
 name: Release
 
-# Builds SampAudioStream (32-bit) for Windows and Linux,
-# and publishes standalone archives as a GitHub Release with changelog notes from README.md.
-# Releases are triggered manually: Actions > Release > Run workflow.
+# Releases are triggered manually: Actions > Release > Run workflow, choosing the version.
+# 1. Prepare (.github/scripts/bump_version.py): takes the pending changelog in README.md, either
+#    "### Unreleased" (with patch/minor/major) or a "### X.Y.Z — ..." section written by hand (auto),
+#    dates it with the release day, sets the version in every file and pushes a "Prepare release" commit.
+# 2. Builds SampAudioStream (32-bit) for Windows and Linux from that commit.
+# 3. Publishes standalone archives as a GitHub Release with the changelog of that version.
 on:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: "auto = use the version written in README.md (### X.Y.Z). For ### Unreleased choose: patch (fixes, dependency updates), minor (new natives/features), major (breaking changes)"
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+        default: auto
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Prepare Version
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.prep.outputs.sha }}
+      version: ${{ steps.prep.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set the version and changelog
+        id: prep
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          python3 -I -B .github/scripts/bump_version.py "$BUMP" | tee "$RUNNER_TEMP/prepare.log"
+          version=$(sed -n 's/^version=//p' "$RUNNER_TEMP/prepare.log" | tail -n 1)
+          if [ -z "$version" ]; then echo "::error::Could not determine the release version."; exit 1; fi
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "::error::v$version is already released."
+            exit 1
+          fi
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -a -F - <<EOF
+          Prepare release (v$version)
+
+          - Set the version to $version in CMakeLists.txt, pawn.json, SampAudioStream.inc, src/main.cpp, src/runtime/omp_host.cpp and include/sampaudiostream/runtime/omp_host.hpp
+          - Date the changelog of $version in README.md with the release day
+          EOF
+            git push origin HEAD
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version"
+
   build-windows:
     name: Build Windows Release
+    needs: prepare
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           submodules: recursive
           fetch-depth: 0
 
@@ -23,17 +80,21 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path deps | Out-Null
+          $pins = @{}
+          foreach ($line in Get-Content cmake/sdk-pins.txt) {
+            if ($line -match '^([A-Z_]+)=(\S+)$') { $pins[$Matches[1]] = $Matches[2] }
+          }
           if (-not (Test-Path "deps/open.mp-sdk/CMakeLists.txt")) {
             git init deps/open.mp-sdk
-            git -C deps/open.mp-sdk remote add origin https://github.com/openmultiplayer/open.mp-sdk.git
-            git -C deps/open.mp-sdk fetch --depth 1 origin 08cc69a32d96c0eb8fe063d26c78259e54ca853f
+            git -C deps/open.mp-sdk remote add origin $pins.OMP_SDK_REPO
+            git -C deps/open.mp-sdk fetch --depth 1 origin $pins.OMP_SDK_COMMIT
             git -C deps/open.mp-sdk checkout FETCH_HEAD
             git -C deps/open.mp-sdk submodule update --init --recursive --depth 1
           }
           if (-not (Test-Path "deps/samp-plugin-sdk/plugincommon.h")) {
             git init deps/samp-plugin-sdk
-            git -C deps/samp-plugin-sdk remote add origin https://github.com/maddinat0r/samp-plugin-sdk.git
-            git -C deps/samp-plugin-sdk fetch --depth 1 origin a5ce36a9b6ebbea6ad36705603f653bf3d4f41c5
+            git -C deps/samp-plugin-sdk remote add origin $pins.SAMP_SDK_REPO
+            git -C deps/samp-plugin-sdk fetch --depth 1 origin $pins.SAMP_SDK_COMMIT
             git -C deps/samp-plugin-sdk checkout FETCH_HEAD
           }
 
@@ -90,28 +151,31 @@ jobs:
           if-no-files-found: error
 
   build-linux:
+    needs: prepare
     name: Build Linux Release
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           submodules: recursive
           fetch-depth: 0
 
       - name: Clone SDK dependencies
         run: |
           mkdir -p deps
+          set -a; . cmake/sdk-pins.txt; set +a
           if [ ! -f "deps/open.mp-sdk/CMakeLists.txt" ]; then
             git init deps/open.mp-sdk
-            git -C deps/open.mp-sdk remote add origin https://github.com/openmultiplayer/open.mp-sdk.git
-            git -C deps/open.mp-sdk fetch --depth 1 origin 08cc69a32d96c0eb8fe063d26c78259e54ca853f
+            git -C deps/open.mp-sdk remote add origin "$OMP_SDK_REPO"
+            git -C deps/open.mp-sdk fetch --depth 1 origin "$OMP_SDK_COMMIT"
             git -C deps/open.mp-sdk checkout FETCH_HEAD
             git -C deps/open.mp-sdk submodule update --init --recursive --depth 1
           fi
           if [ ! -f "deps/samp-plugin-sdk/plugincommon.h" ]; then
             git init deps/samp-plugin-sdk
-            git -C deps/samp-plugin-sdk remote add origin https://github.com/maddinat0r/samp-plugin-sdk.git
-            git -C deps/samp-plugin-sdk fetch --depth 1 origin a5ce36a9b6ebbea6ad36705603f653bf3d4f41c5
+            git -C deps/samp-plugin-sdk remote add origin "$SAMP_SDK_REPO"
+            git -C deps/samp-plugin-sdk fetch --depth 1 origin "$SAMP_SDK_COMMIT"
             git -C deps/samp-plugin-sdk checkout FETCH_HEAD
           fi
 
@@ -204,12 +268,14 @@ jobs:
 
   publish-release:
     name: Publish Release
-    needs: [build-windows, build-linux]
+    needs: [prepare, build-windows, build-linux]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - name: Read Version
         id: ver
@@ -275,5 +341,5 @@ jobs:
             gh release edit $tag --title $title --notes-file release-notes.md
           } else {
             Write-Host "Creating new release $tag..."
-            gh release create $tag $files --target $env:GITHUB_SHA --title $title --notes-file release-notes.md
+            gh release create $tag $files --target "${{ needs.prepare.outputs.sha }}" --title $title --notes-file release-notes.md
           }
